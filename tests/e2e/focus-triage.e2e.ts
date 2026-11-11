@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page, type TestInfo } from "@playwright/test";
 import { expandFocusCard } from "./focus-card-helpers";
 import AxeBuilder from "@axe-core/playwright";
 import { execFileSync } from "node:child_process";
@@ -52,6 +52,49 @@ async function seed(page: Page, done = false) {
     await route.fulfill({ response, json: body });
   });
 }
+
+async function capture(page: Page, name: string, info: TestInfo) {
+  if (process.env.WOLFPACK_FOCUS_SHOTS) await page.screenshot({ path: join(process.env.WOLFPACK_FOCUS_SHOTS, `${name}-${info.project.name}.png`), fullPage: true });
+}
+
+test("multiple suggestions have globally unique ids and retain a focused send through rerenders", async ({ page }) => {
+  await seed(page);
+  const secondDraft = "Continue the second approved step.";
+  await write(page, [{ type: "next", author: "assistant", rows: [
+    { ref: { machine, sessionId: "mock:prompt-project" }, stoppedAt: episode, verdict: "suggest", reason: "First continuation", suggestion: draft },
+    { ref: { machine, sessionId: "mock:another-project" }, stoppedAt: episode, verdict: "suggest", reason: "Second continuation", suggestion: secondDraft },
+  ] }]);
+  const sends: { session: string; text: string }[] = [];
+  await page.route("**/api/session-control/send", async route => {
+    sends.push(route.request().postDataJSON());
+    await route.fulfill({ json: { outcome: "submitted" } });
+  });
+  await page.goto(server.baseUrl);
+  const block = page.locator("#dashboard-focus");
+  await expect(block.locator('.focus-next [data-focus-reply]')).toHaveCount(2);
+  for (const row of await block.locator(".focus-next > li").all()) await expandFocusCard(row);
+  await block.getByRole("button", { name: "Open assistant page", exact: true }).click();
+  const view = page.locator("#assistant-content");
+  for (const host of [block, view]) {
+    await expect(host.getByRole("button", { name: "Send to prompt-project", exact: true, includeHidden: true })).toHaveAccessibleDescription(draft);
+    await expect(host.getByRole("button", { name: "Send to another-project", exact: true, includeHidden: true })).toHaveAccessibleDescription(secondDraft);
+  }
+  const ids = await page.locator(".focus-draft [id]").evaluateAll(elements => elements.map(el => ({ id: el.id, count: document.querySelectorAll(`[id="${el.id}"]`).length })));
+  expect(ids).toHaveLength(12); // three ids per editor, two cards in both hosts
+  expect(ids.every(({ count }) => count === 1)).toBe(true);
+  const send = view.getByRole("button", { name: "Send to another-project", exact: true });
+  await send.focus();
+  const saved = await updateReason(page, "Updated order explanation");
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-focus-cache")!).revision)).toBe(saved.revision);
+  await expect(view.locator("summary .focus-title").first()).toHaveText("Updated order explanation");
+  await expect(send).toBeFocused();
+  await expect(send).toHaveAccessibleDescription(secondDraft);
+  expect(sends).toEqual([]);
+  await page.keyboard.press("Enter");
+  await expect.poll(() => sends).toEqual([{ session: "mock:another-project", text: secondDraft, ensureSubmitted: true }]);
+  await expect(view.locator('.focus-next > li').last().locator('[role="status"]')).toContainText("✓ sent to another-project");
+});
 
 test("two-line reply card discloses its editor and keeps open last", async ({ page }) => {
   await seed(page);
@@ -117,6 +160,7 @@ for (const width of [1440, 1280, 390]) test(`triage ${width}: exact draft, reaso
   await expect(row.locator(".focus-card-body")).toContainText("Ship the focus assistant");
   await row.getByRole("button", { name: "Send to prompt-project", exact: true }).click();
   await expect(row.locator('[role="status"]')).toContainText("✓ sent to prompt-project");
+  await capture(page, `sent-${width}`, info);
   await expect(row.locator(".focus-caption")).toHaveText("message to prompt-project · typed into its terminal and submitted");
   await expect(row.locator(".focus-draft > div")).toHaveCSS("font-size", "13px");
   await expect(row.locator(".focus-draft")).not.toContainText("will be typed");
@@ -130,7 +174,7 @@ for (const width of [1440, 1280, 390]) test(`triage ${width}: exact draft, reaso
   expect(sends).toHaveLength(1);
 });
 
-for (const lastLine of ["", "Earlier output: " + "x".repeat(170) + " <terminal> Continue?"]) test(`suggest captions handle ${lastLine ? "long untrusted" : "empty"} last lines and long target names`, async ({ page }) => {
+for (const lastLine of ["", "Earlier output: " + "x".repeat(170) + " <terminal> Continue?"]) test(`suggest captions handle ${lastLine ? "long untrusted" : "empty"} last lines and long target names`, async ({ page }, info) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await seed(page);
   const name = "continuation-worker-with-a-very-long-name";
@@ -151,6 +195,10 @@ for (const lastLine of ["", "Earlier output: " + "x".repeat(170) + " <terminal> 
   const buttonBounds = await send.boundingBox();
   expect(buttonBounds!.x + buttonBounds!.width).toBeLessThanOrEqual(bounds!.x + bounds!.width);
   expect(buttonBounds!.height).toBeGreaterThanOrEqual(44);
+  expect(await send.evaluate(el => { const range = document.createRange(); range.selectNode(el.firstChild!); return range.getClientRects().length; }), "a >24-character session name wraps instead of clipping").toBeGreaterThan(1);
+  expect(await send.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await send.scrollIntoViewIfNeeded();
+  await capture(page, `send-long-name-${lastLine ? "long" : "empty"}`, info);
   expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
   await expect(row.locator(".focus-caption")).toContainText(`message to ${name} ·`);
   if (lastLine) {
@@ -161,7 +209,7 @@ for (const lastLine of ["", "Earlier output: " + "x".repeat(170) + " <terminal> 
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
 });
 
-for (const outcome of ["not_delivered", "pasted_not_submitted"] as const) test(`suggest sending and ${outcome} feedback stay beside the exact draft`, async ({ page }) => {
+for (const outcome of ["not_delivered", "pasted_not_submitted"] as const) test(`suggest sending and ${outcome} feedback stay beside the exact draft`, async ({ page }, info) => {
   await seed(page);
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
@@ -179,6 +227,7 @@ for (const outcome of ["not_delivered", "pasted_not_submitted"] as const) test(`
     await expect(send).toBeDisabled();
     await expect(send).toHaveText("sending…");
     await expect(row.locator('[role="status"]')).toHaveCount(0);
+    await capture(page, "sending", info);
     release();
     await expect(row.locator('[role="status"]')).toHaveText(outcome === "not_delivered" ? "not sent · try again" : "pasted, not submitted · check the session");
     await expect(row.locator(".focus-draft textarea")).toHaveValue(draft);
@@ -190,6 +239,7 @@ for (const outcome of ["not_delivered", "pasted_not_submitted"] as const) test(`
       await expect(send).toHaveText("retry send to prompt-project ›");
       await expect(send).toHaveAccessibleDescription(draft);
     } else await expect(send).toHaveCount(0);
+    await capture(page, outcome === "not_delivered" ? "retry" : "check", info);
     expect(sends).toBe(1);
   } finally { release(); }
 });

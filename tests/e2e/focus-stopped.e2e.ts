@@ -2,7 +2,11 @@ import { expandFocusCard } from "./focus-card-helpers";
 import { test, expect, type Page } from "@playwright/test";
 import { FOCUS_MOBILE_EXPANDED_KEY } from "../../public/focus-mobile-disclosure";
 // Row-content checks use an explicitly expanded dashboard; disclosure defaults have their own coverage.
-test.beforeEach(async ({ page }) => { await page.addInitScript(key => localStorage.setItem(key, "1"), FOCUS_MOBILE_EXPANDED_KEY); });
+test.beforeEach(async ({ page }) => {
+  const now = new Date(); now.setHours(12, 0, 0, 0);
+  await page.clock.setFixedTime(now);
+  await page.addInitScript(key => localStorage.setItem(key, "1"), FOCUS_MOBILE_EXPANDED_KEY);
+});
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { startTestServer, openSessionFromUi, toggleSessionGridFromUi, type TestServer } from "./helpers";
@@ -12,8 +16,9 @@ test.afterAll(async () => { await server?.close(); });
 test.afterEach(async ({ page }) => { await page.unrouteAll({ behavior: "wait" }); });
 
 async function runtimeFixture(page: Page, initial: string, target = "test-project", pinned = false) {
+  let now = await page.evaluate(() => Date.now());
   let runtime = { state: initial, authority: initial === "done" ? "program" : "fallback", source: initial === "done" ? "program-status" : "screen-fallback", freshness: "fresh", stale: false,
-    changedAt: new Date().toISOString(), stoppedAt: new Date(Date.now() - 12 * 60_000).toISOString(),
+    changedAt: new Date(now).toISOString(), stoppedAt: new Date(now - 12 * 60_000).toISOString(),
     transitionSequence: 5, unseen: true, stoppedSequence: initial === "output" ? 0 : 5, acknowledgedSequence: 0 };
   const acknowledgements: { sessionId: string; transitionSequence: number }[] = [];
   const ids = new Map<string, string>();
@@ -38,7 +43,7 @@ async function runtimeFixture(page: Page, initial: string, target = "test-projec
     runtime = { ...runtime, unseen: false, acknowledgedSequence: body.transitionSequence };
     await route.fulfill({ json: { ok: true, runtimeState: runtime } });
   });
-  return { acknowledgements, ids, stopTime: runtime.stoppedAt, review: () => { runtime = { ...runtime, unseen: false, acknowledgedSequence: runtime.transitionSequence }; }, metadata: () => { runtime = { ...runtime, unseen: true, transitionSequence: runtime.transitionSequence + 1 }; }, replace: () => { replacementId = "e762d0b1-6d2b-4e37-9168-f2841234abce"; }, stop: (state = "done") => { runtime = { ...runtime, state, unseen: true, transitionSequence: runtime.transitionSequence + 1, stoppedSequence: runtime.transitionSequence + 1, stoppedAt: new Date().toISOString() }; } };
+  return { acknowledgements, ids, stopTime: runtime.stoppedAt, review: () => { runtime = { ...runtime, unseen: false, acknowledgedSequence: runtime.transitionSequence }; }, metadata: () => { runtime = { ...runtime, unseen: true, transitionSequence: runtime.transitionSequence + 1 }; }, replace: () => { replacementId = "e762d0b1-6d2b-4e37-9168-f2841234abce"; }, stop: (state = "done") => { runtime = { ...runtime, state, unseen: true, transitionSequence: runtime.transitionSequence + 1, stoppedSequence: runtime.transitionSequence + 1, stoppedAt: new Date(++now).toISOString() }; } };
 }
 
 test("mark seen acknowledges a done card without opening its terminal", async ({ page }) => {

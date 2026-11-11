@@ -87,6 +87,7 @@ export function createAssistantView(deps: {
   let dashboardAttention = false;
   let desktopAttentionKeys: Set<string> | undefined;
   let mobileOverCap = false;
+  let mobileDefaultPending = true;
   let mobileAttention = false;
   const pageNextCap = () => showAllNext ? Infinity : 5;
   let wasEnabled = false;
@@ -703,7 +704,7 @@ export function createAssistantView(deps: {
     replace("assistant-content", !enabled ? "" : `<div class="focus-header">${attn || `<span title="${escAttr(info)}"${catching ? ' class="focus-spin"' : ""}>${tone} ${esc(info)}</span>`}${sessionNotice}<small>${esc(orderLabel())}</small><span class="focus-header-actions"><button type="button" class="focus-talk" data-focus-action="talk" data-focus-key="action:talk" aria-label="Talk to assistant"${terminalUnavailable() ? ` title="${escAttr(terminalUnavailable()!)}"` : ""}${!terminalTarget() ? " disabled" : ""}>talk<span aria-hidden="true"> ›</span></button>${button("settings", "settings", "Assistant settings")}</span></div>${notes}<h2>next <small>${esc(nextSummary)}</small></h2>${nextHtml("p", pageNextCap(), showAllNext)}${moreNext}${takeHtml()}${current.intentions.length && next.length ? `<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details>` : ""}${current.intentions.length ? `<h2>today <small>${summary}</small></h2>${todayHtml(open)}` : ""}${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>${doneHtml}${yesterday}`);
     // Initial session/peer lists can arrive separately. Latch the oversized default
     // from rendered content; a stored/in-memory user preference still wins.
-    if (!isDesktop() && !mobileOverCap && dashboardExpanded && answered && deps.sessionsAvailable() && block?.clientHeight) {
+    if (!isDesktop() && mobileDefaultPending && !mobileOverCap && dashboardExpanded && answered && deps.sessionsAvailable() && block?.clientHeight) {
       mobileOverCap = block.scrollHeight > innerHeight * .6;
       if (mobileOverCap && !actionCards && state !== "needs you" && dashboardExpanded && !mobileDisclosure.expanded(false)) { render(); return; }
     }
@@ -951,6 +952,7 @@ export function createAssistantView(deps: {
   window.addEventListener("blur", finishPointer);
   for (const id of ["dashboard-focus", "assistant-content", "sidebar-assistant"]) {
     const host = document.getElementById(id)!;
+    host.addEventListener("focusin", () => { if (id === "dashboard-focus") mobileDefaultPending = false; });
     host.addEventListener("input", event => {
       const field = event.target;
       if (!(field instanceof HTMLTextAreaElement) || !field.dataset.focusReply || field.readOnly) return;
@@ -985,6 +987,7 @@ export function createAssistantView(deps: {
       field.dispatchEvent(new Event("input", { bubbles: true }));
     });
     host.addEventListener("click", event => {
+      if (id === "dashboard-focus") mobileDefaultPending = false;
       const target = (event.target as HTMLElement).closest<HTMLButtonElement>("button");
       if (!target) return;
       const action = target.dataset.focusAction;

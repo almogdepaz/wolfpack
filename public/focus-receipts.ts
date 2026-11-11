@@ -6,6 +6,7 @@ const STORAGE_KEY = "wolfpack-focus-send-receipts-v1";
 const RECEIPT_CAP = 200;
 const LABEL_CAP = 1000;
 const SETTLED_RETENTION_MS = 7 * 86400_000;
+const SENDING_TIMEOUT_MS = 2 * 60_000;
 function validReceipt(value: unknown): value is FocusSendReceipt {
   if (!value || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
@@ -52,7 +53,8 @@ export function createFocusReceipts(storage: Pick<Storage, "getItem" | "setItem"
       return new Map<string, FocusSendReceipt>(entries.filter(([, value]) => value.state === "sending" || now() - Date.parse(value.at) <= SETTLED_RETENTION_MS));
     } catch { throw new Error("Suggestion receipts unavailable; check the session before sending."); }
   }
-  const settled = (key: string, value: FocusSendReceipt): FocusSendReceipt => value.state === "sending" && !pendingHere.has(key)
+  const settled = (key: string, value: FocusSendReceipt): FocusSendReceipt => value.state === "sending"
+    && (!pendingHere.has(key) || now() - Date.parse(value.at) >= SENDING_TIMEOUT_MS)
     ? { ...value, state: "check", label: "delivery unconfirmed · check the session" } : value;
   return {
     get(key: string): FocusSendReceipt | undefined {

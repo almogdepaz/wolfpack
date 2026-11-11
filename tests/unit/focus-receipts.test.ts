@@ -49,11 +49,32 @@ test("R3: stable receipt identity survives equivalent ref and episode serializat
   expect(createFocusReceipts(data).get(original)).toEqual(receipt);
 });
 test("a reload during an in-flight send fences uncertain delivery instead of inviting another send", () => {
-  const data = storage(); const first = createFocusReceipts(data); const key = focusSuggestionKey(row);
+  const data = storage(); const first = createFocusReceipts(data, () => Date.parse(receipt.at)); const key = focusSuggestionKey(row);
   first.put(key, { ...receipt, state: "sending", label: "sending" });
   expect(first.get(key)?.state).toBe("sending");
   expect(createFocusReceipts(data).get(key)).toMatchObject({ state: "check", label: "delivery unconfirmed · check the session" });
 });
+test("an orphaned send becomes check at two minutes, including the current tab and episode fence", () => {
+  const data = storage(); const start = Date.parse(receipt.at);
+  let now = start;
+  const store = createFocusReceipts(data, () => now);
+  const key = focusSuggestionKey(row);
+  store.put(key, { ...receipt, state: "sending", label: "sending", text: row.suggestion });
+  now = start + 119_999;
+  expect(store.get(key)?.state).toBe("sending");
+  expect(store.forEpisode(focusReplyKey(row.ref, row.stoppedAt!))?.state).toBe("sending");
+  now++;
+  const uncertain = { state: "check", label: "delivery unconfirmed · check the session", text: row.suggestion };
+  expect(store.get(key)).toMatchObject(uncertain);
+  expect(store.forEpisode(focusReplyKey(row.ref, row.stoppedAt!))).toMatchObject(uncertain);
+  expect(createFocusReceipts(data, () => now).get(key)).toMatchObject(uncertain);
+  now += 60_000;
+  expect(store.get(key)?.state).toBe("check");
+  // A late observed outcome may settle the fence, never replay the send.
+  store.put(key, { ...receipt, state: "sent", at: new Date(now).toISOString() });
+  expect(store.get(key)?.state).toBe("sent");
+});
+
 test("receipt writes fail closed on corrupt or unavailable storage", () => {
   expect(() => createFocusReceipts({ getItem: () => "{bad", setItem: () => {} }).get("x")).toThrow("receipts");
   const unavailable = createFocusReceipts({ getItem: () => null, setItem: () => { throw new Error("quota"); } });
