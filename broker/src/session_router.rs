@@ -126,12 +126,7 @@ impl SessionRouter {
 
 impl SessionRouter {
     fn list(&self, id: u64) -> ControlResponse {
-        let sessions = self
-            .registry
-            .list()
-            .iter()
-            .map(|s| s.info())
-            .collect();
+        let sessions = self.registry.list().iter().map(|s| s.info()).collect();
         ControlResponse::ok(id, ResponsePayload::ListSessions { sessions })
     }
 
@@ -247,13 +242,15 @@ impl SessionRouter {
         };
         let _permit = match self.registry.try_acquire_snapshot() {
             Some(permit) => permit,
-            None => return ControlResponse::err(
-                id,
-                ProtocolError {
-                    code: ErrorCode::InternalError,
-                    message: SNAPSHOT_CONCURRENCY_LIMIT_MESSAGE.into(),
-                },
-            ),
+            None => {
+                return ControlResponse::err(
+                    id,
+                    ProtocolError {
+                        code: ErrorCode::InternalError,
+                        message: SNAPSHOT_CONCURRENCY_LIMIT_MESSAGE.into(),
+                    },
+                )
+            }
         };
         match session.snapshot_terminal(p.scrollback_lines, p.target_cols) {
             Ok(snapshot) => ControlResponse::ok(id, ResponsePayload::Snapshot { snapshot }),
@@ -310,7 +307,10 @@ pub(crate) fn validate_snapshot_target_cols(target_cols: Option<u16>) -> Result<
 fn started_event_fits(p: &CreateSessionParams) -> bool {
     let session = SessionInfo {
         id: Uuid::nil(),
-        name: p.name.clone().unwrap_or_else(|| format!("session-{}", u64::MAX)),
+        name: p
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("session-{}", u64::MAX)),
         cwd: p.cwd.clone(),
         command: p.command.clone(),
         env: p.env.clone(),
@@ -435,7 +435,10 @@ mod tests {
         let resp = router.handle(req(1, methods::HELLO, json!({})));
         assert_eq!(resp.status, Status::Ok);
         match resp.payload.expect("payload") {
-            ResponsePayload::Hello { protocol_version, broker_version } => {
+            ResponsePayload::Hello {
+                protocol_version,
+                broker_version,
+            } => {
                 assert_eq!(protocol_version, PROTOCOL_VERSION);
                 assert_eq!(broker_version, env!("CARGO_PKG_VERSION"));
             }
@@ -790,7 +793,10 @@ mod tests {
             json!({ "session_id": Uuid::nil(), "target_cols": 301 }),
         ));
         assert_eq!(invalid.status, Status::Error);
-        assert_eq!(invalid.error.expect("error").code, ErrorCode::InvalidRequest);
+        assert_eq!(
+            invalid.error.expect("error").code,
+            ErrorCode::InvalidRequest
+        );
 
         let unknown = router.handle(req(
             2,
@@ -798,7 +804,10 @@ mod tests {
             json!({ "session_id": Uuid::nil() }),
         ));
         assert_eq!(unknown.status, Status::Error);
-        assert_eq!(unknown.error.expect("error").code, ErrorCode::UnknownSession);
+        assert_eq!(
+            unknown.error.expect("error").code,
+            ErrorCode::UnknownSession
+        );
 
         drop(permits);
     }

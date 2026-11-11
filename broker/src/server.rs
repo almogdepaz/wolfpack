@@ -6,17 +6,19 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{broadcast, mpsc, oneshot, watch, OwnedSemaphorePermit, Semaphore, SemaphorePermit};
+use tokio::sync::{
+    broadcast, mpsc, oneshot, watch, OwnedSemaphorePermit, Semaphore, SemaphorePermit,
+};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
+use crate::ansi_render::render_snapshot_ansi_budgeted;
+use crate::base64;
 use crate::codec::{
     read_frame_async, write_frame_async, CodecError, Frame, InputFrame, OutputFrame,
     MAX_INPUT_BINARY_PAYLOAD,
 };
-use crate::ansi_render::render_snapshot_ansi_budgeted;
-use crate::base64;
 use crate::output_bus::Subscription;
 use crate::protocol::{
     methods, ControlRequest, ControlResponse, ErrorCode, Event, ProtocolError, ResponsePayload,
@@ -87,7 +89,8 @@ struct ConnectionInput {
 impl ConnectionInput {
     fn new() -> Self {
         Self {
-            pending: HashMap::new(), tasks: JoinSet::new(),
+            pending: HashMap::new(),
+            tasks: JoinSet::new(),
             bytes: Arc::new(Semaphore::new(INPUT_QUEUE_MAX_BYTES)),
             cancelled: Arc::new(AtomicBool::new(false)),
         }
@@ -99,9 +102,17 @@ impl ConnectionInput {
             return true;
         };
         let bytes = input.data.len().max(1) as u32;
-        let Ok(connection_bytes) = self.bytes.clone().try_acquire_many_owned(bytes) else { return false; };
-        let Ok(global_bytes) = INPUT_BYTES.try_acquire_many(bytes) else { return false; };
-        let queued = QueuedInput { data: input.data, _connection_bytes: connection_bytes, _global_bytes: global_bytes };
+        let Ok(connection_bytes) = self.bytes.clone().try_acquire_many_owned(bytes) else {
+            return false;
+        };
+        let Ok(global_bytes) = INPUT_BYTES.try_acquire_many(bytes) else {
+            return false;
+        };
+        let queued = QueuedInput {
+            data: input.data,
+            _connection_bytes: connection_bytes,
+            _global_bytes: global_bytes,
+        };
         if let Some(pending) = self.pending.get_mut(&input.session_id) {
             // Stdin is a byte stream: append to the queued tail while it stays
             // within one input payload, so bursts of small frames are bounded
@@ -112,32 +123,50 @@ impl ConnectionInput {
                     return true;
                 }
             }
-            if pending.len() >= INPUT_QUEUE_CAPACITY { return false; }
+            if pending.len() >= INPUT_QUEUE_CAPACITY {
+                return false;
+            }
             pending.push_back(queued);
         } else {
-            let Ok(worker) = INPUT_WORKERS.try_acquire() else { return false; };
+            let Ok(worker) = INPUT_WORKERS.try_acquire() else {
+                return false;
+            };
             self.pending.insert(input.session_id, VecDeque::new());
             self.start(session, queued, worker);
         }
         true
     }
 
-    fn start(&mut self, session: Arc<Session>, input: QueuedInput, worker: SemaphorePermit<'static>) {
+    fn start(
+        &mut self,
+        session: Arc<Session>,
+        input: QueuedInput,
+        worker: SemaphorePermit<'static>,
+    ) {
         let cancelled = self.cancelled.clone();
         self.tasks.spawn_blocking(move || {
             let session_id = session.id();
             if let Err(error) = session.write_stdin_cancellable(&input.data, &cancelled) {
-                if !cancelled.load(Ordering::Acquire) { warn!(%session_id, %error, "write_stdin failed"); }
+                if !cancelled.load(Ordering::Acquire) {
+                    warn!(%session_id, %error, "write_stdin failed");
+                }
             }
             drop(input);
             (session_id, worker)
         });
     }
 
-    fn completed(&mut self, result: Result<(Uuid, SemaphorePermit<'static>), tokio::task::JoinError>, registry: &Registry) -> bool {
+    fn completed(
+        &mut self,
+        result: Result<(Uuid, SemaphorePermit<'static>), tokio::task::JoinError>,
+        registry: &Registry,
+    ) -> bool {
         let (id, worker) = match result {
             Ok(result) => result,
-            Err(error) => { warn!(%error, "broker input task failed; closing connection"); return false; }
+            Err(error) => {
+                warn!(%error, "broker input task failed; closing connection");
+                return false;
+            }
         };
         if let Some(next) = self.pending.get_mut(&id).and_then(VecDeque::pop_front) {
             if let Some(session) = registry.get(id) {
@@ -154,7 +183,9 @@ impl ConnectionInput {
         self.pending.clear();
         // Aborting spawn_blocking is insufficient; join cooperative workers.
         while let Some(result) = self.tasks.join_next().await {
-            if let Err(error) = result { warn!(%error, "broker input task join error"); }
+            if let Err(error) = result {
+                warn!(%error, "broker input task join error");
+            }
         }
     }
 }
@@ -190,7 +221,10 @@ struct QueuedControl {
 
 impl QueuedControl {
     fn plain(frame: Frame) -> Self {
-        Self { frame, written: None }
+        Self {
+            frame,
+            written: None,
+        }
     }
 
     fn response_with_barrier(response: ControlResponse) -> (Self, oneshot::Receiver<()>) {
@@ -575,11 +609,18 @@ async fn handle_connection(
 /// Drain the per-connection event receiver into the writer queue. Logs
 /// and continues on lag (events are best-effort by protocol contract);
 /// returns when the broadcast channel closes or the writer queue dies.
-async fn forward_events(mut rx: broadcast::Receiver<Event>, writer_tx: mpsc::Sender<QueuedControl>) {
+async fn forward_events(
+    mut rx: broadcast::Receiver<Event>,
+    writer_tx: mpsc::Sender<QueuedControl>,
+) {
     loop {
         match rx.recv().await {
             Ok(ev) => {
-                if writer_tx.send(QueuedControl::plain(Frame::Event(ev))).await.is_err() {
+                if writer_tx
+                    .send(QueuedControl::plain(Frame::Event(ev)))
+                    .await
+                    .is_err()
+                {
                     return;
                 }
             }
@@ -676,11 +717,13 @@ async fn dispatch_frame(
     match frame {
         Frame::ControlRequest(req) => request_tx.send(req).await.is_ok(),
         Frame::InputBinary(inp) => {
-            if input.submit(inp, registry) { true } else {
+            if input.submit(inp, registry) {
+                true
+            } else {
                 warn!("broker input admission exhausted; closing connection without replay");
                 false
             }
-        },
+        }
         Frame::ControlResponse(_) | Frame::OutputBinary(_) | Frame::Event(_) => {
             // Spec: these flow broker→client only. Receiving one from a client
             // is a protocol violation. Match the symmetric TS-side behavior
@@ -737,7 +780,13 @@ async fn handle_control_requests(
 }
 
 fn invalid_request(id: u64, message: String) -> ControlResponse {
-    ControlResponse::err(id, ProtocolError { code: ErrorCode::InvalidRequest, message })
+    ControlResponse::err(
+        id,
+        ProtocolError {
+            code: ErrorCode::InvalidRequest,
+            message,
+        },
+    )
 }
 
 /// Atomically snapshot terminal state and establish the connection-local
@@ -756,14 +805,25 @@ async fn handle_snapshot_subscribe(
             return send_response(writer_tx, invalid_request(req.id, message)).await;
         }
     };
-    let cut = AttachCutRequest { id: req.id, method: methods::SNAPSHOT_SUBSCRIBE, params };
-    establish_attach_cut(cut, registry, writer_tx, output_tx, subs, |snapshot, sub| {
-        Ok(ResponsePayload::SnapshotSubscribe {
-            snapshot,
-            current_seq: sub.current_seq,
-            replay_truncated: sub.replay_truncated,
-        })
-    })
+    let cut = AttachCutRequest {
+        id: req.id,
+        method: methods::SNAPSHOT_SUBSCRIBE,
+        params,
+    };
+    establish_attach_cut(
+        cut,
+        registry,
+        writer_tx,
+        output_tx,
+        subs,
+        |snapshot, sub| {
+            Ok(ResponsePayload::SnapshotSubscribe {
+                snapshot,
+                current_seq: sub.current_seq,
+                replay_truncated: sub.replay_truncated,
+            })
+        },
+    )
     .await
 }
 
@@ -796,22 +856,29 @@ async fn handle_snapshot_subscribe_ansi(
         method: methods::SNAPSHOT_SUBSCRIBE_ANSI,
         params: params.snapshot,
     };
-    establish_attach_cut(cut, registry, writer_tx, output_tx, subs, move |snapshot, sub| {
-        let rendered = render_snapshot_ansi_budgeted(&snapshot, max_bytes);
-        check_ansi_prefill_size(rendered.bytes.len())?;
-        Ok(ResponsePayload::SnapshotSubscribeAnsi {
-            seq: snapshot.seq,
-            current_seq: sub.current_seq,
-            replay_truncated: sub.replay_truncated,
-            cols: snapshot.cols,
-            rows: snapshot.rows,
-            cursor: snapshot.cursor.clone(),
-            modes: snapshot.modes.clone(),
-            title: snapshot.title.clone(),
-            ansi_base64: base64::encode(&rendered.bytes),
-            trimmed_lines: rendered.trimmed_lines as u64,
-        })
-    })
+    establish_attach_cut(
+        cut,
+        registry,
+        writer_tx,
+        output_tx,
+        subs,
+        move |snapshot, sub| {
+            let rendered = render_snapshot_ansi_budgeted(&snapshot, max_bytes);
+            check_ansi_prefill_size(rendered.bytes.len())?;
+            Ok(ResponsePayload::SnapshotSubscribeAnsi {
+                seq: snapshot.seq,
+                current_seq: sub.current_seq,
+                replay_truncated: sub.replay_truncated,
+                cols: snapshot.cols,
+                rows: snapshot.rows,
+                cursor: snapshot.cursor.clone(),
+                modes: snapshot.modes.clone(),
+                title: snapshot.title.clone(),
+                ansi_base64: base64::encode(&rendered.bytes),
+                trimmed_lines: rendered.trimmed_lines as u64,
+            })
+        },
+    )
     .await
 }
 
@@ -831,7 +898,10 @@ fn check_ansi_prefill_size(len: usize) -> Result<(), ProtocolError> {
 }
 
 fn internal_error(message: String) -> ProtocolError {
-    ProtocolError { code: ErrorCode::InternalError, message }
+    ProtocolError {
+        code: ErrorCode::InternalError,
+        message,
+    }
 }
 
 struct AttachCutRequest {
@@ -857,7 +927,11 @@ async fn establish_attach_cut(
 ) -> bool {
     let AttachCutRequest { id, method, params } = cut;
     if let Err(message) = validate_snapshot_target_cols(params.target_cols) {
-        return send_response(writer_tx, invalid_request(id, format!("{method} params: {message}"))).await;
+        return send_response(
+            writer_tx,
+            invalid_request(id, format!("{method} params: {message}")),
+        )
+        .await;
     }
     if !subs.contains_key(&params.session_id) && subs.len() >= MAX_SUBSCRIPTIONS_PER_CONNECTION {
         return send_response(
@@ -1177,7 +1251,10 @@ fn chunk_to_frame(session_id: Uuid, chunk: OutputChunk) -> OutputFrame {
 }
 
 async fn send_response(writer_tx: &mpsc::Sender<QueuedControl>, resp: ControlResponse) -> bool {
-    writer_tx.send(QueuedControl::plain(Frame::ControlResponse(resp))).await.is_ok()
+    writer_tx
+        .send(QueuedControl::plain(Frame::ControlResponse(resp)))
+        .await
+        .is_ok()
 }
 
 async fn send_response_with_barrier(
@@ -1273,8 +1350,12 @@ mod tests {
         let mut subs = ConnectionSubscriptions(HashMap::new());
         subs.0.insert(Uuid::new_v4(), forwarder);
         drop(subs);
-        assert!(tokio::time::timeout(std::time::Duration::from_secs(5), cancelled)
-            .await.expect("forwarder leaked on owner cancellation").is_err());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), cancelled)
+                .await
+                .expect("forwarder leaked on owner cancellation")
+                .is_err()
+        );
     }
 
     async fn fragmented_frame_survives_input_completion(split: usize) {
@@ -1293,14 +1374,29 @@ mod tests {
         let ready = dir.path().join("ready");
         let (events, _) = broadcast::channel::<Event>(16);
         let registry = Arc::new(Registry::new(events.clone()));
-        let session = OwnedSession(registry.create(CreateOptions {
-            name: None, cwd: "/tmp".into(),
-            command: vec!["sh".into(), "-c".into(), format!("stty raw -echo; : > '{}'; exec sleep 30", ready.display())],
-            env: vec![], cols: 80, rows: 24,
-        }).expect("session"));
+        let session = OwnedSession(
+            registry
+                .create(CreateOptions {
+                    name: None,
+                    cwd: "/tmp".into(),
+                    command: vec![
+                        "sh".into(),
+                        "-c".into(),
+                        format!("stty raw -echo; : > '{}'; exec sleep 30", ready.display()),
+                    ],
+                    env: vec![],
+                    cols: 80,
+                    rows: 24,
+                })
+                .expect("session"),
+        );
         tokio::time::timeout(Duration::from_secs(5), async {
-            while !ready.exists() { tokio::time::sleep(Duration::from_millis(10)).await; }
-        }).await.expect("raw mode ready");
+            while !ready.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("raw mode ready");
 
         let (mut client, server) = UnixStream::pair().expect("pair");
         // Observe kernel buffering without reading any bytes or copying the
@@ -1310,44 +1406,98 @@ mod tests {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (completed_tx, mut completed_rx) = oneshot::channel();
         let task = tokio::spawn(handle_connection(
-            server, Arc::new(SessionRouter::new(registry.clone(), events.clone())),
-            registry, events.subscribe(), None, shutdown_rx,
-            slots.clone().acquire_owned().await.expect("permit"), Some(completed_tx),
+            server,
+            Arc::new(SessionRouter::new(registry.clone(), events.clone())),
+            registry,
+            events.subscribe(),
+            None,
+            shutdown_rx,
+            slots.clone().acquire_owned().await.expect("permit"),
+            Some(completed_tx),
         ));
-        write_frame_async(&mut client, &Frame::InputBinary(InputFrame {
-            session_id: session.0.id(), data: vec![b'x'; MAX_INPUT_BINARY_PAYLOAD as usize - 16],
-        })).await.expect("input");
-        let request = ControlRequest { id: 77, method: methods::HELLO.into(), params: json!({}) };
+        write_frame_async(
+            &mut client,
+            &Frame::InputBinary(InputFrame {
+                session_id: session.0.id(),
+                data: vec![b'x'; MAX_INPUT_BINARY_PAYLOAD as usize - 16],
+            }),
+        )
+        .await
+        .expect("input");
+        let request = ControlRequest {
+            id: 77,
+            method: methods::HELLO.into(),
+            params: json!({}),
+        };
         let mut encoded = Vec::new();
-        crate::codec::write_frame(&mut encoded, &Frame::ControlRequest(request)).expect("encode hello");
-        client.write_all(&encoded[..split]).await.expect("frame prefix");
+        crate::codec::write_frame(&mut encoded, &Frame::ControlRequest(request))
+            .expect("encode hello");
+        client
+            .write_all(&encoded[..split])
+            .await
+            .expect("frame prefix");
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 let mut unread: libc::c_int = 0;
                 // SAFETY: the duplicate stays open; ioctl writes one c_int.
-                assert_eq!(unsafe { libc::ioctl(observed_read.as_raw_fd(), libc::FIONREAD, &mut unread) }, 0);
-                if unread == 0 { break; }
+                assert_eq!(
+                    unsafe { libc::ioctl(observed_read.as_raw_fd(), libc::FIONREAD, &mut unread) },
+                    0
+                );
+                if unread == 0 {
+                    break;
+                }
                 tokio::task::yield_now().await;
             }
-        }).await.expect("server did not consume partial frame");
-        assert!(matches!(completed_rx.try_recv(), Err(oneshot::error::TryRecvError::Empty)), "input completed before the partial read");
+        })
+        .await
+        .expect("server did not consume partial frame");
+        assert!(
+            matches!(
+                completed_rx.try_recv(),
+                Err(oneshot::error::TryRecvError::Empty)
+            ),
+            "input completed before the partial read"
+        );
         // Child exit lets the real input job finish. The bounded test-only
         // oneshot confirms the actual scheduler completion branch has run.
         session.0.kill(libc::SIGKILL).expect("release input write");
-        tokio::time::timeout(Duration::from_secs(2), completed_rx).await.expect("input completion timed out").expect("completion branch missing");
-        client.write_all(&encoded[split..]).await.expect("frame suffix");
+        tokio::time::timeout(Duration::from_secs(2), completed_rx)
+            .await
+            .expect("input completion timed out")
+            .expect("completion branch missing");
+        client
+            .write_all(&encoded[split..])
+            .await
+            .expect("frame suffix");
         let response = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 match read_frame_async(&mut client).await {
-                    Ok(Frame::ControlResponse(response)) if response.id == 77 => return Ok(response),
+                    Ok(Frame::ControlResponse(response)) if response.id == 77 => {
+                        return Ok(response)
+                    }
                     Ok(Frame::Event(_)) => continue,
-                    other => return Err(format!("unexpected frame after input completion: {other:?}")),
+                    other => {
+                        return Err(format!(
+                            "unexpected frame after input completion: {other:?}"
+                        ))
+                    }
                 }
             }
-        }).await;
+        })
+        .await;
         let _ = shutdown_tx.send(true);
-        tokio::time::timeout(Duration::from_secs(2), task).await.expect("connection teardown").expect("connection task");
-        assert_eq!(response.expect("hello timed out after fragmented read").expect("partial frame lost").status, Status::Ok);
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("connection teardown")
+            .expect("connection task");
+        assert_eq!(
+            response
+                .expect("hello timed out after fragmented read")
+                .expect("partial frame lost")
+                .status,
+            Status::Ok
+        );
         assert_eq!(slots.available_permits(), 1);
     }
 
@@ -1366,17 +1516,35 @@ mod tests {
         use std::time::Duration;
         let (events, _) = broadcast::channel::<Event>(16);
         let registry = Arc::new(Registry::new(events.clone()));
-        let session = registry.create(CreateOptions {
-            name: None, cwd: "/tmp".into(),
-            command: vec!["sh".into(), "-c".into(), "stty raw -echo; echo READY; exec sleep 30".into()],
-            env: vec![], cols: 80, rows: 24,
-        }).expect("session");
+        let session = registry
+            .create(CreateOptions {
+                name: None,
+                cwd: "/tmp".into(),
+                command: vec![
+                    "sh".into(),
+                    "-c".into(),
+                    "stty raw -echo; echo READY; exec sleep 30".into(),
+                ],
+                env: vec![],
+                cols: 80,
+                rows: 24,
+            })
+            .expect("session");
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
             let snapshot = session.snapshot_terminal(None, None).expect("snapshot");
-            let text: String = snapshot.visible_screen.iter().flat_map(|line| line.cells.iter().map(|cell| cell.ch.as_ref())).collect();
-            if text.contains("READY") { break; }
-            assert!(tokio::time::Instant::now() < deadline, "raw-mode marker missing");
+            let text: String = snapshot
+                .visible_screen
+                .iter()
+                .flat_map(|line| line.cells.iter().map(|cell| cell.ch.as_ref()))
+                .collect();
+            if text.contains("READY") {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "raw-mode marker missing"
+            );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         let permits = Arc::new(Semaphore::new(2));
@@ -1387,27 +1555,48 @@ mod tests {
         for _ in 0..2 {
             let (mut client, server) = UnixStream::pair().expect("pair");
             tasks.push(tokio::spawn(handle_connection(
-                server, Arc::new(SessionRouter::new(registry.clone(), events.clone())),
-                registry.clone(), events.subscribe(), None, shutdown_rx.clone(),
-                permits.clone().acquire_owned().await.expect("permit"), None,
+                server,
+                Arc::new(SessionRouter::new(registry.clone(), events.clone())),
+                registry.clone(),
+                events.subscribe(),
+                None,
+                shutdown_rx.clone(),
+                permits.clone().acquire_owned().await.expect("permit"),
+                None,
             )));
-            write_frame_async(&mut client, &Frame::InputBinary(InputFrame {
-                session_id: session.id(), data: vec![b'x'; MAX_INPUT_BINARY_PAYLOAD as usize - 16],
-            })).await.expect("blocked input");
+            write_frame_async(
+                &mut client,
+                &Frame::InputBinary(InputFrame {
+                    session_id: session.id(),
+                    data: vec![b'x'; MAX_INPUT_BINARY_PAYLOAD as usize - 16],
+                }),
+            )
+            .await
+            .expect("blocked input");
             tokio::time::sleep(Duration::from_millis(100)).await;
             clients.push(client);
         }
         assert_eq!(permits.available_permits(), 0);
         drop(clients.pop()); // cancelled mutex waiter
-        let waiter_released = tokio::time::timeout(Duration::from_secs(2), &mut tasks[1]).await.is_ok();
+        let waiter_released = tokio::time::timeout(Duration::from_secs(2), &mut tasks[1])
+            .await
+            .is_ok();
         shutdown_tx.send(true).expect("shutdown"); // cancelled PTY capacity waiter
-        let writer_released = tokio::time::timeout(Duration::from_secs(2), &mut tasks[0]).await.is_ok();
+        let writer_released = tokio::time::timeout(Duration::from_secs(2), &mut tasks[0])
+            .await
+            .is_ok();
         let alive = session.info().alive;
         // Always release the owned child, including on the pre-fix timeout.
         let _ = session.kill(libc::SIGKILL);
         let _ = session.wait_for_exit(Duration::from_secs(5));
-        assert!(waiter_released, "disconnected mutex waiter retained connection permit");
-        assert!(writer_released, "shutdown retained blocked input connection permit");
+        assert!(
+            waiter_released,
+            "disconnected mutex waiter retained connection permit"
+        );
+        assert!(
+            writer_released,
+            "shutdown retained blocked input connection permit"
+        );
         assert!(alive, "connection teardown killed durable session");
         assert_eq!(permits.available_permits(), 2);
     }
@@ -1419,39 +1608,74 @@ mod tests {
         let ready = dir.path().join("ready");
         let (events, _) = broadcast::channel::<Event>(16);
         let registry = Arc::new(Registry::new(events.clone()));
-        let session = registry.create(CreateOptions {
-            name: None, cwd: "/tmp".into(),
-            command: vec!["sh".into(), "-c".into(), format!("stty raw -echo; : > '{}'; exec sleep 30", ready.display())],
-            env: vec![], cols: 80, rows: 24,
-        }).expect("session");
+        let session = registry
+            .create(CreateOptions {
+                name: None,
+                cwd: "/tmp".into(),
+                command: vec![
+                    "sh".into(),
+                    "-c".into(),
+                    format!("stty raw -echo; : > '{}'; exec sleep 30", ready.display()),
+                ],
+                env: vec![],
+                cols: 80,
+                rows: 24,
+            })
+            .expect("session");
         tokio::time::timeout(Duration::from_secs(5), async {
-            while !ready.exists() { tokio::time::sleep(Duration::from_millis(10)).await; }
-        }).await.expect("raw mode ready");
+            while !ready.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("raw mode ready");
         let permits = Arc::new(Semaphore::new(1));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (mut client, server) = UnixStream::pair().expect("pair");
         let task = tokio::spawn(handle_connection(
-            server, Arc::new(SessionRouter::new(registry.clone(), events.clone())),
-            registry, events.subscribe(), None, shutdown_rx,
-            permits.clone().acquire_owned().await.expect("permit"), None,
+            server,
+            Arc::new(SessionRouter::new(registry.clone(), events.clone())),
+            registry,
+            events.subscribe(),
+            None,
+            shutdown_rx,
+            permits.clone().acquire_owned().await.expect("permit"),
+            None,
         ));
-        write_frame_async(&mut client, &Frame::InputBinary(InputFrame {
-            session_id: session.id(), data: vec![b'x'; MAX_INPUT_BINARY_PAYLOAD as usize - 16],
-        })).await.expect("blocked input");
+        write_frame_async(
+            &mut client,
+            &Frame::InputBinary(InputFrame {
+                session_id: session.id(),
+                data: vec![b'x'; MAX_INPUT_BINARY_PAYLOAD as usize - 16],
+            }),
+        )
+        .await
+        .expect("blocked input");
         // Small frames coalesce; saturation is byte-bounded, so queue full
         // payloads until the per-connection budget is exhausted.
         // The broker may close before the last write lands (EPIPE).
         for _ in 0..=INPUT_QUEUE_CAPACITY {
-            if write_frame_async(&mut client, &Frame::InputBinary(InputFrame {
-                session_id: session.id(), data: vec![b'y'; MAX_INPUT_BINARY_PAYLOAD as usize - 16],
-            })).await.is_err() { break; }
+            if write_frame_async(
+                &mut client,
+                &Frame::InputBinary(InputFrame {
+                    session_id: session.id(),
+                    data: vec![b'y'; MAX_INPUT_BINARY_PAYLOAD as usize - 16],
+                }),
+            )
+            .await
+            .is_err()
+            {
+                break;
+            }
         }
         let reclaimed = tokio::time::timeout(Duration::from_secs(2), task).await;
         let alive = session.info().alive;
         let _ = session.kill(libc::SIGKILL);
         let _ = session.wait_for_exit(Duration::from_secs(5));
         drop(shutdown_tx);
-        reclaimed.expect("input overload must promptly close, not stall the frame reader").expect("connection task");
+        reclaimed
+            .expect("input overload must promptly close, not stall the frame reader")
+            .expect("connection task");
         assert_eq!(permits.available_permits(), 1);
         assert!(alive, "overload killed durable session");
     }
@@ -1462,27 +1686,61 @@ mod tests {
         let registry = Registry::new(events);
         let dir = tempfile::tempdir().expect("tempdir");
         let ready = dir.path().join("ready");
-        let session = registry.create(CreateOptions {
-            name: None, cwd: "/tmp".into(),
-            command: vec!["sh".into(), "-c".into(), format!("stty raw -echo; : > '{}'; exec sleep 30", ready.display())],
-            env: vec![], cols: 80, rows: 24,
-        }).expect("session");
+        let session = registry
+            .create(CreateOptions {
+                name: None,
+                cwd: "/tmp".into(),
+                command: vec![
+                    "sh".into(),
+                    "-c".into(),
+                    format!("stty raw -echo; : > '{}'; exec sleep 30", ready.display()),
+                ],
+                env: vec![],
+                cols: 80,
+                rows: 24,
+            })
+            .expect("session");
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while !ready.exists() { tokio::time::sleep(std::time::Duration::from_millis(10)).await; }
-        }).await.expect("raw mode ready");
+            while !ready.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("raw mode ready");
         let mut input = ConnectionInput::new();
         let bytes = vec![b'x'; MAX_INPUT_BINARY_PAYLOAD as usize - 16];
-        assert!(input.submit(InputFrame { session_id: session.id(), data: bytes.clone() }, &registry));
+        assert!(input.submit(
+            InputFrame {
+                session_id: session.id(),
+                data: bytes.clone()
+            },
+            &registry
+        ));
         assert!(input.bytes.available_permits() <= INPUT_QUEUE_MAX_BYTES - bytes.len());
-        assert!(input.submit(InputFrame { session_id: session.id(), data: b"queued".to_vec() }, &registry));
+        assert!(input.submit(
+            InputFrame {
+                session_id: session.id(),
+                data: b"queued".to_vec()
+            },
+            &registry
+        ));
         assert_eq!(input.pending[&session.id()].len(), 1);
         // A burst of small frames behind an in-flight write coalesces into the
         // queued tail instead of consuming one lane slot per frame.
         for _ in 0..INPUT_QUEUE_CAPACITY * 4 {
-            assert!(input.submit(InputFrame { session_id: session.id(), data: b"k".to_vec() }, &registry));
+            assert!(input.submit(
+                InputFrame {
+                    session_id: session.id(),
+                    data: b"k".to_vec()
+                },
+                &registry
+            ));
         }
         assert_eq!(input.pending[&session.id()].len(), 1);
-        assert_eq!(input.pending[&session.id()][0].data.len(), b"queued".len() + INPUT_QUEUE_CAPACITY * 4);
+        assert_eq!(
+            input.pending[&session.id()][0].data.len(),
+            b"queued".len() + INPUT_QUEUE_CAPACITY * 4
+        );
         input.cancel().await;
         assert_eq!(input.bytes.available_permits(), INPUT_QUEUE_MAX_BYTES);
         assert!(input.pending.is_empty());
@@ -1501,32 +1759,74 @@ mod tests {
         let buffer_size: libc::c_int = 1024;
         // A control frame larger than the kernel buffer leaves the actual
         // socket writer inside write_all while the peer deliberately won't read.
-        assert_eq!(unsafe { libc::setsockopt(server.as_raw_fd(), libc::SOL_SOCKET, libc::SO_SNDBUF,
-            &buffer_size as *const _ as *const libc::c_void, std::mem::size_of_val(&buffer_size) as libc::socklen_t) }, 0);
+        assert_eq!(
+            unsafe {
+                libc::setsockopt(
+                    server.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_SNDBUF,
+                    &buffer_size as *const _ as *const libc::c_void,
+                    std::mem::size_of_val(&buffer_size) as libc::socklen_t,
+                )
+            },
+            0
+        );
         let permits = Arc::new(Semaphore::new(1));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let task = tokio::spawn(handle_connection(
-            server, Arc::new(SessionRouter::new(registry.clone(), events.clone())),
-            registry, event_rx, None, shutdown_rx,
-            permits.clone().acquire_owned().await.expect("permit"), None,
+            server,
+            Arc::new(SessionRouter::new(registry.clone(), events.clone())),
+            registry,
+            event_rx,
+            None,
+            shutdown_rx,
+            permits.clone().acquire_owned().await.expect("permit"),
+            None,
         ));
-        events.send(Event::SessionStarted { session: crate::protocol::SessionInfo {
-            id: Uuid::new_v4(), name: "slow-reader".into(), cwd: "/tmp".into(),
-            command: vec!["x".repeat(128 * 1024)], env: vec![], cols: 80, rows: 24,
-            pid: None, started_at_ms: 0, alive: true, exit_code: None, output_seq: None, program_status: None,
-        }}).expect("event");
-        tokio::time::timeout(Duration::from_secs(2), client.readable()).await.expect("writer never started").expect("readable");
+        events
+            .send(Event::SessionStarted {
+                session: crate::protocol::SessionInfo {
+                    id: Uuid::new_v4(),
+                    name: "slow-reader".into(),
+                    cwd: "/tmp".into(),
+                    command: vec!["x".repeat(128 * 1024)],
+                    env: vec![],
+                    cols: 80,
+                    rows: 24,
+                    pid: None,
+                    started_at_ms: 0,
+                    alive: true,
+                    exit_code: None,
+                    output_seq: None,
+                    program_status: None,
+                },
+            })
+            .expect("event");
+        tokio::time::timeout(Duration::from_secs(2), client.readable())
+            .await
+            .expect("writer never started")
+            .expect("readable");
         shutdown_tx.send(true).expect("shutdown");
-        tokio::time::timeout(Duration::from_secs(2), task).await.expect("blocked writer pinned connection").expect("connection task");
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("blocked writer pinned connection")
+            .expect("connection task");
         assert_eq!(permits.available_permits(), 1);
     }
 
     #[test]
     fn oversized_ansi_prefill_maps_to_prefill_too_large() {
         assert!(check_ansi_prefill_size(MAX_ANSI_PREFILL_BYTES as usize).is_ok());
-        let error = check_ansi_prefill_size(MAX_ANSI_PREFILL_BYTES as usize + 1).expect_err("over the limit");
+        let error = check_ansi_prefill_size(MAX_ANSI_PREFILL_BYTES as usize + 1)
+            .expect_err("over the limit");
         assert_eq!(error.code, ErrorCode::PrefillTooLarge);
-        assert!(error.message.contains(&(MAX_ANSI_PREFILL_BYTES as usize + 1).to_string()), "{}", error.message);
+        assert!(
+            error
+                .message
+                .contains(&(MAX_ANSI_PREFILL_BYTES as usize + 1).to_string()),
+            "{}",
+            error.message
+        );
     }
 
     #[tokio::test]
@@ -1794,7 +2094,9 @@ mod tests {
             .await
             .expect("queue output");
         control_tx
-            .send(QueuedControl::plain(Frame::ControlResponse(unknown_session(7, Uuid::nil()))))
+            .send(QueuedControl::plain(Frame::ControlResponse(
+                unknown_session(7, Uuid::nil()),
+            )))
             .await
             .expect("queue control response");
         drop(control_tx);
@@ -1827,7 +2129,9 @@ mod tests {
         let (output_tx, output_rx) = mpsc::channel(16);
         for id in 0..12 {
             control_tx
-                .send(QueuedControl::plain(Frame::ControlResponse(unknown_session(id, Uuid::nil()))))
+                .send(QueuedControl::plain(Frame::ControlResponse(
+                    unknown_session(id, Uuid::nil()),
+                )))
                 .await
                 .unwrap();
         }
@@ -1885,24 +2189,28 @@ mod tests {
         let (output_tx, output_rx) = mpsc::channel(16);
         for id in 0..8 {
             control_tx
-                .send(QueuedControl::plain(Frame::ControlResponse(unknown_session(id, Uuid::nil()))))
+                .send(QueuedControl::plain(Frame::ControlResponse(
+                    unknown_session(id, Uuid::nil()),
+                )))
                 .await
                 .expect("queue prior control");
         }
         let writer = tokio::spawn(connection_writer(write_half, control_rx, output_rx, 16, 16));
         let mut subscriptions = HashMap::new();
-        assert!(handle_snapshot_subscribe(
-            ControlRequest {
-                id: 99,
-                method: methods::SNAPSHOT_SUBSCRIBE.into(),
-                params: json!({ "session_id": session.id() }),
-            },
-            &registry,
-            &control_tx,
-            &output_tx,
-            &mut subscriptions,
-        )
-        .await);
+        assert!(
+            handle_snapshot_subscribe(
+                ControlRequest {
+                    id: 99,
+                    method: methods::SNAPSHOT_SUBSCRIBE.into(),
+                    params: json!({ "session_id": session.id() }),
+                },
+                &registry,
+                &control_tx,
+                &output_tx,
+                &mut subscriptions,
+            )
+            .await
+        );
         session.output_bus().publish(OutputChunk {
             seq: 2,
             data: Arc::new(b"live".to_vec()),
@@ -1915,13 +2223,24 @@ mod tests {
             ));
         }
         assert!(matches!(
-            read_frame_async(&mut client_stream).await.expect("read snapshot boundary"),
-            Frame::ControlResponse(ControlResponse { id: 99, payload: Some(ResponsePayload::SnapshotSubscribe { .. }), .. })
+            read_frame_async(&mut client_stream)
+                .await
+                .expect("read snapshot boundary"),
+            Frame::ControlResponse(ControlResponse {
+                id: 99,
+                payload: Some(ResponsePayload::SnapshotSubscribe { .. }),
+                ..
+            })
         ));
         let mut associated = Vec::new();
         while associated.len() < b"replaylive".len() {
-            match read_frame_async(&mut client_stream).await.expect("read associated output") {
-                Frame::OutputBinary(OutputFrame { session_id, data, .. }) if session_id == session.id() => {
+            match read_frame_async(&mut client_stream)
+                .await
+                .expect("read associated output")
+            {
+                Frame::OutputBinary(OutputFrame {
+                    session_id, data, ..
+                }) if session_id == session.id() => {
                     associated.extend_from_slice(&data);
                 }
                 frame => panic!("unexpected frame after snapshot boundary: {frame:?}"),
@@ -1943,25 +2262,40 @@ mod tests {
     async fn dropped_boundary_ack_cancels_waiting_forwarder_without_output() {
         let session_id = Uuid::new_v4();
         let bus = crate::output_bus::OutputBus::new(8, 8);
-        bus.publish(OutputChunk { seq: 1, data: Arc::new(b"replay".to_vec()) });
+        bus.publish(OutputChunk {
+            seq: 1,
+            data: Arc::new(b"replay".to_vec()),
+        });
         let sub = bus.subscribe(Some(0));
         let (output_tx, mut output_rx) = mpsc::channel(1);
         let (written, barrier) = oneshot::channel();
         drop(written);
         tokio::time::timeout(
             std::time::Duration::from_secs(1),
-            forward_after_response_written(barrier, session_id, sub.replay, sub.receiver, output_tx),
+            forward_after_response_written(
+                barrier,
+                session_id,
+                sub.replay,
+                sub.receiver,
+                output_tx,
+            ),
         )
         .await
         .expect("forwarder should stop when writer drops ack");
-        assert!(output_rx.try_recv().is_err(), "failed response must not release associated output");
+        assert!(
+            output_rx.try_recv().is_err(),
+            "failed response must not release associated output"
+        );
     }
 
     #[tokio::test]
     async fn pending_boundary_forwarder_is_abortable_for_replacement_or_shutdown() {
         let session_id = Uuid::new_v4();
         let bus = crate::output_bus::OutputBus::new(8, 8);
-        bus.publish(OutputChunk { seq: 1, data: Arc::new(b"replay".to_vec()) });
+        bus.publish(OutputChunk {
+            seq: 1,
+            data: Arc::new(b"replay".to_vec()),
+        });
         let sub = bus.subscribe(Some(0));
         let (output_tx, mut output_rx) = mpsc::channel(1);
         let (_written, barrier) = oneshot::channel();
@@ -1973,8 +2307,14 @@ mod tests {
             output_tx,
         ));
         forwarder.abort();
-        assert!(forwarder.await.expect_err("aborted forwarder").is_cancelled());
-        assert!(output_rx.try_recv().is_err(), "aborted boundary must not emit replay");
+        assert!(forwarder
+            .await
+            .expect_err("aborted forwarder")
+            .is_cancelled());
+        assert!(
+            output_rx.try_recv().is_err(),
+            "aborted boundary must not emit replay"
+        );
     }
 
     #[tokio::test]
@@ -2004,14 +2344,19 @@ mod tests {
 
         tokio::time::timeout(
             std::time::Duration::from_millis(100),
-            control_tx.send(QueuedControl::plain(Frame::ControlResponse(unknown_session(7, Uuid::nil())))),
+            control_tx.send(QueuedControl::plain(Frame::ControlResponse(
+                unknown_session(7, Uuid::nil()),
+            ))),
         )
         .await
         .expect("output saturated the writer queue and starved a control response")
         .expect("control queue closed");
         assert!(matches!(
             control_rx.recv().await,
-            Some(QueuedControl { frame: Frame::ControlResponse(ControlResponse { id: 7, .. }), .. })
+            Some(QueuedControl {
+                frame: Frame::ControlResponse(ControlResponse { id: 7, .. }),
+                ..
+            })
         ));
 
         forwarder.abort();

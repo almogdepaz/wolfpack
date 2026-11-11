@@ -80,8 +80,8 @@ fn cell_chars(line: &StyledLine, range: std::ops::Range<usize>) -> String {
 fn ansi_color(idx: u8) -> u32 {
     // Keep synchronized with broker/native/ghostty_vt_shim.c and src/terminal-theme.ts.
     const PALETTE: [u32; 16] = [
-        0x0a0a0a, 0xcc3333, 0x2f7d32, 0xc9a227, 0x4f8cff, 0xb66cff, 0x4cc9d8, 0xd8d8d8,
-        0x555555, 0xff6666, 0x4ade80, 0xffdd66, 0x93c5fd, 0xf0abfc, 0xa5f3fc, 0xffffff,
+        0x0a0a0a, 0xcc3333, 0x2f7d32, 0xc9a227, 0x4f8cff, 0xb66cff, 0x4cc9d8, 0xd8d8d8, 0x555555,
+        0xff6666, 0x4ade80, 0xffdd66, 0x93c5fd, 0xf0abfc, 0xa5f3fc, 0xffffff,
     ];
     PALETTE[idx as usize]
 }
