@@ -22,7 +22,7 @@ for (const reading of [false, true]) test(`QA-13: the sidebar name separates ${r
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
   await page.getByRole("button", { name: "Talk to assistant" }).click();
-  const tile = page.locator("#sidebar-assistant");
+  const tile = page.locator('#sidebar-assistant [data-focus-action="view"]');
   await expect(tile).toBeVisible();
   await expect(tile).toHaveAccessibleName(reading ? /^assistant\s*, reading next\s*: prompt-project question$/ : /^assistant\s*, \d+ next\s*: prompt-project question$/);
   // S3: punctuation is spoken-only, and the original small visual label remains.

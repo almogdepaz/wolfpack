@@ -17,12 +17,16 @@ async function sidebarOrder(page: Page) {
   expect(boxes.search.top).toBeGreaterThanOrEqual(boxes.tile.bottom);
   expect(boxes.filter.top).toBeGreaterThanOrEqual(boxes.search.bottom);
   expect(boxes.tile.width).toBeCloseTo(boxes.filter.width, 0);
-  await tile.focus();
+  const navigation = tile.locator('[data-focus-action="view"]');
+  await navigation.focus();
+  await page.keyboard.press("Tab");
+  await expect(tile.locator('[data-focus-action="toggle-dashboard"]')).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(page.locator("#sidebar-search")).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(page.locator("#sidebar-session-filter button").first()).toBeFocused();
-  await expect(tile.locator("button, input, canvas")).toHaveCount(0); // navigation only
+  await expect(tile.locator("button")).toHaveCount(2); // sibling navigation and disclosure, never nested controls
+  await expect(navigation.locator("button, input, canvas")).toHaveCount(0);
 }
 
 for (const width of [1440, 1280, 1279, 390]) test(`assistant banner leads session controls at ${width}`, async ({ page }, info) => {
@@ -41,7 +45,8 @@ for (const width of [1440, 1280, 1279, 390]) test(`assistant banner leads sessio
   expect(controls.y).toBeGreaterThanOrEqual(block.y + block.height);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).focus();
   await page.keyboard.press("Shift+Tab");
-  // Backwards from the first banner button reaches the header, not session status/filter/search.
+  // Disclosure precedes the banner content, not session status/filter/search.
+  await expect(page.locator('#dashboard-focus [data-focus-action="toggle-dashboard"]')).toBeFocused();
   expect(await page.evaluate(() => !!document.activeElement?.closest("#session-dashboard-controls"))).toBe(false);
   await page.screenshot({ path: info.outputPath(`banner-${width}-main.png`), fullPage: true });
   if (width !== 390) {

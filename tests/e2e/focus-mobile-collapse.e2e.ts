@@ -140,15 +140,15 @@ test("phone disclosure keeps its choice across reload, shows attention, and has 
   await page.getByRole("button", { name: /Collapse assistant/ }).tap();
   await page.setViewportSize({ width: 1280, height: 844 });
   await expect(page.locator("#dashboard-focus-details")).toBeVisible();
-  await expect(page.getByRole("button", { name: /Expand assistant|Collapse assistant/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Collapse assistant/ })).toHaveAttribute("aria-expanded", "true");
   await page.setViewportSize(phone);
   await expect(page.getByRole("button", { name: /Expand assistant/ })).toHaveAttribute("aria-expanded", "false");
 });
 
-test("quiet phones default collapsed; desktop keeps the full banner without a toggle", async ({ page }, info) => {
+test("quiet phones default collapsed; desktop defaults expanded with its own disclosure", async ({ page }, info) => {
   await realisticFocus(page, false); await ready(page);
   if (info.project.name === "desktop") {
-    await expect(page.getByRole("button", { name: /Expand assistant|Collapse assistant/ })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /Collapse assistant/ })).toHaveAttribute("aria-expanded", "true");
     await expect(page.locator("#dashboard-focus .focus-header")).toBeVisible();
     await expect(page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true })).toBeVisible();
     writeFileSync(info.outputPath("desktop-geometry.json"), JSON.stringify(await metrics(page), null, 2));

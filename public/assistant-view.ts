@@ -9,7 +9,7 @@ import { createFocusReceipts, focusSuggestionKey, type FocusSendReceipt } from "
 import type { AssistantTerminalTarget } from "./assistant-terminal";
 import { createDayNoteContent } from "./focus-day-note";
 import { showAppDialog } from "./app-dialog";
-import { createFocusMobileDisclosure } from "./focus-mobile-disclosure";
+import { createFocusMobileDisclosure, FOCUS_DESKTOP_EXPANDED_KEY } from "./focus-mobile-disclosure";
 import { isRequestTimeout } from "./fetch-timeout";
 import { isFocusHomeIdentity, type FocusHomeIdentity } from "../src/focus-home-contract";
 import { AGENT_CONTEXT_DOCUMENT_PATH, agentContextEnabled, extensionUnavailable, summarizeAgentContext } from "../src/focus-context";
@@ -79,7 +79,9 @@ export function createAssistantView(deps: {
   let busy = false;
   let opened = false;
   let showAllNext = false;
-  const dashboardDisclosure = createFocusMobileDisclosure();
+  const mobileDisclosure = createFocusMobileDisclosure();
+  const desktopDisclosure = createFocusMobileDisclosure(undefined, { key: FOCUS_DESKTOP_EXPANDED_KEY, defaultExpanded: true });
+  const dashboardDisclosure = () => isDesktop() ? desktopDisclosure : mobileDisclosure;
   let dashboardAttention = false;
   const pageNextCap = () => showAllNext ? Infinity : 5;
   let wasEnabled = false;
@@ -184,7 +186,7 @@ export function createAssistantView(deps: {
     for (const el of host.querySelectorAll<HTMLDetailsElement>("details[data-focus-card]")) renderedOpen.set(el, el.open);
   }
   function restoreFocus(target: HTMLElement | null): boolean {
-    if (!target?.isConnected || !target.closest(".view.visible") || target.closest("[inert], [hidden], [aria-hidden='true']") || target.matches(":disabled") || !target.getClientRects().length || getComputedStyle(target).visibility !== "visible") return false;
+    if (!target?.isConnected || !target.closest(".view.visible, #desktop-sidebar") || target.closest("[inert], [hidden], [aria-hidden='true']") || target.matches(":disabled") || !target.getClientRects().length || getComputedStyle(target).visibility !== "visible") return false;
     target.focus({ preventScroll: true });
     return document.activeElement === target;
   }
@@ -550,17 +552,6 @@ export function createAssistantView(deps: {
     const tile = document.getElementById("sidebar-assistant");
     const tileState = focusUnavailable ? (offline() ? "offline" : "focus unavailable") : !focus?.document ? "set focus" : terminalUnavailable() ? "unavailable" : state === "needs you" ? state : state === "failed" ? "failed" : r?.surfaced ? "needs you" : catching ? "reading" : r?.stale ? `quiet ${age(r.stale.since)}` : null;
     const tileStatus = tileState ?? `${nextCount} next`;
-    if (tile) {
-      updateSidebarVisibility();
-      // The tile's tone drives its glow: amber when the user's move is due, a pulse while it reads or works, red offline.
-      tile.dataset.tone = focusUnavailable || terminalUnavailable() || state === "failed" ? "failed" : state === "needs you" || r?.surfaced ? "attn" : catching || state === "working" ? "busy" : "rest";
-      const countedNext = tileState === null;
-      const upNext = next[0] ? `<i aria-hidden="true">next</i> ${countedNext ? "" : '<span class="visually-hidden">next:</span> '}${esc(next[0].triage?.reason ?? nextTitle(next[0]))}` : esc(current.nudge?.text || (focus?.document ? "nothing queued" : "set your focus"));
-      tile.innerHTML = `<span class="assistant-tile-head">${TILE_MARK}<b>assistant<span class="visually-hidden">,</span></b><span class="assistant-tile-state">${tone}${tileStatus}${countedNext && next[0] ? '<span class="visually-hidden">:</span>' : ""}</span></span> <span class="assistant-tile-next">${upNext}</span>`;
-      tile.title = current.nudge?.text ?? info;
-      // The visible content (name, status, next) is the accessible name: an aria-label would hide what is shown (axe label-content-name-mismatch).
-      tile.removeAttribute("aria-label");
-    }
     const needsYouRefs = new Set(sessions().filter(session => session.state === "needs-input")
       .map(session => focusNextRefKey({ machine: session.machineInstallationId ?? "", sessionId: session.id })));
     for (const row of allNext) if (row.triage?.verdict === "needs-you" && !row.unavailable) needsYouRefs.add(focusNextRefKey(row.triage.ref));
@@ -569,12 +560,43 @@ export function createAssistantView(deps: {
       && (doneSuggestion(row) || row.triage.suggestion && receiptFor(row)?.state !== "sent")).length;
     const attentionLabel = `${needsYouCount} need you${suggestions ? ` · ${plural(suggestions, "suggestion")}` : ""}`;
     dashboardAttention = needsYouCount > 0 || suggestions > 0 || sessions().some(session => session.state === "failed") || state === "needs you" || state === "failed" || !!r?.surfaced;
-    const dashboardExpanded = isDesktop() || dashboardDisclosure.expanded(dashboardAttention);
+    const dashboardExpanded = dashboardDisclosure().expanded(dashboardAttention);
+    const sidebarExpanded = desktopDisclosure.expanded(dashboardAttention);
+    // Keep frame buttons attached across polls: replacing a focused button between Space down/up cancels native activation.
+    const disclosureFrame = (id: string) => `<button id="${id}" type="button" class="focus-mobile-toggle" data-focus-action="toggle-dashboard" data-focus-key="action:toggle-dashboard"></button>`;
+    const disclosure = (id: string, details: string, expanded: boolean, summary = true) => {
+      const toggle = document.getElementById(id);
+      if (!toggle) return;
+      toggle.setAttribute("aria-controls", details);
+      toggle.setAttribute("aria-expanded", String(expanded));
+      toggle.setAttribute("aria-label", `${expanded ? "Collapse" : "Expand"} assistant ${state} ${attentionLabel}`);
+      replace(id, `${summary ? `<b>assistant</b> <span class="focus-title">${esc(state)}</span> <span>${esc(attentionLabel)}</span>` : ""}<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>`);
+    };
+    if (tile) {
+      updateSidebarVisibility();
+      // The tile's tone drives its glow: amber when the user's move is due, a pulse while it reads or works, red offline.
+      tile.dataset.tone = focusUnavailable || terminalUnavailable() || state === "failed" ? "failed" : state === "needs you" || r?.surfaced ? "attn" : catching || state === "working" ? "busy" : "rest";
+      const countedNext = tileState === null;
+      const upNext = next[0] ? `<i aria-hidden="true">next</i> ${countedNext ? "" : '<span class="visually-hidden">next:</span> '}${esc(next[0].triage?.reason ?? nextTitle(next[0]))}` : esc(current.nudge?.text || (focus?.document ? "nothing queued" : "set your focus"));
+      const head = sidebarExpanded ? `${TILE_MARK}<b>assistant<span class="visually-hidden">,</span></b><span class="assistant-tile-state">${tone}${tileStatus}${countedNext && next[0] ? '<span class="visually-hidden">:</span>' : ""}</span>`
+        : `<span class="visually-hidden">assistant</span>${tone}<span class="focus-title">${esc(tileState ?? state)}</span><span>${esc(attentionLabel)}</span>`;
+      if (!tile.firstElementChild) replace("sidebar-assistant", `<button id="sidebar-assistant-nav" type="button" data-focus-action="view" data-focus-key="action:sidebar-view"></button>${disclosureFrame("sidebar-assistant-toggle")}`);
+      replace("sidebar-assistant-nav", `<span class="assistant-tile-head">${head}</span><span id="sidebar-assistant-details" class="assistant-tile-next"${sidebarExpanded ? "" : ' hidden=""'}>${upNext}</span>`);
+      disclosure("sidebar-assistant-toggle", "sidebar-assistant-details", sidebarExpanded, false);
+      tile.title = current.nudge?.text ?? info;
+    }
     const block = document.getElementById("dashboard-focus");
     if (block) { block.hidden = !enabled; block.dataset.mobileCollapsed = String(!dashboardExpanded); }
-    const disclosure = `<button type="button" class="focus-mobile-toggle" data-focus-action="toggle-dashboard" data-focus-key="action:toggle-dashboard" aria-controls="dashboard-focus-details" aria-expanded="${dashboardExpanded}" aria-label="${dashboardExpanded ? "Collapse" : "Expand"} assistant ${escAttr(state)} ${escAttr(attentionLabel)}"><b>assistant</b> <span class="focus-title">${esc(state)}</span> <span>${esc(attentionLabel)}</span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>`;
     const attn = state === "needs you" ? `<button type="button" class="focus-attn" data-focus-action="talk" data-focus-key="action:attn">${dot(state)} ${esc(info)} ›</button>` : "";
-    replace("dashboard-focus", !enabled ? "" : `${disclosure}<div id="dashboard-focus-details" class="focus-dashboard-body"${dashboardExpanded ? "" : ' hidden=""'}><div class="focus-header">${attn || `${tone}${button("view", "assistant", "Open assistant", false, "view-title")}<small${catching ? ' class="focus-spin"' : ""}>${esc(info)}</small>`}${sessionNotice}<small>${esc(orderLabel())}</small>${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${nudge}${focus?.document ? nextHtml(3) + `<small>${nextCount} next${current.intentions.length ? ` · today · ${summary}${latest ?? ""}` : ""}</small>` : `<p>Set your focus</p>${addForm(true)}`}${error && !focusUnavailable ? `<p role="status">${esc(error)}</p>` : ""}</div>`);
+    if (enabled && block && !block.firstElementChild) replace("dashboard-focus", `${disclosureFrame("dashboard-focus-toggle")}<div id="dashboard-focus-details" class="focus-dashboard-body"></div>`);
+    if (!enabled) replace("dashboard-focus", "");
+    else {
+      disclosure("dashboard-focus-toggle", "dashboard-focus-details", dashboardExpanded);
+      const details = document.getElementById("dashboard-focus-details");
+      if (details) details.hidden = !dashboardExpanded;
+    }
+    const dashboardBody = !enabled ? "" : `<div class="focus-header">${attn || `${tone}${button("view", "assistant", "Open assistant", false, "view-title")}<small${catching ? ' class="focus-spin"' : ""}>${esc(info)}</small>`}${sessionNotice}<small>${esc(orderLabel())}</small>${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${nudge}${focus?.document ? nextHtml(3) + `<small>${nextCount} next${current.intentions.length ? ` · today · ${summary}${latest ?? ""}` : ""}</small>` : `<p>Set your focus</p>${addForm(true)}`}${error && !focusUnavailable ? `<p role="status">${esc(error)}</p>` : ""}`;
+    replace("dashboard-focus-details", dashboardBody);
     replace("assistant-content", !enabled ? "" : `<div class="focus-header">${attn || `<span title="${escAttr(info)}"${catching ? ' class="focus-spin"' : ""}>${tone} ${esc(info)}</span>`}${sessionNotice}<small>${esc(orderLabel())}</small><span class="focus-header-actions"><button type="button" class="focus-talk" data-focus-action="talk" data-focus-key="action:talk" aria-label="Talk to assistant"${terminalUnavailable() ? ` title="${escAttr(terminalUnavailable()!)}"` : ""}${!terminalTarget() ? " disabled" : ""}>talk<span aria-hidden="true"> ›</span></button>${button("settings", "settings", "Assistant settings")}</span></div>${notes}${nudge}<h2>next <small>${nextCount}</small></h2>${nextHtml(pageNextCap(), showAllNext)}${moreNext}${current.intentions.length && next.length ? `<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details>` : ""}${current.intentions.length ? `<h2>today <small>${summary}</small></h2>${todayHtml(open)}` : ""}${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>${doneHtml}${yesterday}`);
     const live = document.getElementById("focus-status");
     if (live) live.textContent = focusUnavailable ? "" : error || assistantError || (focus?.assistant?.queued ? `${focus.assistant.queued} queued${terminalUnavailable() ? " · sends when the broker is back" : ""}` : notice);
@@ -796,14 +818,14 @@ export function createAssistantView(deps: {
     }
     finally { busy = false; render(); }
   }
-  for (const id of ["dashboard-focus", "assistant-content"]) {
+  for (const id of ["dashboard-focus", "assistant-content", "sidebar-assistant"]) {
     const host = document.getElementById(id)!;
     host.addEventListener("click", event => {
       const target = (event.target as HTMLElement).closest<HTMLButtonElement>("button");
       if (!target) return;
       const action = target.dataset.focusAction;
       if (action === "toggle-dashboard") {
-        if (!isDesktop()) { dashboardDisclosure.toggle(dashboardAttention); render(); }
+        (id === "sidebar-assistant" ? desktopDisclosure : dashboardDisclosure()).toggle(dashboardAttention); render();
         return;
       }
       if (action === "view") deps.show("assistant");
@@ -880,7 +902,6 @@ export function createAssistantView(deps: {
       });
     });
   }
-  document.getElementById("sidebar-assistant")!.onclick = () => deps.show("assistant");
   document.getElementById("assistant-back")!.onclick = () => deps.show("sessions");
   document.getElementById("assistant-terminal-focus")!.onclick = () => deps.show("assistant");
   document.getElementById("assistant-setting-open")!.onclick = () => deps.show("assistant");

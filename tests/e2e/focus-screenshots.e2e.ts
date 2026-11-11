@@ -314,7 +314,8 @@ test("SF2: the phone pill has a 44px hit area beyond its visual box", async ({ p
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
   const chip = page.locator("#assistant-content .focus-today > li > .focus-chips").getByRole("button", { name: "another-project", exact: true });
-  await chip.scrollIntoViewIfNeeded();
+  // Trial click scrolls and retries a node replaced by a startup refresh, without activating it.
+  await chip.click({ trial: true });
   const box = (await chip.boundingBox())!;
   expect.soft(box.height).toBeLessThanOrEqual(32);
   await page.touchscreen.tap(box.x + box.width / 2, box.y - 7);
