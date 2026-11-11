@@ -975,7 +975,7 @@ export const controlApiSource: ControlApiSource = {
       url: string(),
     }, ["name", "url"], { additionalProperties: true }),
     RelayEndpoint: object({
-      relay: { type: "string", pattern: `^${RELAY_ID.replaceAll("-", "\\-")}(?::peer:${OPAQUE_RELAY_UUID_PATTERN})?$` },
+      relay: { type: "string", pattern: `^${RELAY_ID}(?::peer:${OPAQUE_RELAY_UUID_PATTERN})?$` },
       id: { type: "string", format: "uuid" },
     }, ["relay", "id"], { description: "Opaque local or locally-routed peer endpoint. It never contains a machine name or origin." }),
     TaskRelayRegistration: { description: "Request-local lease observation for a live session, not model execution or restart recovery. Re-inspect after expiry or reset.", oneOf: [
