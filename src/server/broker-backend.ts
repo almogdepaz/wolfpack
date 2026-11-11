@@ -104,7 +104,7 @@ import {
 import {
   extractExternalAgentFromEnv,
   extractParentSessionFromEnv,
-  getSessionIdentityStore,
+  SessionIdentityStore,
   identityEnvVars,
   inferAgentKind,
   toPublicSessionIdentity,
@@ -135,6 +135,8 @@ const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 40;
 
 export interface BrokerBackendOptions {
+  /** Resolve the owning store lazily, including across supervisor reconnects. */
+  readonly sessionIdentityStore?: () => SessionIdentityStore;
   /** Read at each session create; defaults to the effective gate (config flag and current managed drop-in). */
   readonly claudeTaskIntegration?: () => boolean;
 }
@@ -604,11 +606,16 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
   private readonly killRequests = new Map<string, KillRequestState>();
   private brokerUnavailableTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly claudeTaskIntegration: () => boolean;
+  private identityStore?: SessionIdentityStore;
+
+  private get identities(): SessionIdentityStore {
+    return this.options.sessionIdentityStore?.() ?? (this.identityStore ??= new SessionIdentityStore());
+  }
 
   constructor(
     client: BrokerClientApi,
     private readonly emitEvent: typeof publishEvent = publishEvent,
-    options: BrokerBackendOptions = {},
+    private readonly options: BrokerBackendOptions = {},
   ) {
     this.claudeTaskIntegration = options.claudeTaskIntegration ?? (() => claudeTaskIntegrationState().on);
     this.client = client;
@@ -645,7 +652,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       externalAgent: extractExternalAgentFromEnv(s.env, "broker_env"),
     }));
     const identitiesById = new Map(
-      getSessionIdentityStore().restore(identitySessions).map((identity) => [identity.wolfpackSessionId, toPublicSessionIdentity(identity)]),
+      this.identities.restore(identitySessions).map((identity) => [identity.wolfpackSessionId, toPublicSessionIdentity(identity)]),
     );
     const liveIds = new Set<string>();
     const liveNames = new Set<string>();
@@ -695,7 +702,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
 
   async listIdentities(): Promise<Record<string, PublicSessionIdentity>> {
     const byName: Record<string, PublicSessionIdentity> = {};
-    for (const identity of getSessionIdentityStore().list()) {
+    for (const identity of this.identities.list()) {
       byName[identity.wolfpackSessionName] = toPublicSessionIdentity(identity);
     }
     return byName;
@@ -864,7 +871,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       alive: session.alive,
     });
     this.idToAgentKind.set(session.id, agentKind);
-    const identity = getSessionIdentityStore().capture({
+    const identity = this.identities.capture({
       wolfpackSessionId: session.id,
       wolfpackSessionName: session.name,
       projectPath: cwd,
@@ -915,7 +922,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     if (name !== undefined && this.nameToId.get(name) === id) this.nameToId.delete(name);
     this.idToInfo.delete(id);
     this.idToAgentKind.delete(id);
-    getSessionIdentityStore().deleteById(id);
+    this.identities.deleteById(id);
     return disposition;
   }
 
@@ -2127,6 +2134,6 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
 }
 
 /** Construct a BrokerBackend bound to a real BrokerClient. */
-export function createBrokerBackend(client: BrokerClient, emitEvent: typeof publishEvent = publishEvent): BrokerBackend {
-  return new BrokerBackend(client, emitEvent);
+export function createBrokerBackend(client: BrokerClient, emitEvent: typeof publishEvent = publishEvent, options: BrokerBackendOptions = {}): BrokerBackend {
+  return new BrokerBackend(client, emitEvent, options);
 }

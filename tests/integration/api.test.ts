@@ -103,10 +103,10 @@ const mockBackend = new MockBackend({
   capturePane: async (s: string) => `captured output for ${s}\n`,
 });
 let selectedBackend: import("../../src/server/context.ts").ServerBackend = mockBackend;
-const testContext = createServerContext({
+let testContext = createServerContext({
   get backend() { return selectedBackend; }, events: new EventBus(), config: null,
 });
-// Observation/runtime singleton ownership remains a phase-5 concern.
+// Observation composition remains shared until the C4 ownership migration.
 setDefaultServerContext(testContext);
 function useBackend(backend: import("../../src/server/context.ts").ServerBackend): void { selectedBackend = backend; }
 
@@ -122,7 +122,7 @@ const {
   _testing: pushTesting,
 } = await import("../../src/server/push.ts");
 const { activePtySessions } = await import("../../src/server/websocket.ts");
-const { AgentRuntimeStateStore, getAgentRuntimeStateStore, __resetAgentRuntimeStateStoreForTests } = await import("../../src/server/agent-status.ts");
+const { AgentRuntimeStateStore } = await import("../../src/server/agent-status.ts");
 const { forgetSessionObservation, stopSessionNotificationObserver } = await import("../../src/server/session-observation.ts");
 
 const {
@@ -130,7 +130,7 @@ const {
   __runSessionNotificationObservationForTests,
 } = await import("../../src/server/routes.ts");
 
-const { server } = createServerInstance(testContext);
+let { server, wss } = createServerInstance(testContext);
 
 let base = "";
 
@@ -158,9 +158,24 @@ function ensureTestProjectDirs(): void {
 
 // ─── Lifecycle ───────────────────────────────────────────────────────────────
 
-beforeAll(async () => {
-  ensureTestProjectDirs();
+beforeAll(() => { ensureTestProjectDirs(); });
 
+async function closeServerContext(): Promise<void> {
+  await stopSessionNotificationObserver(testContext);
+  if (server.listening) await new Promise<void>((resolve, reject) => {
+    server.close((error?: Error) => error ? reject(error) : resolve());
+    server.closeAllConnections();
+  });
+  wss.close();
+  await testContext.close();
+}
+
+async function listenWithContext(): Promise<void> {
+  testContext = createServerContext({
+    get backend() { return selectedBackend; }, events: new EventBus(), config: null,
+  });
+  setDefaultServerContext(testContext);
+  ({ server, wss } = createServerInstance(testContext));
   await new Promise<void>((resolve) => {
     (server as Server).listen(0, "127.0.0.1", () => {
       const port = ((server as Server).address() as AddressInfo).port;
@@ -168,9 +183,15 @@ beforeAll(async () => {
       resolve();
     });
   });
-});
+}
 
-beforeEach(() => {
+async function restartServer(): Promise<void> {
+  await closeServerContext();
+  await listenWithContext();
+}
+
+beforeEach(async () => {
+  await closeServerContext();
   // Reset rate limiters before each test
   __pollRateLimiter._map.clear();
   __globalRateLimiter._map.clear();
@@ -179,14 +200,12 @@ beforeEach(() => {
   pushTesting.resetDebounce();
   activePtySessions.clear();
   rmSync(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!, { force: true });
-  __resetAgentRuntimeStateStoreForTests();
   __resetSessionObservationForTests();
+  await listenWithContext();
 });
 
 afterAll(async () => {
-  __resetAgentRuntimeStateStoreForTests();
-  (server as Server).close();
-  await testContext.close();
+  await closeServerContext();
   if (PRIOR_WOLFPACK_TASK_RELAY_ROOT === undefined) delete process.env.WOLFPACK_TASK_RELAY_ROOT;
   else process.env.WOLFPACK_TASK_RELAY_ROOT = PRIOR_WOLFPACK_TASK_RELAY_ROOT;
   if (PRIOR_WOLFPACK_TASK_WORKER_POLICY_PATH === undefined) delete process.env.WOLFPACK_TASK_WORKER_POLICY_PATH;
@@ -489,7 +508,7 @@ describe("GET /api/sessions", () => {
       const first = await (await get("/api/sessions")).json();
       expect(first.sessions).toHaveLength(100);
       expect(writes()).toBe(0);
-      await getAgentRuntimeStateStore().flushForShutdown();
+      await testContext.agentRuntimeStateStore.flushForShutdown();
       expect(writes()).toBe(1);
       expect(Object.keys(new AgentRuntimeStateStore(runtimePath).snapshot().sessions)).toHaveLength(100);
       const same = await (await get("/api/sessions")).json();
@@ -497,14 +516,14 @@ describe("GET /api/sessions", () => {
       expect(writes()).toBe(1);
       clock.mockReturnValue(Date.parse("2026-07-25T00:01:00.000Z"));
       await get("/api/sessions");
-      await getAgentRuntimeStateStore().flushForShutdown();
+      await testContext.agentRuntimeStateStore.flushForShutdown();
       expect(writes()).toBe(1); // Observation timestamps advance only in memory.
       mockBackend.setSessions([]);
       await get("/api/sessions");
       await stopSessionNotificationObserver(); // Existing server-close hook drains removals.
       expect(writes()).toBe(2);
       await get("/api/sessions");
-      await getAgentRuntimeStateStore().flushForShutdown();
+      await testContext.agentRuntimeStateStore.flushForShutdown();
       expect(writes()).toBe(2);
     } finally {
       rename.mockRestore();
@@ -528,11 +547,11 @@ describe("GET /api/sessions", () => {
     try {
       await capturing;
       // Apply the ack route's real store operation while capture is held.
-      expect(getAgentRuntimeStateStore().acknowledge(sessionId, transitionSequence)?.unseen).toBe(false);
+      expect(testContext.agentRuntimeStateStore.acknowledge(sessionId, transitionSequence)?.unseen).toBe(false);
       release();
       const observed = await (await pending).json();
       expect(observed.sessions[0].runtimeState).toMatchObject({ transitionSequence, acknowledgedSequence: transitionSequence, unseen: false });
-      await getAgentRuntimeStateStore().flushForShutdown();
+      await testContext.agentRuntimeStateStore.flushForShutdown();
       expect(new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!).get(sessionId)).toMatchObject({ acknowledgedSequence: transitionSequence, unseen: false });
     } finally {
       release();
@@ -2360,7 +2379,7 @@ describe("GET /api/sessions", () => {
     });
     expect(store.acknowledge(sessionKey, idle.transitionSequence, "2026-07-25T00:01:00.000Z")?.unseen).toBe(false);
     await store.flushForShutdown();
-    __resetAgentRuntimeStateStoreForTests();
+    await restartServer();
 
     const data = await (await get("/api/sessions")).json();
 
@@ -2402,7 +2421,7 @@ describe("GET /api/sessions", () => {
       });
       expect(unavailable.sessions[0].activity).toMatchObject({ observedAt: expect.any(String) });
       expect(unavailable.sessions[0].activity).not.toHaveProperty("quietSince");
-      await getAgentRuntimeStateStore().flushForShutdown();
+      await testContext.agentRuntimeStateStore.flushForShutdown();
       const persisted = new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!).get(sessionId);
       expect(persisted?.state).toBe("unknown");
       expect(persisted?.acknowledgedSequence).toBe(sequence);
@@ -2433,7 +2452,7 @@ describe("GET /api/sessions", () => {
         },
       },
     }));
-    __resetAgentRuntimeStateStoreForTests();
+    await restartServer();
     __resetSessionObservationForTests();
     const originalList = mockBackend.list.bind(mockBackend);
     (mockBackend as any).list = async () => { throw new Error("broker unavailable after restart"); };
@@ -2461,7 +2480,7 @@ describe("GET /api/sessions", () => {
     mockBackend.setSessions([]);
     const recovered = await (await get("/api/sessions")).json();
     expect(recovered.sessions).toHaveLength(0);
-    await getAgentRuntimeStateStore().flushForShutdown();
+    await testContext.agentRuntimeStateStore.flushForShutdown();
     expect(new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!).get(sessionKey)).toBeUndefined();
   });
 
@@ -2476,13 +2495,13 @@ describe("GET /api/sessions", () => {
       currentRun: { runId: sessionKey, runOrder: 0 },
     });
     await store.flushForShutdown();
-    __resetAgentRuntimeStateStoreForTests();
+    await restartServer();
     mockBackend.setSessions([]);
 
     const data = await (await get("/api/sessions")).json();
 
     expect(data.sessions).toHaveLength(0);
-    await getAgentRuntimeStateStore().flushForShutdown();
+    await testContext.agentRuntimeStateStore.flushForShutdown();
     expect(new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!).get(sessionKey)).toBeUndefined();
   });
 
@@ -2521,7 +2540,7 @@ describe("GET /api/sessions", () => {
     });
     expect(store.acknowledge(sessionId, idle.transitionSequence, "2026-07-25T00:01:00.000Z")?.unseen).toBe(false);
     await store.flushForShutdown();
-    __resetAgentRuntimeStateStoreForTests();
+    await restartServer();
     try {
       const dead = await (await get("/api/sessions")).json();
 
@@ -2538,13 +2557,13 @@ describe("GET /api/sessions", () => {
           unseen: true,
         },
       });
-      await getAgentRuntimeStateStore().flushForShutdown();
+      await testContext.agentRuntimeStateStore.flushForShutdown();
       expect(new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!).get(sessionId)).toMatchObject({ state: "off" });
 
       factBackend.setFacts([]);
       const omitted = await (await get("/api/sessions")).json();
       expect(omitted.sessions).toHaveLength(0);
-      await getAgentRuntimeStateStore().flushForShutdown();
+      await testContext.agentRuntimeStateStore.flushForShutdown();
       expect(new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!).get(sessionId)).toBeUndefined();
     } finally {
       useBackend(mockBackend);
@@ -2579,7 +2598,7 @@ describe("GET /api/sessions", () => {
           unseen: true,
         },
       });
-      await getAgentRuntimeStateStore().flushForShutdown();
+      await testContext.agentRuntimeStateStore.flushForShutdown();
       expect(new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!).get(sessionId)).toMatchObject({ state: "unknown" });
     } finally {
       useBackend(mockBackend);
@@ -4171,7 +4190,7 @@ describe("session control API", () => {
     expect(unobserved).not.toHaveProperty("runtimeState");
 
     const observedAt = new Date().toISOString();
-    const runtimeState = getAgentRuntimeStateStore().reduce({
+    const runtimeState = testContext.agentRuntimeStateStore.reduce({
       sessionKey: "mock:wolf-1",
       broker: { state: "alive", observedAt },
       sources: [],
@@ -4183,7 +4202,7 @@ describe("session control API", () => {
     const status = await (await get("/api/session-control/status?session=wolf-1")).json();
     expect(status.runtimeState).toEqual(JSON.parse(JSON.stringify(runtimeState)));
     expect(status.runtimeState).toMatchObject({ state: "output", authority: "fallback" });
-    expect(getAgentRuntimeStateStore().get("mock:wolf-1")?.transitionSequence).toBe(transitionSequence);
+    expect(testContext.agentRuntimeStateStore.get("mock:wolf-1")?.transitionSequence).toBe(transitionSequence);
   });
 
   test("status resolves stable ids and fails closed for dead listed sessions", async () => {

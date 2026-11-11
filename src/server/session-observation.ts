@@ -26,8 +26,6 @@ import type { TriageStatus } from "../triage.js";
 import {
   agentStatusSources,
   readLocalStatusManifest,
-  flushAgentRuntimeStateForShutdown,
-  getAgentRuntimeStateStore,
   programStatusSource,
 } from "./agent-status.js";
 import type { AgentRuntimeState, AgentRuntimeStateStore } from "./agent-status.js";
@@ -527,7 +525,7 @@ function publishRuntimeTransition(
   });
 }
 
-function observeUnavailableSessions(policyEpoch: number, observationOwnership: number, events: EventBus): SessionObservation {
+function observeUnavailableSessions(policyEpoch: number, observationOwnership: number, ctx: ServerContext): SessionObservation {
   const authority = claimObservationAuthority(observationOwnership, policyEpoch);
   if (authority === undefined) {
     return { sessions: [], unreliableSessionKeys: new Set(), authoritative: false };
@@ -542,7 +540,7 @@ function observeUnavailableSessions(policyEpoch: number, observationOwnership: n
   runtimeRenderedFingerprints.clear();
   clearQuietAlertRecipientSnapshots(policyEpoch);
   const observedAt = new Date().toISOString();
-  const store = getAgentRuntimeStateStore();
+  const store = ctx.agentRuntimeStateStore;
   const summariesBySessionKey = new Map<string, KnownSessionSummary>();
   for (const summary of knownSessionSummaries.values()) {
     summariesBySessionKey.set(summary.identity?.wolfpackSessionId ?? summary.name, summary);
@@ -562,7 +560,7 @@ function observeUnavailableSessions(policyEpoch: number, observationOwnership: n
         runOrder: identity?.createdAt ? Date.parse(identity.createdAt) : previous?.runOrder,
       },
     }, { persist: false });
-    publishRuntimeTransition(name, identity?.wolfpackSessionId, previous?.transitionSequence, runtimeState, events);
+    publishRuntimeTransition(name, identity?.wolfpackSessionId, previous?.transitionSequence, runtimeState, ctx.events);
     return {
       name,
       lastLine,
@@ -578,9 +576,10 @@ function observeUnavailableSessions(policyEpoch: number, observationOwnership: n
 
 function staleSessionProjection(
   sessions: readonly Pick<ObservedSessionSummary, "name" | "identity">[],
+  ctx: ServerContext,
 ): SessionObservation {
   const observedAt = new Date().toISOString();
-  const store = getAgentRuntimeStateStore();
+  const store = ctx.agentRuntimeStateStore;
   const unreliableSessionKeys = new Set<string>();
   const projection = sessions.flatMap<ObservedSessionSummary>((session) => {
     const known = knownSessionSummaries.get(session.name);
@@ -1007,10 +1006,10 @@ async function collectSessionObservation(
 ): Promise<SessionObservation> {
   const backend = ctx.backend;
   const sessionFacts = await listAvailableSessionFacts(ctx);
-  if (!sessionFacts) return observeUnavailableSessions(policyEpoch, observationOwnership, ctx.events);
-  const store = getAgentRuntimeStateStore();
+  if (!sessionFacts) return observeUnavailableSessions(policyEpoch, observationOwnership, ctx);
+  const store = ctx.agentRuntimeStateStore;
   const authority = claimObservationAuthority(observationOwnership, policyEpoch);
-  if (authority === undefined) return staleSessionProjection(sessionFacts);
+  if (authority === undefined) return staleSessionProjection(sessionFacts, ctx);
 
   const activeNames = new Set<string>();
   const activeSessionKeys = new Set<string>();
@@ -1027,7 +1026,7 @@ async function collectSessionObservation(
     pass,
     ctx.events,
   )));
-  if (!ownsObservationAuthority(authority)) return staleSessionProjection(sessionFacts);
+  if (!ownsObservationAuthority(authority)) return staleSessionProjection(sessionFacts, ctx);
 
   const sessions = reduceCollectedQuietAlerts(
     observedSessions.filter((session): session is PendingSessionObservation => session !== undefined),
@@ -1050,7 +1049,7 @@ export async function observeDashboardSessions(ctx: ServerContext = defaultServe
     .then((observation) => {
       if (policyEpoch !== quietAlertPolicyEpoch()) return withoutQuietAlerts(observation.sessions);
       if (!observation.authoritative || !ownsObservationAuthority(authority)) {
-        return staleSessionProjection(observation.sessions).sessions;
+        return staleSessionProjection(observation.sessions, ctx).sessions;
       }
       dashboardObservationCache = {
         expiresAt: Date.now() + DASHBOARD_OBSERVATION_CACHE_TTL_MS,
@@ -1092,6 +1091,7 @@ async function hasLiveChildSession(): Promise<boolean> {
 }
 
 async function runSessionNotificationObservation(pass: ObservationPass = "full"): Promise<readonly ObservedSessionSummary[]> {
+  const ctx = notificationContext;
   if (getSubscriptionCount() === 0 && notificationContext.events.eventSubscriberCount() === 0
     && !sessionNotificationObservationPromise && !hasPendingChildEventNotes() && !await hasLiveChildSession()) return [];
   if (sessionNotificationObservationPromise) {
@@ -1110,7 +1110,7 @@ async function runSessionNotificationObservation(pass: ObservationPass = "full")
     const observation = await collectSessionObservation(notificationFingerprints, policyEpoch, observationOwnership, pass);
     if (policyEpoch !== quietAlertPolicyEpoch()) return withoutQuietAlerts(observation.sessions);
     if (!observation.authoritative || !ownsObservationAuthority(authority)) {
-      return staleSessionProjection(observation.sessions).sessions;
+      return staleSessionProjection(observation.sessions, ctx).sessions;
     }
     // Captures/reductions above require the global epoch. Once emitted, each
     // kind has its own policy fence; newer observations still retire this batch.
@@ -1125,7 +1125,7 @@ async function runSessionNotificationObservation(pass: ObservationPass = "full")
     if (policyEpoch !== quietAlertPolicyEpoch()) return withoutQuietAlerts(observation.sessions);
     return ownsObservationAuthority(authority)
       ? observation.sessions
-      : staleSessionProjection(observation.sessions).sessions;
+      : staleSessionProjection(observation.sessions, ctx).sessions;
   })().finally(() => {
     sessionNotificationObservationPromise = null;
   });
@@ -1185,7 +1185,7 @@ export function startSessionNotificationObserver(ctx: ServerContext = defaultSer
   );
 }
 
-export async function stopSessionNotificationObserver(): Promise<void> {
+export async function stopSessionNotificationObserver(ctx: ServerContext = notificationContext): Promise<void> {
   cancelProgramStatusRefresh();
   if (sessionNotificationObservationTimer) {
     clearInterval(sessionNotificationObservationTimer);
@@ -1195,7 +1195,7 @@ export async function stopSessionNotificationObserver(): Promise<void> {
   await Promise.allSettled([dashboardObservationPromise, sessionNotificationObservationPromise]);
   // A finishing local pass can have started a peer flight while being drained.
   await Promise.allSettled([peerNotificationObservationPromise]);
-  await flushAgentRuntimeStateForShutdown();
+  await ctx.flushRuntimeState();
 }
 
 export function forgetSessionObservation(sessionId: string, sessionName: string): void {

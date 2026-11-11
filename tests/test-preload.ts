@@ -11,6 +11,7 @@ const taskRelayRoot = mkdtempSync(join(tmpdir(), "wolfpack-test-task-relay-"));
 // task ledgers) resolves through WOLFPACK_DIR; never touch a live install.
 const wolfpackDir = mkdtempSync(join(tmpdir(), "wolfpack-test-state-"));
 process.env.WOLFPACK_DIR = wolfpackDir;
+process.env.WOLFPACK_SESSION_IDENTITY_PATH = join(wolfpackDir, "session-identities.json");
 process.env.WOLFPACK_TASK_RELAY_ROOT = taskRelayRoot;
 // Historical v2 suites exercise the explicit compatibility engine. Tests of the
 // production default must delete this setting; new volatile fixtures select their own scope.

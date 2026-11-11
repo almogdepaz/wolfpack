@@ -44,7 +44,6 @@ import { listParentNotifications, PARENT_INBOX_BOOT_ID } from "./parent-inbox.js
 import { isChildSettled, noteChildInputDelivered } from "./child-events.js";
 import { ChildWaitBusyError, waitForChildren, type ChildWaitChild } from "./child-wait.js";
 import { CHILD_WAIT_LIMITS, CHILD_WAIT_MODES, type ChildEventPayload, type ChildWaitMode } from "../child-event-contract.js";
-import { getAgentRuntimeStateStore } from "./agent-status.js";
 import { AGENT_STATUS_STATE } from "../agent-status-contract.js";
 import { CHILD_CLEANUP, type ChildCleanupReport } from "../session-cascade-contract.js";
 import { resolveSessionSelector } from "./session-selector.js";
@@ -229,7 +228,7 @@ function inspectedSessionStatusPayload(selector: string, inspection: SuccessfulS
     status: inspection.alive ? SESSION_TERMINAL_STATUS.READY : SESSION_TERMINAL_STATUS.DEAD,
   };
   // Read-only: the last state the session observer reduced; status never runs an observation itself.
-  const runtimeState = getAgentRuntimeStateStore().get(inspection.sessionId);
+  const runtimeState = ctx.agentRuntimeStateStore.get(inspection.sessionId);
   return {
     ok: true as const,
     selector,
@@ -461,7 +460,7 @@ return {
       const parent = await inspectLiveSession(res, selector);
       if (!parent) return;
       const lastEvents = lastChildEvents(parent.sessionId);
-      const store = getAgentRuntimeStateStore();
+      const store = ctx.agentRuntimeStateStore;
       const children = (await liveChildren(parent.sessionId)).map((child) => {
         const runtimeState = store.get(child.sessionId);
         const lastEvent = lastEvents.get(child.sessionId);

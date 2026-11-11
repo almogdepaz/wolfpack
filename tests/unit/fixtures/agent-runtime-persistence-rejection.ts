@@ -16,7 +16,9 @@ mock.module("node:crypto", () => ({
     return Reflect.apply(randomBytes, crypto, args);
   },
 }));
-const { AgentRuntimeStateStore, getAgentRuntimeStateStore } = await import("../../../src/server/agent-status.ts");
+const { AgentRuntimeStateStore } = await import("../../../src/server/agent-status.ts");
+const { createServerContext } = await import("../../../src/server/context.ts");
+const { MockBackend } = await import("../../../src/server/mock-backend.ts");
 const { stopSessionNotificationObserver } = await import("../../../src/server/session-observation.ts");
 
 const path = process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH;
@@ -34,13 +36,14 @@ const deadline = setTimeout(() => {
   console.error("persistence retry did not complete");
   process.exit(2);
 }, 8_000);
-const store = mode === "timer" ? new AgentRuntimeStateStore(path) : getAgentRuntimeStateStore();
+const context = createServerContext({ backend: new MockBackend(), agentRuntimeStateStore: new AgentRuntimeStateStore(path), config: null });
+const store = context.agentRuntimeStateStore;
 try {
   failNext = true;
   store.flush();
   // Deliberately reproduce the entry's floating shutdown call, without a
   // process-level handler that would conceal an escaping rejection.
-  if (mode === "shutdown") stopSessionNotificationObserver();
+  if (mode === "shutdown") stopSessionNotificationObserver(context);
   await persisted;
   await store.flushForShutdown();
   assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { schemaVersion: 1, sessions: {} });

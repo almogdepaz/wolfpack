@@ -1,3 +1,5 @@
+import { AgentRuntimeStateStore } from "./agent-status.js";
+import { SessionIdentityStore } from "./session-identity.js";
 import { SessionOrganizationService } from "./session-organization.ts";
 import { TaskGateway } from "../tasks/gateway.ts";
 import { createTaskRelayGateway } from "../task-relay/gateway.ts";
@@ -26,7 +28,11 @@ export interface ServerContext {
   readonly taskRelayGateway: RelayGateway;
   readonly extensionRouteService: ExtensionRouteService;
   readonly sessionOrganization: SessionOrganizationService;
-  /** Close owned workers without constructing services that were never used. */
+  readonly agentRuntimeStateStore: AgentRuntimeStateStore;
+  readonly sessionIdentityStore: SessionIdentityStore;
+  /** Drain an already-owned runtime store without constructing it. */
+  flushRuntimeState(): Promise<void>;
+  /** Drain owned stores and close workers without constructing unused services. */
   close(): Promise<void>;
 }
 
@@ -36,22 +42,29 @@ interface ServiceCache {
   taskRelayGateway?: RelayGateway;
   extensionRouteService?: ExtensionRouteService;
   sessionOrganization?: SessionOrganizationService;
+  agentRuntimeStateStore?: AgentRuntimeStateStore;
+  sessionIdentityStore?: SessionIdentityStore;
 }
 
-export interface ServerContextOptions extends Partial<Omit<ServerContext, "close">> {
+export interface ServerContextOptions extends Partial<Omit<ServerContext, "close" | "flushRuntimeState">> {
   readonly taskRoot?: string;
   readonly taskRelayRoot?: string;
 }
 
-function defaultSupervisor(events: EventBus): BrokerSupervisor {
-  return new BrokerSupervisor({ events, start: !process.env.WOLFPACK_TEST });
+function defaultSupervisor(events: EventBus, sessionIdentityStore: () => SessionIdentityStore): BrokerSupervisor {
+  return new BrokerSupervisor({ events, sessionIdentityStore, start: !process.env.WOLFPACK_TEST });
 }
 
 export function createServerContext(overrides: ServerContextOptions = {}): ServerContext {
   const events = overrides.events ?? defaultEventBus;
-  const supervisor = overrides.supervisor ?? (overrides.backend ? undefined : defaultSupervisor(events));
+  const cache: ServiceCache = {
+    taskGateway: overrides.taskGateway, taskRelayGateway: overrides.taskRelayGateway,
+    extensionRouteService: overrides.extensionRouteService,
+    agentRuntimeStateStore: overrides.agentRuntimeStateStore, sessionIdentityStore: overrides.sessionIdentityStore,
+  };
+  const sessionIdentityStore = () => cache.sessionIdentityStore ??= new SessionIdentityStore();
+  const supervisor = overrides.supervisor ?? (overrides.backend ? undefined : defaultSupervisor(events, sessionIdentityStore));
   const backend = overrides.backend ?? supervisedBackend(supervisor!);
-  const cache: ServiceCache = { taskGateway: overrides.taskGateway, taskRelayGateway: overrides.taskRelayGateway, extensionRouteService: overrides.extensionRouteService };
   const context: ServerContext = {
     get backend() { return overrides.backend ?? backend; },
     events,
@@ -68,7 +81,13 @@ export function createServerContext(overrides: ServerContextOptions = {}): Serve
     get sessionOrganization() {
       return overrides.sessionOrganization ?? (cache.sessionOrganization ??= new SessionOrganizationService());
     },
-    async close() { await cache.taskRelayGateway?.close(); },
+    get agentRuntimeStateStore() { return cache.agentRuntimeStateStore ??= new AgentRuntimeStateStore(); },
+    get sessionIdentityStore() { return sessionIdentityStore(); },
+    async flushRuntimeState() { await cache.agentRuntimeStateStore?.flushForShutdown(); },
+    async close() {
+      await context.flushRuntimeState();
+      await cache.taskRelayGateway?.close();
+    },
     get extensionRouteService() {
       return cache.extensionRouteService ??= new ExtensionRouteService({ backend: { listSessionFacts: () => context.backend.listSessionFacts() } });
     },
@@ -96,5 +115,8 @@ export const defaultServerContext: ServerContext = {
   get taskRelayGateway() { return getDefaultServerContext().taskRelayGateway; },
   get extensionRouteService() { return getDefaultServerContext().extensionRouteService; },
   get sessionOrganization() { return getDefaultServerContext().sessionOrganization; },
+  get agentRuntimeStateStore() { return getDefaultServerContext().agentRuntimeStateStore; },
+  get sessionIdentityStore() { return getDefaultServerContext().sessionIdentityStore; },
+  async flushRuntimeState() { await current?.flushRuntimeState(); },
   async close() { await current?.close(); },
 };

@@ -3,7 +3,7 @@
  * cleanup, and the observer-sourced session.state events. Drives the real
  * HTTP server against MockBackend.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { connect } from "node:net";
@@ -29,7 +29,7 @@ const { createServerContext, setDefaultServerContext } = await import("../../src
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
 __resetJwtAuthConfig();
 const mockBackend = new MockBackend({ sessions: [] });
-const context = createServerContext({ backend: mockBackend });
+let context = createServerContext({ backend: mockBackend });
 // The observation singleton uses this binding until its C4 ownership migration.
 setDefaultServerContext(context);
 
@@ -38,7 +38,6 @@ const { __resetEventBusForTests, eventSubscriberCount, publishEvent } = await im
 const { EVENTS_MAX_STREAMS } = await import("../../src/server/event-routes.ts");
 const { shouldAuthenticateApiPath } = await import("../../src/server/http.ts");
 const { parseSseEvents, WOLFPACK_EVENT_KIND } = await import("../../src/events-contract.ts");
-const { __resetAgentRuntimeStateStoreForTests } = await import("../../src/server/agent-status.ts");
 const {
   __resetSessionObservationForTests,
   __runSessionNotificationObservationForTests,
@@ -49,29 +48,42 @@ const {
 const { notifyProgramStatusChanged } = await import("../../src/server/program-status-signal.ts");
 type WolfpackEvent = import("../../src/events-contract.ts").WolfpackEvent;
 
-const { server } = createServerInstance(context);
+let { server, wss } = createServerInstance(context);
 let base = "";
 
-beforeAll(async () => {
+async function listenWithContext(): Promise<void> {
+  context = createServerContext({ backend: mockBackend });
+  setDefaultServerContext(context);
+  ({ server, wss } = createServerInstance(context));
   await new Promise<void>((resolve) => {
     (server as Server).listen(0, "127.0.0.1", () => {
       base = `http://127.0.0.1:${((server as Server).address() as AddressInfo).port}`;
       resolve();
     });
   });
-});
+}
 
-beforeEach(() => {
+async function closeServerContext(): Promise<void> {
+  await stopSessionNotificationObserver(context);
+  if (server.listening) await new Promise<void>((resolve, reject) => {
+    server.close((error?: Error) => error ? reject(error) : resolve());
+    server.closeAllConnections();
+  });
+  wss.close();
+  await context.close();
+}
+
+beforeEach(async () => {
+  await closeServerContext();
   __globalRateLimiter._map.clear();
   __resetEventBusForTests();
-  __resetAgentRuntimeStateStoreForTests();
   __resetSessionObservationForTests();
   mockBackend.setSessions([]);
+  await listenWithContext();
 });
 
-afterAll(() => {
-  (server as Server).close();
-  __resetAgentRuntimeStateStoreForTests();
+afterAll(async () => {
+  await closeServerContext();
   rmSync(TEST_DIR, { recursive: true, force: true });
   for (const [key, value] of Object.entries(PRIOR_ENV)) {
     if (value === undefined) delete process.env[key];

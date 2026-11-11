@@ -792,25 +792,9 @@ export class AgentRuntimeStateStore {
     }
   }
 
-  /** Also used by test singleton resets to avoid writes from abandoned stores. */
+  /** Cancel the debounce timer; in-flight persistence is drained by flushForShutdown. */
   cancelScheduledPersist(): void {
     if (this.persistTimer) clearTimeout(this.persistTimer);
     this.persistTimer = null;
   }
-}
-
-let runtimeStateStore: AgentRuntimeStateStore | null = null;
-
-export function getAgentRuntimeStateStore(): AgentRuntimeStateStore {
-  runtimeStateStore ??= new AgentRuntimeStateStore();
-  return runtimeStateStore;
-}
-
-export async function flushAgentRuntimeStateForShutdown(): Promise<void> {
-  await runtimeStateStore?.flushForShutdown();
-}
-
-export function __resetAgentRuntimeStateStoreForTests(): void {
-  runtimeStateStore?.cancelScheduledPersist();
-  runtimeStateStore = null;
 }

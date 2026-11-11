@@ -9,7 +9,6 @@ import { createLogger, errMsg } from "../log.js";
 import { clampCols, clampRows } from "../validation.js";
 
 import { assets } from "../public-assets.js";
-import { getAgentRuntimeStateStore } from "./agent-status.js";
 import pkg from "../../package.json";
 import { issueWebSocketTicket } from "./ws-ticket.js";
 import {
@@ -122,7 +121,7 @@ return {
     if (!isAgentRuntimeAckBody(body)) {
       return json(res, { error: "sessionId and positive integer transitionSequence required" }, 400);
     }
-    const runtimeState = getAgentRuntimeStateStore().acknowledge(body.sessionId, body.transitionSequence);
+    const runtimeState = ctx.agentRuntimeStateStore.acknowledge(body.sessionId, body.transitionSequence);
     if (!runtimeState) return json(res, { error: "runtime state not found" }, 404);
     json(res, { ok: true, runtimeState });
   },

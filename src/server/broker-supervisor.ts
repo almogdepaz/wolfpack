@@ -11,6 +11,7 @@ import {
   type BrokerVersionInfo,
 } from "../broker/hello.js";
 import { createBrokerBackend, type BrokerBackend, type BrokerClientApi } from "./broker-backend.js";
+import { SessionIdentityStore } from "./session-identity.js";
 import type { SessionBackend } from "./backend-contract.js";
 
 const log = createLogger("backend");
@@ -46,7 +47,9 @@ export class BrokerSupervisor {
   private brokerVersion: BrokerVersionInfo | null = null;
   private connectionGeneration = 0;
 
-  constructor(private readonly options: { start?: boolean; events?: EventBus } = {}) {
+  private identityStore?: SessionIdentityStore;
+
+  constructor(private readonly options: { start?: boolean; events?: EventBus; sessionIdentityStore?: () => SessionIdentityStore } = {}) {
     this.brokerSocketPath = defaultBrokerSocketPath();
     this.broker = null;
     this.brokerClient = null;
@@ -122,7 +125,9 @@ export class BrokerSupervisor {
       },
     });
     const events = this.options.events ?? defaultEventBus;
-    backend = createBrokerBackend(client, events.publishEvent.bind(events));
+    backend = createBrokerBackend(client, events.publishEvent.bind(events), {
+      sessionIdentityStore: this.options.sessionIdentityStore ?? (() => this.identityStore ??= new SessionIdentityStore()),
+    });
     client.start();
     this.brokerClient = client;
     this.broker = backend;

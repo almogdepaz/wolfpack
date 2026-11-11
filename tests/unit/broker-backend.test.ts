@@ -25,7 +25,9 @@ import {
   UnsupportedTerminalKeyError,
   type SessionLifecycleEvent,
 } from "../../src/server/backend";
-import { sessionIdentityStorePath } from "../../src/server/session-identity";
+import { createServerContext } from "../../src/server/context";
+import { MockBackend } from "../../src/server/mock-backend";
+import { SessionIdentityStore, sessionIdentityStorePath } from "../../src/server/session-identity";
 import { SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS } from "../../src/session-prompt-contract";
 import { SHELL } from "../../src/server/shell";
 import { claudeChannelDropInContent } from "../../src/claude-integration";
@@ -327,6 +329,37 @@ afterAll(() => {
   rmSync(SUITE_ROOT, { recursive: true, force: true });
   if (PRIOR_SESSION_IDENTITY_PATH === undefined) delete process.env.WOLFPACK_SESSION_IDENTITY_PATH;
   else process.env.WOLFPACK_SESSION_IDENTITY_PATH = PRIOR_SESSION_IDENTITY_PATH;
+});
+
+test("replacement backends retain their context's memory identity store without sharing another context", async () => {
+  const first = createServerContext({
+    backend: new MockBackend(), config: null,
+    sessionIdentityStore: new SessionIdentityStore(join(SUITE_ROOT, "first"), "memory"),
+  });
+  const second = createServerContext({
+    backend: new MockBackend(), config: null,
+    sessionIdentityStore: new SessionIdentityStore(join(SUITE_ROOT, "second"), "memory"),
+  });
+  const createdAt = "2026-01-01T00:00:00.000Z";
+  first.sessionIdentityStore.capture({
+    wolfpackSessionId: SESSION_UUID_1, wolfpackSessionName: "alpha",
+    projectPath: "/tmp/work", agentKind: "shell", now: new Date(createdAt),
+  });
+  client.setHandler("list_sessions", () => okResp({
+    sessions: [sessionInfo({ name: "alpha", id: SESSION_UUID_1 })],
+  }));
+  try {
+    for (let connection = 0; connection < 2; connection++) {
+      const replacement = new BrokerBackend(client, undefined, {
+        sessionIdentityStore: () => first.sessionIdentityStore,
+      });
+      expect((await replacement.listSessionFacts())[0]?.identity?.createdAt).toBe(createdAt);
+      expect(second.sessionIdentityStore.list()).toEqual([]);
+    }
+  } finally {
+    await first.close();
+    await second.close();
+  }
 });
 
 describe("BrokerBackend.list", () => {
