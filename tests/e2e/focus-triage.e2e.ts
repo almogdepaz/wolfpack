@@ -255,6 +255,47 @@ test("editable reply stays shared across hosts and live renders without replacin
   await expect(reset).toHaveCount(0);
 });
 
+for (const host of ["dashboard-focus", "assistant-content"] as const) for (const input of ["keyboard", "pointer"] as const) test(`deferred panel flushes after ${input} blur in ${host}`, async ({ page }) => {
+  await seed(page);
+  const sends: { text: string }[] = [];
+  await page.route("**/api/session-control/send", async route => {
+    sends.push(route.request().postDataJSON());
+    await route.fulfill({ json: { outcome: "submitted" } });
+  });
+  await page.goto(server.baseUrl);
+  if (host === "assistant-content") await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  const panel = page.locator(`#${host}`);
+  const reply = panel.getByRole("textbox", { name: "reply to prompt-project", exact: true });
+  const send = panel.getByRole("button", { name: "Send suggestion to prompt-project", exact: true });
+  const text = "edited before leaving the editor";
+  const message = `Deferred ${input} blur ${host}`;
+  await reply.fill(text);
+  const saved = await write(page, [{ type: "nudge", text: message, author: "assistant" }]);
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-focus-cache")!).revision)).toBe(saved.revision);
+  await expect(reply).toBeFocused();
+  await expect(panel.locator(".focus-nudge")).not.toHaveText(message);
+  if (input === "keyboard") {
+    await reply.press("Tab");
+    await expect(panel.locator(".focus-nudge")).toHaveText(message, { timeout: 1500 });
+    await expect(send).toBeFocused();
+    await expect(reply).toHaveValue(text);
+    await page.keyboard.press("Enter");
+  } else {
+    await send.scrollIntoViewIfNeeded();
+    await expect(send).toBeInViewport({ ratio: .9 });
+    const box = (await send.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    // A held pointer must still activate the clicked control after blur settles.
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await page.mouse.up();
+  }
+  await expect.poll(() => sends.length).toBe(1);
+  expect(sends[0].text).toBe(text);
+  await expect(panel.locator(".focus-nudge")).toHaveText(message);
+});
+
 for (const host of ["dashboard-focus", "assistant-content"] as const) test(`native IME replacement stays attached in ${host} through input and live refresh`, async ({ page }, info) => {
   await seed(page);
   await page.goto(server.baseUrl);

@@ -866,6 +866,23 @@ export function createAssistantView(deps: {
     }
     finally { busy = false; render(); }
   }
+  let pointerPressed = false;
+  let replyBlurPending = false;
+  function flushReplyBlur() {
+    if (!replyBlurPending || pointerPressed) return;
+    replyBlurPending = false;
+    // Native focus has settled; swap restores its destination by data-focus-key.
+    render();
+  }
+  document.addEventListener("pointerdown", () => { pointerPressed = true; }, true);
+  const finishPointer = () => {
+    pointerPressed = false;
+    // Do not replace a pressed control before its click has been dispatched.
+    if (replyBlurPending) setTimeout(flushReplyBlur, 0);
+  };
+  document.addEventListener("pointerup", finishPointer, true);
+  document.addEventListener("pointercancel", finishPointer, true);
+  window.addEventListener("blur", finishPointer);
   for (const id of ["dashboard-focus", "assistant-content", "sidebar-assistant"]) {
     const host = document.getElementById(id)!;
     host.addEventListener("input", event => {
@@ -886,10 +903,8 @@ export function createAssistantView(deps: {
     });
     host.addEventListener("focusout", event => {
       if (!(event.target instanceof HTMLTextAreaElement) || !event.target.dataset.focusReply) return;
-      // Let a new focus target receive its click/key activation. Those actions
-      // (or the next refresh) render; a blur to the page can flush immediately.
-      if (event.relatedTarget) return;
-      queueMicrotask(() => { if (!host.contains(document.activeElement)) render(); });
+      replyBlurPending = true;
+      setTimeout(flushReplyBlur, 0);
     });
     host.addEventListener("keydown", event => {
       if (event.target instanceof HTMLTextAreaElement && event.target.dataset.focusReply && event.key === "Enter" && !event.isComposing) event.preventDefault();
