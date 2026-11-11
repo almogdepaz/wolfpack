@@ -18,15 +18,15 @@ const {
 } = await import("../../src/server/index.ts");
 const { PTY_WEBSOCKET_MAX_PAYLOAD_BYTES } = await import("../../src/ws-constants.ts");
 const { __getTestState } = await import("../../src/test-hooks.ts");
-const { __setTestBackend } = await import("../../src/server/backend.ts");
+const { createServerContext } = await import("../../src/server/context.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
 const { activePtySessions: __activePtySessions, ptySpawnAttempts: __ptySpawnAttempts } = __getTestState();
 
 const FAKE_SESSIONS = ["dispatch-session", "reconnect-session"];
 const mockBackend = new MockBackend({ sessions: FAKE_SESSIONS });
-__setTestBackend(mockBackend);
+const context = createServerContext({ backend: mockBackend });
 
-const { server, wss } = createServerInstance();
+const { server, wss } = createServerInstance(context);
 
 // ── Test setup ──
 

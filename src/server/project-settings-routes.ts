@@ -472,7 +472,6 @@ export function effectiveCmds(s: Pick<Settings, "agentCmd" | "cmds">): string[] 
 }
 
 export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, RouteHandler> {
-  const getBackend = () => ctx.backend;
   return {
   "GET /api/projects": async (_req, res) => {
     const projects = listDevProjects();
@@ -560,7 +559,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
           code: SESSION_OPEN_ERROR.PARENT_SESSION_NOT_FOUND,
         }, 404);
       }
-      const activeParentIdentity = (await getBackend().listIdentities?.())?.[parentName];
+      const activeParentIdentity = (await ctx.backend.listIdentities?.())?.[parentName];
       if (!activeParentIdentity) {
         return json(res, {
           error: "parent session identity unavailable",
@@ -578,7 +577,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
       if (!isValidSessionName(customName)) {
         return json(res, { error: "invalid session name (letters, numbers, hyphens, underscores only)" }, 400);
       }
-      const existing = await getBackend().list();
+      const existing = await ctx.backend.list();
       if (existing.includes(customName)) {
         return json(res, { error: "session name already taken" }, 409);
       }
@@ -630,7 +629,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
       if (initialPrompt !== undefined && agentKind === AGENT_KIND.SHELL.id) {
         return json(res, { error: "initial prompt requires an agent harness" }, 400);
       }
-      await getBackend().createSession(finalName, projectDir, cmd, settingsResolver, {
+      await ctx.backend.createSession(finalName, projectDir, cmd, settingsResolver, {
         agentKind,
         parentSession: parentIdentity,
         initialPrompt,
@@ -747,7 +746,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
     }
 
     try {
-      const backend = getBackend();
+      const backend = ctx.backend;
       const result = await createTopLevelSession({
         backend,
         project,
@@ -861,7 +860,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
       initialPrompt = planned.prompt;
     }
 
-    const backend = getBackend();
+    const backend = ctx.backend;
     if (!backend.listIdentities) {
       return json(res, {
         error: "parent session identity unavailable",

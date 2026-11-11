@@ -73,7 +73,6 @@ function isAgentRuntimeAckBody(body: Record<string, unknown>): body is AgentRunt
 const VERSION: string = pkg.version;
 type Routes = Record<string, (req: IncomingMessage, res: ServerResponse) => void | Promise<void>>;
 export function createRoutes(ctx: ServerContext): Routes {
-const getBackend = () => ctx.backend;
 return {
   "GET /": (req, res) => serveFile(res, "index.html", req),
   "GET /manifest.json": (req, res) => {
@@ -165,7 +164,7 @@ return {
     const claimed = claimSessionCleanup(sessionId);
     try {
       // Cleans up any associated desktop PTY session (wp_*) before killing.
-      await killSessionWithTeardown(getBackend(), resolved.name, sessionId);
+      await killSessionWithTeardown(ctx.backend, resolved.name, sessionId);
     } catch (error: unknown) {
       if (claimed) releaseSessionCleanup(sessionId);
       throw error;
@@ -174,7 +173,7 @@ return {
     let cascadeError: string | undefined;
     if (claimed) {
       try {
-        cascaded = await cascadeChildCleanup(getBackend(), sessionId);
+        cascaded = await cascadeChildCleanup(ctx.backend, sessionId);
       } catch (error: unknown) {
         // A later death notification can still cascade this parent.
         releaseSessionCleanup(sessionId);
@@ -208,7 +207,7 @@ return {
       return json(res, { error: "session not found" }, 404);
     if (!activePtySessions.has(session)) {
       try {
-        await getBackend().resize(session, clampCols(cols), clampRows(rows));
+        await ctx.backend.resize(session, clampCols(cols), clampRows(rows));
       } catch (e: unknown) {
         log.warn("resize failed", { session, error: errMsg(e) });
         return json(res, { error: "backend unavailable" }, 503);
@@ -243,7 +242,7 @@ return {
     if (!session) return json(res, { error: "missing session param" }, 400);
     if (!(await isAllowedSession(session, ctx.backend)))
       return json(res, { error: "session not found" }, 404);
-    const pane = await getBackend().capturePane(session);
+    const pane = await ctx.backend.capturePane(session);
     json(res, { pane });
   },
 
@@ -253,7 +252,7 @@ return {
     if (!session) return json(res, { error: "missing session param" }, 400);
     if (!(await isAllowedSession(session, ctx.backend)))
       return json(res, { error: "session not found" }, 404);
-    const text = await getBackend().capturePane(session);
+    const text = await ctx.backend.capturePane(session);
     res.writeHead(200, {
       "Content-Type": "text/plain; charset=utf-8",
       "Cache-Control": "no-store",
@@ -267,7 +266,7 @@ return {
     if (!validateProjectParam(res, session)) return;
     if (!(await isAllowedSession(session, ctx.backend)))
       return json(res, { error: "session not found" }, 404);
-    const projectDir = getBackend().sessionDir(session);
+    const projectDir = ctx.backend.sessionDir(session);
     if (!projectDir || !existsSync(projectDir))
       return json(res, { error: "project directory not found" }, 404);
     try {

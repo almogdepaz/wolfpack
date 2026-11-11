@@ -9,7 +9,6 @@ const { EventBus } = await import("../../../src/event-bus.ts");
 const { createServerContext } = await import("../../../src/server/context.ts");
 const { createRoutes } = await import("../../../src/server/routes.ts");
 const { createSessionControlRoutes } = await import("../../../src/server/session-control-routes.ts");
-const { __setTestBackend, getBackend } = await import("../../../src/server/backend.ts");
 const { __resetChildEventsForTests } = await import("../../../src/server/child-events.ts");
 const { __resetSessionDeathForTests } = await import("../../../src/server/session-death.ts");
 const { __resetSessionCascadeForTests, startChildCleanupCascade } = await import("../../../src/server/session-cascade.ts");
@@ -48,7 +47,6 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 50));
 const loadSettings = () => ({ agentCmd: "claude" });
 const peerCalls: string[] = [];
 const realFetch = globalThis.fetch;
-const previousBackend = getBackend();
 let stopCascade: (() => void) | undefined;
 
 beforeEach(() => {
@@ -67,7 +65,6 @@ afterEach(() => {
   stopCascade?.();
   stopCascade = undefined;
   globalThis.fetch = realFetch;
-  __setTestBackend(previousBackend);
 });
 
 async function spawnChild(backend: Backend, name: string, parent: string, cleanup?: string) {
@@ -136,7 +133,6 @@ test("a child kill that fails is reported with its reason and its children are k
 
 test("children lists each child's cleanup policy", async () => {
   const backend = new MockBackend();
-  __setTestBackend(backend);
   const children = createSessionControlRoutes(createServerContext({ backend, events: new EventBus() }))["GET /api/session-control/children"] as Handler;
   await backend.createSession("lead", "/tmp", "claude", loadSettings);
   await spawnChild(backend, "kid", "lead", CHILD_CLEANUP.CASCADE);
@@ -212,8 +208,7 @@ function brokerFixture(options: {
     },
   };
   backend = new BrokerBackend(client as never, () => {});
-  __setTestBackend(backend);
-  stopCascade = startChildCleanupCascade(() => backend);
+  stopCascade = startChildCleanupCascade({ backend });
   return { backend, sessions, kills, state };
 }
 
@@ -298,7 +293,6 @@ for (const code of ["session_not_alive", "unknown_session"]) {
 
 test("agent spawn --outlive-parent through POST /api/session-open records outlive, lists it, and survives the parent kill", async () => {
   const backend = new MockBackend();
-  __setTestBackend(backend);
   const routes = createRoutes(createServerContext({ backend, events: new EventBus() }));
   const open = routes["POST /api/session-open"] as Handler;
   const kill = routes["POST /api/kill"] as Handler;
@@ -328,7 +322,6 @@ test("agent spawn --outlive-parent through POST /api/session-open records outliv
 
 test("the task-worker spawn path accepts --outlive-parent like the ordinary path", async () => {
   const backend = new MockBackend();
-  __setTestBackend(backend);
   const open = createRoutes(createServerContext({ backend, events: new EventBus() }))["POST /api/session-open"] as Handler;
   await backend.createSession("lead", "/tmp", "claude", loadSettings);
   const request = { projectDir: process.cwd(), parentSession: "lead", harness: "pi", taskWorker: true, taskWorkerDryRun: true };
@@ -340,7 +333,6 @@ test("the task-worker spawn path accepts --outlive-parent like the ordinary path
 
 test("a top-level session-create refuses outliveParent: a session without a parent has no cleanup policy", async () => {
   const backend = new MockBackend();
-  __setTestBackend(backend);
   const create = createRoutes(createServerContext({ backend, events: new EventBus() }))["POST /api/session-create"] as Handler;
   const response = await call(create, { projectDir: process.cwd(), harness: "claude", outliveParent: true });
   expect(response.status).toBe(400);

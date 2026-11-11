@@ -109,7 +109,7 @@ await bunMock.module("../../src/machine-display-name.js", () => ({
   getMachineDisplayName: () => machine.label,
 }));
 
-const { __setTestBackend } = await import("../../src/server/backend.ts");
+const { createServerContext } = await import("../../src/server/context.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
 type PublicSessionIdentity = import("../../src/server/session-identity.ts").PublicSessionIdentity;
 type SessionPrefillOptions = import("../../src/server/backend.ts").SessionPrefillOptions;
@@ -236,9 +236,10 @@ async function createFixtureSession(name: string): Promise<void> {
 for (const session of sessions) {
   if (!session.deferred) await createFixtureSession(session.name);
 }
-__setTestBackend(backend);
+const context = createServerContext({ backend });
 
-const { server } = await import("../../src/server/index.ts");
+const { createServerInstance } = await import("../../src/server/index.ts");
+const { server } = createServerInstance(context);
 
 function requireSession(name: unknown): string {
   if (typeof name !== "string" || !sessions.some((session) => session.name === name)) throw new Error(`unknown session ${String(name)}`);

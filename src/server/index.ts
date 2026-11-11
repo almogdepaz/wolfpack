@@ -386,7 +386,7 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Pa
   startSessionNotificationObserver(ctx);
   // Parent death kills cascade children. The first table after this start is a
   // baseline, so sessions that died while the server was down do not cascade.
-  const stopChildCleanupCascade = startChildCleanupCascade(() => ctx.backend);
+  const stopChildCleanupCascade = startChildCleanupCascade(ctx);
   server.once("close", () => {
     stopChildCleanupCascade();
     stopChildEventDelivery();

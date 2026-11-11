@@ -7,7 +7,7 @@ import { CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS } from "../../src/ws-constant
 
 process.env.WOLFPACK_TEST = "1";
 
-const { __resetBackend, __setTestBackend } = await import("../../src/server/backend.ts");
+const { createServerContext } = await import("../../src/server/context.ts");
 const { createServerInstance } = await import("../../src/server/index.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
 const { teardownPty } = await import("../../src/server/websocket.ts");
@@ -69,8 +69,7 @@ let backend: AttachMockBackend;
 
 beforeEach(async () => {
   backend = new AttachMockBackend({ sessions: ["attach-one"] });
-  __setTestBackend(backend);
-  ({ server } = createServerInstance());
+  ({ server } = createServerInstance(createServerContext({ backend })));
   await new Promise<void>((resolve) => {
     server.listen(0, "127.0.0.1", () => {
       const port = (server.address() as AddressInfo).port;
@@ -83,7 +82,6 @@ beforeEach(async () => {
 afterEach(() => {
   teardownPty("attach-one");
   server.close();
-  __resetBackend();
 });
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));

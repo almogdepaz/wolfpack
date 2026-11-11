@@ -2,7 +2,7 @@
  * MockBackend — SessionBackend implementation for integration tests.
  *
  * Provides a fully controllable backend that can be injected via
- * __setTestBackend(). No real broker daemon needed.
+ * createServerContext({ backend }). No real broker daemon needed.
  */
 import type {
   SessionAttachLease,

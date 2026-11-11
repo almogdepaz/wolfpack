@@ -21,7 +21,7 @@ import {
   DIRECTORY_BROWSE_SCAN_LIMIT,
   browseServerDirectory,
 } from "../../src/server/directory-browser.ts";
-import { __setTestBackend } from "../../src/server/backend.js";
+import { createServerContext } from "../../src/server/context.js";
 import { MockBackend } from "../../src/server/mock-backend.js";
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "wolfpack-directory-browser-")));
@@ -287,10 +287,10 @@ describe("GET /api/directories", () => {
     process.env.WOLFPACK_DEV_DIR = configuredBase;
     const { __setDevDir } = await import("../../src/server/dev-dir.js");
     __setDevDir(configuredBase);
-    __setTestBackend(mockBackend);
+    const context = createServerContext({ backend: mockBackend });
     mkdirSync(join(configuredBase, "project"), { recursive: true });
     const { createServerInstance } = await import("../../src/server/index.ts");
-    ({ server } = createServerInstance());
+    ({ server } = createServerInstance(context));
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   });

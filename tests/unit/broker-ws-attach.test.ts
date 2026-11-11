@@ -11,8 +11,6 @@ process.env.WOLFPACK_TEST = "1";
 import { describe, expect, test, beforeEach, afterEach, jest } from "bun:test";
 import type { WebSocket as WsWebSocket } from "ws";
 import {
-  __setTestBackend,
-  __resetBackend,
   type SessionBackend,
   type PtyBackendMethods,
   type SessionLifecycleEvent,
@@ -20,6 +18,7 @@ import {
 import { SESSION_KILL_DISPOSITION, type SessionKillDisposition } from "../../src/server/backend-contract";
 import { __getTestState } from "../../src/test-hooks";
 import { handlePtyWs, teardownPty } from "../../src/server/websocket";
+import { createServerContext } from "../../src/server/context";
 import { classifyDisconnect } from "../../src/take-control-logic";
 
 const BOUNDED_GRID_SCROLLBACK_ROWS = 200;
@@ -127,6 +126,9 @@ class FakeBrokerBackend implements SessionBackend, PtyBackendMethods {
   retainedOutput: Array<{ readonly seq: bigint; readonly data: Uint8Array }> = [];
   retainInputOutput = false;
   nextOutputSeq = 2n;
+
+  async promptAndWaitForOutput(): Promise<never> { throw new Error("not implemented in attach tests"); }
+  async sendAndObserveSubmission(): Promise<never> { throw new Error("not implemented in attach tests"); }
 
   // SessionBackend — identity inspection must not be reached by attach tests.
   async listIdentities(): Promise<never> { throw new Error("not implemented in attach tests"); }
@@ -290,23 +292,23 @@ const SESSION = "broker-attach-test";
 const { activePtySessions } = __getTestState();
 
 let backend: FakeBrokerBackend;
+let context: ReturnType<typeof createServerContext>;
 
 beforeEach(() => {
   backend = new FakeBrokerBackend();
   backend.alive.add(SESSION);
-  __setTestBackend(backend);
+  context = createServerContext({ backend });
   activePtySessions.clear();
 });
 
 afterEach(() => {
   teardownPty(SESSION);
   activePtySessions.clear();
-  __resetBackend();
   jest.useRealTimers();
 });
 
 function attachWs(ws: FakeWs, session = SESSION): void {
-  handlePtyWs(ws as unknown as WsWebSocket, session);
+  handlePtyWs(ws as unknown as WsWebSocket, session, false, context);
 }
 
 describe("broker WS attach: snapshot + subscribe path", () => {

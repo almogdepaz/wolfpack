@@ -5,7 +5,7 @@ import {
   isLoopbackAddress,
   operationalHealth,
 } from "../../src/server/operability";
-import { __resetBackend, getRouter } from "../../src/server/backend";
+import { createServerContext } from "../../src/server/context";
 import { __resetJwtAuthConfig } from "../../src/auth";
 
 describe("operability contracts", () => {
@@ -19,12 +19,12 @@ describe("operability contracts", () => {
 
   test("reports degraded while the configured broker transport is disconnected", () => {
     process.env.WOLFPACK_TEST = "1";
-    __resetBackend();
-    const router = getRouter();
+    const context = createServerContext();
+    const router = context.supervisor!;
     (router as any)._brokerAvailable = true;
     (router as any).brokerClient = { isConnected: () => false };
 
-    expect(operationalHealth()).toMatchObject({
+    expect(operationalHealth(context)).toMatchObject({
       status: "degraded",
       broker: { state: "unavailable" },
     });
@@ -32,14 +32,14 @@ describe("operability contracts", () => {
 
   test("reports the broker release and protocol version, null until a hello succeeds", () => {
     process.env.WOLFPACK_TEST = "1";
-    __resetBackend();
-    const router = getRouter();
+    const context = createServerContext();
+    const router = context.supervisor!;
     (router as any)._brokerAvailable = true;
     (router as any).brokerClient = { isConnected: () => true };
 
-    expect(operationalHealth()).toMatchObject({ broker: { state: "ready", version: null, protocolVersion: null } });
+    expect(operationalHealth(context)).toMatchObject({ broker: { state: "ready", version: null, protocolVersion: null } });
     (router as any).brokerVersion = { protocolVersion: 2, brokerVersion: "1.6.26" };
-    expect(operationalHealth()).toMatchObject({ broker: { state: "ready", version: "1.6.26", protocolVersion: 2 } });
+    expect(operationalHealth(context)).toMatchObject({ broker: { state: "ready", version: "1.6.26", protocolVersion: 2 } });
   });
 
   test("reports whether API authentication is configured, never the secret", () => {

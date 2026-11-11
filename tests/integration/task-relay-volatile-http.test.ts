@@ -22,7 +22,7 @@ const token = (() => {
   const value = `${encode({ alg: "HS256", typ: "JWT" })}.${encode({ sub: "fixture", aud: "volatile-http", exp: Math.floor(Date.now() / 1000) + 600 })}`;
   return `${value}.${createHmac("sha256", secret).update(value).digest("base64url")}`;
 })();
-const { __setTestBackend } = await import("../../src/server/backend.ts");
+const { createServerContext, setDefaultServerContext } = await import("../../src/server/context.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
 const { __resetJwtAuthConfig } = await import("../../src/test-hooks.ts");
 const { getTaskRelayProfile } = await import("../../src/task-relay/gateway.ts");
@@ -38,7 +38,11 @@ class PiBackend extends MockBackend {
     return Object.fromEntries(["sender", "receiver"].map(name => [name, { wolfpackSessionId: `${name}-id`, wolfpackSessionName: name, projectPath: join(root, "project"), agentKind: "pi" as const, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString() }]));
   }
 }
-const { server, wss } = createServerInstance();
+let backend = new PiBackend({ sessions: ["sender", "receiver"] });
+const context = createServerContext({ get backend() { return backend; } });
+// C2 will replace gateway reset hooks with owned gateway lifetimes.
+setDefaultServerContext(context);
+const { server, wss } = createServerInstance(context);
 let base = "", gateway: InstanceType<typeof WorkerRelayGateway>;
 const path = "/api/task-relay/volatile-v1";
 const headers = { "content-type": "application/json", authorization: `Bearer ${token}` };
@@ -48,7 +52,7 @@ beforeEach(async () => {
   process.env.WOLFPACK_TASK_RELAY_ROOT = relayRoot; process.env.WOLFPACK_TASK_RELAY_PROFILE = "volatile-v1";
   process.env.WOLFPACK_TASK_RELAY_STORAGE = "memory";
   process.env.WOLFPACK_JWT_SECRET = secret; process.env.WOLFPACK_JWT_AUDIENCE = "volatile-http"; __resetJwtAuthConfig();
-  __setTestBackend(new PiBackend({ sessions: ["sender", "receiver"] }));
+  backend = new PiBackend({ sessions: ["sender", "receiver"] });
   gateway = getTaskRelayGateway() as InstanceType<typeof WorkerRelayGateway>;
   expect(gateway).toBeInstanceOf(WorkerRelayGateway); await gateway.initialize();
 });

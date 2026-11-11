@@ -25,11 +25,13 @@ process.env.WOLFPACK_SESSION_IDENTITY_PATH = join(TEST_DIR, "session-identities.
 process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH = join(TEST_DIR, "agent-runtime-state.json");
 
 const { __resetJwtAuthConfig } = await import("../../src/test-hooks.ts");
-const { __setTestBackend } = await import("../../src/server/backend.ts");
+const { createServerContext, setDefaultServerContext } = await import("../../src/server/context.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
 __resetJwtAuthConfig();
 const mockBackend = new MockBackend({ sessions: [] });
-__setTestBackend(mockBackend);
+const context = createServerContext({ backend: mockBackend });
+// The observation singleton uses this binding until its C4 ownership migration.
+setDefaultServerContext(context);
 
 const { createServerInstance, __globalRateLimiter } = await import("../../src/server/index.ts") as any;
 const { __resetEventBusForTests, eventSubscriberCount, publishEvent } = await import("../../src/server/event-bus.ts");
@@ -47,7 +49,7 @@ const {
 const { notifyProgramStatusChanged } = await import("../../src/server/program-status-signal.ts");
 type WolfpackEvent = import("../../src/events-contract.ts").WolfpackEvent;
 
-const { server } = createServerInstance();
+const { server } = createServerInstance(context);
 let base = "";
 
 beforeAll(async () => {

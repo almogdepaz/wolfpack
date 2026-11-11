@@ -118,7 +118,7 @@ const rewrittenFetch: typeof globalThis.fetch = Object.assign((input: RequestInf
 }, { preconnect: nativeFetch.preconnect });
 globalThis.fetch = rewrittenFetch;
 
-const { __setTestBackend } = await import("../../../src/server/backend.ts");
+const { createServerContext, setDefaultServerContext } = await import("../../../src/server/context.ts");
 const { MockBackend } = await import("../../../src/server/mock-backend.ts");
 
 class PeerBackend extends MockBackend {
@@ -134,7 +134,9 @@ class PeerBackend extends MockBackend {
   }
 }
 
-__setTestBackend(new PeerBackend({ sessions: [role === "sender" ? "parent" : "receiver"] }));
+const context = createServerContext({ backend: new PeerBackend({ sessions: [role === "sender" ? "parent" : "receiver"] }) });
+// The gateway compatibility accessors are removed in C2.
+setDefaultServerContext(context);
 const { getTaskGateway, __resetTaskGatewayForTests } = await import("../../../src/server/task-gateways.ts");
 if (process.env.WOLFPACK_TEST_FAST_RETRY === "1") {
   // Accelerate only peer retry backoff, not HTTP keepalive or unrelated deadlines.
@@ -142,7 +144,7 @@ if (process.env.WOLFPACK_TEST_FAST_RETRY === "1") {
 }
 const { createServerInstance } = await import("../../../src/server/index.ts");
 await getTaskGateway().initialize();
-const { server } = createServerInstance();
+const { server } = createServerInstance(context);
 
 server.listen(listenPort, "127.0.0.1", () => {
   const address = server.address() as AddressInfo;

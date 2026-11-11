@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { assertNotificationFixtureHome } from "./run-notification-test.ts";
 assertNotificationFixtureHome();
 const { MockBackend } = await import("../../../src/server/mock-backend.ts");
-const { __setTestBackend, getBackend } = await import("../../../src/server/backend.ts");
+// The observation singleton remains on the production composition binding until C4.
+const { createServerContext, getDefaultServerContext, setDefaultServerContext } = await import("../../../src/server/context.ts");
 const { getSubscriptionCount } = await import("../../../src/server/push.ts");
 const { defaultEventBus } = await import("../../../src/event-bus.ts");
 const {
@@ -18,9 +19,9 @@ const { startChildEventDelivery } = await import("../../../src/server/child-even
 const { SESSION_SEND_DELIVERY, SESSION_SEND_OUTCOME } = await import("../../../src/session-send-contract.ts");
 
 test("a child's program done reaches the parent inbox with no push or event subscribers", async () => {
-  const previousBackend = getBackend();
+  const previousContext = getDefaultServerContext();
   const backend = new MockBackend();
-  __setTestBackend(backend);
+  setDefaultServerContext(createServerContext({ backend }));
   __resetSessionObservationForTests();
   __resetChildEventsForTests();
   try {
@@ -58,14 +59,14 @@ test("a child's program done reaches the parent inbox with no push or event subs
     expect(listParentNotifications(parent.wolfpackSessionId)).toHaveLength(1);
   } finally {
     await stopSessionNotificationObserver();
-    __setTestBackend(previousBackend);
+    setDefaultServerContext(previousContext);
   }
 });
 
 test("a queued typed note keeps the observer running and reaches the parent once it is idle", async () => {
-  const previousBackend = getBackend();
+  const previousContext = getDefaultServerContext();
   const backend = new MockBackend();
-  __setTestBackend(backend);
+  setDefaultServerContext(createServerContext({ backend }));
   __resetSessionObservationForTests();
   __resetChildEventsForTests();
   const sends: { sessionId: string; sessionName: string; text: string }[] = [];
@@ -110,12 +111,12 @@ test("a queued typed note keeps the observer running and reaches the parent once
   } finally {
     stopDelivery();
     await stopSessionNotificationObserver();
-    __setTestBackend(previousBackend);
+    setDefaultServerContext(previousContext);
   }
 });
 
 test("a live observation that started before a child's exit does not report the exit twice (review A3-1)", async () => {
-  const previousBackend = getBackend();
+  const previousContext = getDefaultServerContext();
   __resetSessionObservationForTests();
   __resetChildEventsForTests();
   const parentId = "11111111-1111-4111-8111-111111111111";
@@ -144,7 +145,7 @@ test("a live observation that started before a child's exit does not report the 
     },
   };
   const backend = new BrokerBackend(client as never, () => {});
-  __setTestBackend(backend);
+  setDefaultServerContext(createServerContext({ backend }));
   noteChildCreated(childId, "worker", { wolfpackSessionId: parentId, wolfpackSessionName: "lead" });
   let release = () => {};
   const gate = new Promise<void>(resolve => { release = resolve; });
@@ -173,6 +174,6 @@ test("a live observation that started before a child's exit does not report the 
   } finally {
     release();
     await stopSessionNotificationObserver();
-    __setTestBackend(previousBackend);
+    setDefaultServerContext(previousContext);
   }
 });

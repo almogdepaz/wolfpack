@@ -100,13 +100,12 @@ export async function resolveActiveSession(
 }
 
 export function createSessionControlRoutes(ctx: ServerContext): Record<string, RouteHandler> {
-const getBackend = () => ctx.backend;
 const streamingBackend = () => ctx.supervisor ? ctx.supervisor.backend() : ctx.backend;
 let sessionSnapshotService: SessionSnapshotService | null = null;
 
 function snapshots(): SessionSnapshotService {
   sessionSnapshotService ??= new SessionSnapshotService((sessionId) =>
-    getBackend().captureSessionSnapshotById(sessionId),
+    ctx.backend.captureSessionSnapshotById(sessionId),
   );
   return sessionSnapshotService;
 }
@@ -268,7 +267,7 @@ function sessionStatusFailure(
 async function waitForSessionText(session: string, text: string, timeoutMs: number): Promise<"matched" | "timeout" | "unavailable"> {
   const streaming = streamingBackend();
   if (!streaming) {
-    const existing = await getBackend().capturePane(session);
+    const existing = await ctx.backend.capturePane(session);
     return existing.includes(text) ? "matched" : "unavailable";
   }
 
@@ -310,7 +309,7 @@ async function waitForSessionText(session: string, text: string, timeoutMs: numb
  * A backend error propagates to the caller.
  */
 async function inspectLiveSession(res: ServerResponse, selector: string): Promise<SuccessfulSessionInspection | null> {
-  const backend = getBackend();
+  const backend = ctx.backend;
   const inspect = backend.inspectSession;
   if (!inspect) {
     json(
@@ -356,7 +355,7 @@ async function inspectLiveSession(res: ServerResponse, selector: string): Promis
 
 /** The live children of a parent, sorted by name. Exited children are not listed. */
 async function liveChildren(parentSessionId: string): Promise<Array<ChildWaitChild & { readonly cleanup: ChildCleanupReport }>> {
-  const backend = getBackend();
+  const backend = ctx.backend;
   const names = await backend.list();
   const identities = await backend.listIdentities?.();
   if (!identities) throw new Error("session identity unavailable");
@@ -432,7 +431,7 @@ return {
   "GET /api/session-control/list": async (_req, res) => {
     res.setHeader("Cache-Control", "no-store");
     try {
-      const backend = getBackend();
+      const backend = ctx.backend;
       const names = await backend.list();
       const identities = await backend.listIdentities?.();
       if (!identities || names.some(name => !identities[name])) {
@@ -553,7 +552,7 @@ return {
     const resolved = await resolveActiveSession(res, selector, ctx.backend);
     if (!resolved) return;
     try {
-      const output = await getBackend().capturePane(resolved.name);
+      const output = await ctx.backend.capturePane(resolved.name);
       json(res, {
         session: resolved.name,
         sessionId: resolved.identity.wolfpackSessionId,
@@ -590,7 +589,7 @@ return {
       const streaming = streamingBackend();
       if (!streaming) {
         // Nothing to observe through: deliver as before and say so.
-        await getBackend().send(session, body.text, noEnter);
+        await ctx.backend.send(session, body.text, noEnter);
         if (!noEnter) armChild();
         return json(res, {
           ok: true,

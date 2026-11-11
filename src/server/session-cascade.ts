@@ -114,8 +114,8 @@ async function cascadeParentDeath(backend: CascadeBackend, parentSessionId: stri
 }
 
 /** Cascade on parent death; returns the stop function. */
-export function startChildCleanupCascade(getBackend: () => CascadeBackend): () => void {
-  return onSessionDeath((sessionId) => { void cascadeParentDeath(getBackend(), sessionId); });
+export function startChildCleanupCascade(context: { readonly backend: CascadeBackend }): () => void {
+  return onSessionDeath((sessionId) => { void cascadeParentDeath(context.backend, sessionId); });
 }
 
 export function __resetSessionCascadeForTests(): void {

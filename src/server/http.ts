@@ -7,7 +7,6 @@ import { brotliCompressSync, constants as zlibConstants, gzipSync } from "node:z
 import { ASSET_VERSIONS, assets } from "../public-assets.js";
 import { readLocalTailscaleStatus } from "./tailscale-status.js";
 export { buildTailscaleStatusArgv, buildTailscaleSelfStatusArgv, createTailscaleStatusCache, executeTailscaleStatus, readRelayPeerTopology, TAILSCALE_STATUS_TIMEOUT_MS, TAILSCALE_STATUS_CACHE_TTL_MS } from "./tailscale-status.js";
-import { getBackend } from "./backend.js";
 import type { SessionBackend } from "./backend-contract.js";
 import { createLogger, errMsg } from "../log.js";
 import {
@@ -79,7 +78,7 @@ export function createPerIpRateLimiter(rate: number, evictIntervalMs = 60_000) {
 
 // ── Session helpers ──
 
-export async function uniqueSessionName(base: string, backend: SessionBackend = getBackend()): Promise<string> {
+export async function uniqueSessionName(base: string, backend: SessionBackend): Promise<string> {
   base = projectLabelToSessionName(base).slice(0, MAX_SESSION_NAME_LENGTH);
   const sessions = await backend.list();
   if (!sessions.includes(base)) return base;
@@ -91,7 +90,7 @@ export async function uniqueSessionName(base: string, backend: SessionBackend = 
   }
 }
 
-export async function isAllowedSession(session: string, backend: SessionBackend = getBackend()): Promise<boolean> {
+export async function isAllowedSession(session: string, backend: SessionBackend): Promise<boolean> {
   const allowed = await backend.list();
   return allowed.includes(session);
 }

@@ -87,7 +87,7 @@ await bunMock.module("../../src/server/http.js", () => ({
   enumerateLocalTailnetCandidates: async () => ({ candidates: [] }),
 }));
 
-const { __setTestBackend } = await import("../../src/server/backend.ts");
+const { createServerContext } = await import("../../src/server/context.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
 
 // ── Mock backend ──
@@ -122,7 +122,7 @@ if (process.env.WOLFPACK_E2E_CANONICAL_SESSION_IDS === "1") {
     return identities;
   };
 }
-__setTestBackend(mock);
+const context = createServerContext({ backend: mock });
 
 // Only the dedicated lifecycle fixture emits a completed mock-backend exit.
 // Keep the real /api/kill, event bus, filtered SSE route and /api/sessions path;
@@ -136,7 +136,8 @@ if (process.env.WOLFPACK_E2E_LIFECYCLE_EVENTS === "1") {
   };
 }
 
-const { server } = await import("../../src/server/index.ts");
+const { createServerInstance } = await import("../../src/server/index.ts");
+const { server } = createServerInstance(context);
 
 // Suppress expected tmux noise
 const origError = console.error;

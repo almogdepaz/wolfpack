@@ -4,7 +4,6 @@ import {
   BrokerSupervisor as BackendRouter,
   checkBrokerSocketExists,
 } from "../../src/server/broker-supervisor";
-import { __resetBackend } from "../../src/server/backend";
 import { createServerContext } from "../../src/server/context";
 const backendFor = (supervisor: BackendRouter) => createServerContext({ supervisor }).backend;
 
@@ -28,7 +27,6 @@ const loadSettings = () => ({ agentCmd: "shell" });
 describe("BrokerSupervisor", () => {
   beforeEach(() => {
     process.env.WOLFPACK_TEST = "1";
-    __resetBackend();
   });
 
   describe("list()", () => {

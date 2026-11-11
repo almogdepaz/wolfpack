@@ -12,11 +12,11 @@ process.env.WOLFPACK_TAILSCALE_STATUS_JSON = JSON.stringify({
 });
 
 const { __resetJwtAuthConfig } = await import("../../src/test-hooks.ts");
-const { __setTestBackend } = await import("../../src/server/backend.ts");
+const { createServerContext } = await import("../../src/server/context.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
 __resetJwtAuthConfig();
 
-__setTestBackend(new MockBackend({ sessions: ["rate-test"] }));
+const context = createServerContext({ backend: new MockBackend({ sessions: ["rate-test"] }) });
 
 const {
   createServerInstance,
@@ -24,7 +24,7 @@ const {
   __globalRateLimiter,
 } = await import("../../src/server/index.ts") as any;
 
-const { server } = createServerInstance();
+const { server } = createServerInstance(context);
 
 let port = 0;
 let baseUrl = "";

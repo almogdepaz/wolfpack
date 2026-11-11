@@ -2,7 +2,7 @@
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
-import { __setTestBackend } from "../../../src/server/backend.ts";
+import { createServerContext, setDefaultServerContext } from "../../../src/server/context.ts";
 import { MockBackend } from "../../../src/server/mock-backend.ts";
 import { createServerInstance } from "../../../src/server/index.ts";
 import { getTaskRelayGateway, __resetTaskRelayGatewayForTests } from "../../../src/server/task-gateways.ts";
@@ -21,11 +21,12 @@ class PiBackend extends MockBackend {
     }]));
   }
 }
-__setTestBackend(new PiBackend({ sessions: ["sender", "receiver"] }));
+const context = createServerContext({ backend: new PiBackend({ sessions: ["sender", "receiver"] }) });
+setDefaultServerContext(context);
 // Durable mode only serves the profile rejection path. It must not open the
 // deliberately malformed historical ledger used by this fixture.
 if (profile === "volatile-v1") await getTaskRelayGateway().initialize();
-const { server, wss } = createServerInstance();
+const { server, wss } = createServerInstance(context);
 let stopping = false;
 process.on("SIGTERM", () => {
   if (stopping) return; stopping = true;

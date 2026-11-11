@@ -51,22 +51,21 @@ const defaultTailscaleStatus = JSON.stringify({
 process.env.WOLFPACK_TAILSCALE_STATUS_JSON = defaultTailscaleStatus;
 
 const {
-  __resetBackend,
   __resetJwtAuthConfig,
   __setDevDir,
-  __setTestBackend,
   MockBackend,
 } = await import("../../src/test-hooks.ts");
 __resetJwtAuthConfig();
 __setDevDir(testRoot);
-__setTestBackend(new MockBackend({ sessions: [] }));
+const { createServerContext } = await import("../../src/server/context.ts");
+const context = createServerContext({ backend: new MockBackend({ sessions: [] }) });
 
 const {
   createServerInstance,
   __globalRateLimiter,
   __pollRateLimiter,
 } = await import("../../src/server/index.ts");
-const { server } = createServerInstance();
+const { server } = createServerInstance(context);
 let base = "";
 
 beforeAll(async () => {
@@ -86,7 +85,6 @@ afterAll(async () => {
   __pollRateLimiter._map.clear();
   __globalRateLimiter._map.clear();
   rmSync(testRoot, { recursive: true, force: true });
-  __resetBackend();
   __setDevDir(PRIOR_CACHED_DEV_DIR);
   for (const [key, value] of Object.entries(PRIOR_ENV)) {
     if (key === "WOLFPACK_TEST") continue;

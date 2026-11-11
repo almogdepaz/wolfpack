@@ -13,11 +13,11 @@ process.env.WOLFPACK_TAILSCALE_STATUS_JSON = JSON.stringify({
 
 // Reset cached auth config + dynamic import so env vars take effect
 const { __resetJwtAuthConfig } = await import("../../src/test-hooks.ts");
-const { __setTestBackend } = await import("../../src/server/backend.ts");
+const { createServerContext } = await import("../../src/server/context.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
 __resetJwtAuthConfig();
 
-__setTestBackend(new MockBackend({ sessions: ["auth-session"] }));
+const context = createServerContext({ backend: new MockBackend({ sessions: ["auth-session"] }) });
 
 const {
   __pollRateLimiter,
@@ -25,7 +25,7 @@ const {
   __wsUpgradeRateLimiter,
   createServerInstance,
 } = await import("../../src/server/index.ts");
-const { server } = createServerInstance();
+const { server } = createServerInstance(context);
 
 const AUTH_SECRET = process.env.WOLFPACK_JWT_SECRET!;
 const AUTH_AUDIENCE = "wolfpack-client";

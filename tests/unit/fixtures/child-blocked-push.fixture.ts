@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { assertNotificationFixtureHome } from "./run-notification-test.ts";
 assertNotificationFixtureHome();
 const { MockBackend } = await import("../../../src/server/mock-backend.ts");
-const { __setTestBackend, getBackend } = await import("../../../src/server/backend.ts");
+// The observation singleton remains on the production composition binding until C4.
+const { createServerContext, getDefaultServerContext, setDefaultServerContext } = await import("../../../src/server/context.ts");
 const { addSubscription, removeSubscription, _testing } = await import("../../../src/server/push.ts");
 const {
   __resetSessionObservationForTests,
@@ -23,7 +24,7 @@ const { invalidateQuietAlertPolicy } = await import("../../../src/quiet-alert-po
 const realNow = Date.now;
 let offsetMs = 0;
 let backend: InstanceType<typeof MockBackend>;
-let previousBackend: ReturnType<typeof getBackend>;
+let previousContext: ReturnType<typeof getDefaultServerContext>;
 let endpoint: string;
 let payloads: string[];
 let projectDir: string;
@@ -55,10 +56,10 @@ beforeEach(() => {
   Date.now = () => realNow() + offsetMs;
   writeQuietAlertMode(QUIET_ALERT_MODE.NEEDS_INPUT_ONLY);
   projectDir = mkdtempSync(join(tmpdir(), "wolfpack-blocked-push-"));
-  previousBackend = getBackend();
+  previousContext = getDefaultServerContext();
   backend = new MockBackend();
   backend.setCapturePane(async () => "$ same screen");
-  __setTestBackend(backend);
+  setDefaultServerContext(createServerContext({ backend }));
   __resetSessionObservationForTests();
   __resetChildEventsForTests();
   endpoint = `https://fcm.googleapis.com/blocked-push-${realNow()}-${Math.random()}`;
@@ -71,7 +72,7 @@ afterEach(async () => {
   await stopSessionNotificationObserver();
   _testing.sessionPushSender = null;
   removeSubscription(endpoint);
-  __setTestBackend(previousBackend);
+  setDefaultServerContext(previousContext);
   Date.now = realNow;
   rmSync(projectDir, { recursive: true, force: true });
 });

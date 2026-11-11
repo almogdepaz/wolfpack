@@ -24,7 +24,7 @@ if (!socketPath) {
   process.exit(1);
 }
 
-const { __setTestBackend } = await import("../../src/server/backend.ts");
+const { createServerContext } = await import("../../src/server/context.ts");
 const { BrokerClient } = await import("../../src/broker/client.ts");
 const { BrokerBackend } = await import("../../src/server/broker-backend.ts");
 
@@ -64,9 +64,10 @@ if (!brokerReady) {
 }
 
 const backend = new BrokerBackend(brokerClient);
-__setTestBackend(backend);
+const context = createServerContext({ backend });
 
-const { server } = await import("../../src/server/index.ts");
+const { createServerInstance } = await import("../../src/server/index.ts");
+const { server } = createServerInstance(context);
 
 const origError = console.error;
 console.error = (...args: unknown[]) => {
