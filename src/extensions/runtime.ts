@@ -14,6 +14,7 @@ import { isAbsolute, join, relative, resolve, dirname } from "node:path";
 import { WOLFPACK_DIR } from "../config.ts";
 import { getInstallationId } from "../tailnet-machine-installation.ts";
 import { writePrivateJsonFile } from "../persistence.ts";
+import { acquireRegistryLock, RegistryLockError } from "./registry-lock.ts";
 import {
   compileStaticDocumentSchema,
   visitExtensionDocumentFiles,
@@ -243,19 +244,18 @@ export class ExtensionRuntime {
   }
   private withLock<T>(fn: () => T): T {
     this.ensureRoot();
-    const lock = join(this.root, ".registry-lock");
+    let release: () => void;
     try {
-      mkdirSync(lock, { mode: 0o700 });
-    } catch {
-      throw new ExtensionRuntimeError(
-        "BUSY",
-        "extension registry has an active transaction; no automatic recovery",
-      );
+      release = acquireRegistryLock(this.root);
+    } catch (error) {
+      if (error instanceof RegistryLockError)
+        throw new ExtensionRuntimeError("BUSY", error.message);
+      throw error;
     }
     try {
       return fn();
     } finally {
-      rmSync(lock, { recursive: true, force: true });
+      release();
     }
   }
   private inventory(root: string): {

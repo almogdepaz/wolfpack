@@ -1,11 +1,15 @@
 import { syncBuiltinESMExports } from "node:module";
 import { isAbsolute, join } from "node:path";
 
-// Measurement only until plan 007's harness gate is approved.
+// Loaded only in owned crash-test children; the parent never patches fs.
 const target = process.env.WP_CRASH_AT;
 if (target !== undefined) {
   const root = process.env.WP_CRASH_ROOT;
   const killAt = Number(target);
+  const recoveryState = process.env.WP_CRASH_RECOVERY_STATE;
+  if (recoveryState !== undefined && !["ownerless", "published", "retired"].includes(recoveryState)) {
+    throw new Error("unknown recovery crash state");
+  }
   if (!root || !isAbsolute(root) || !Number.isSafeInteger(killAt) || killAt < 1) {
     throw new Error("crash injection requires an absolute private root and positive call index");
   }
@@ -19,7 +23,14 @@ if (target !== undefined) {
       configurable: true,
       writable: true,
       value: function (this: unknown, ...args: unknown[]) {
-        if (fs.existsSync(lock) && ++calls === killAt) {
+        const locked = fs.existsSync(lock);
+        if (locked) calls++;
+        const recovery = `${lock}.recovery`;
+        const recoveryExists = recoveryState !== undefined && fs.existsSync(recovery);
+        const ownerPublished = recoveryExists && fs.existsSync(join(recovery, "owner.json"));
+        const matchesRecovery = recoveryExists && (recoveryState === "ownerless" ? !ownerPublished
+          : recoveryState === "published" ? ownerPublished && locked : !locked);
+        if (recoveryState === undefined ? locked && calls === killAt : matchesRecovery) {
           writeEvidence(2, JSON.stringify({ event: "crash", call: calls, name, pid: process.pid }) + "\n");
           process.kill(process.pid, "SIGKILL");
         }

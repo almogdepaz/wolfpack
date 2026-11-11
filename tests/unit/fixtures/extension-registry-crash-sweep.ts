@@ -11,7 +11,7 @@ const preload = join(repo, "tests/unit/fixtures/fs-crash-preload.ts");
 const child = join(repo, "tests/unit/fixtures/extension-registry-crash-child.ts");
 const hostId = "11111111-1111-4111-8111-111111111111";
 const operations = ["install-v1", "install-v2", "remove", "purge"];
-const records: Array<{ op: string; k: number; killed: boolean; stranded: boolean; busy: boolean; leftovers: object; faults: object[] }> = [];
+const records: Array<{ op: string; k: number; killed: boolean; stranded: boolean; busy: boolean; publishedOwner: boolean; automatic: boolean; leftovers: object; faults: object[] }> = [];
 const started = performance.now();
 const save = () => writeFileSync(join(out, "results.json"), JSON.stringify({ seconds: (performance.now() - started) / 1000, records }, null, 2));
 const errorInfo = (error: unknown): { name?: string; message: string; code?: string } => error instanceof Error ? { name: error.name, message: error.message, code: (error as { code?: string }).code } : { message: String(error) };
@@ -31,7 +31,7 @@ for (const op of operations) {
     if (op !== "install-v1") await runtime.install({ source: v1, trustBrowserCode: true });
     if (op === "purge") await runtime.install({ source: v2, trustBrowserCode: true });
     const result = spawnSync(process.execPath, ["--preload", preload, child], {
-      env: { ...process.env, WP_CRASH_AT: String(k), WP_CRASH_ROOT: root, WP_CRASH_SOURCE: source, WP_CRASH_OP: op },
+      env: { ...process.env, WP_CRASH_AT: String(k), WP_CRASH_ROOT: root, WP_CRASH_SOURCE: source, WP_CRASH_OP: op, WP_CRASH_RECOVERY_STATE: undefined },
       encoding: "utf8", timeout: 10000,
     });
     writeFileSync(join(base, "child.json"), JSON.stringify({ status: result.status, signal: result.signal, error: result.error?.message, stdout: result.stdout, stderr: result.stderr }, null, 2));
@@ -42,11 +42,22 @@ for (const op of operations) {
     const lock = join(root, ".registry-lock");
     const stranded = existsSync(lock);
     let busy = false;
+    let publishedOwner = false;
     if (stranded) {
-      try { runtime.setEnabled("fixture", true); }
-      catch (error) { busy = errorInfo(error).code === "BUSY"; }
-      assert(busy, "stranded lock did not reject a mutation with BUSY");
-      rmSync(lock, { recursive: true, force: true });
+      try {
+        const owner = JSON.parse(readFileSync(join(lock, "owner.json"), "utf8"));
+        publishedOwner = owner.pid === result.pid && typeof owner.startTime === "string" && owner.startTime.length > 0;
+      } catch { /* Missing/partial records are the explicitly manual crash class. */ }
+      if (!publishedOwner) {
+        try { await runtime.install({ source, trustBrowserCode: true }); }
+        catch (error) {
+          const info = errorInfo(error);
+          busy = info.code === "BUSY" && info.message.includes(lock) && info.message.includes("remove it manually");
+        }
+        assert(busy, "publication-gap lock did not fail closed with manual guidance");
+        assert(existsSync(lock), "publication-gap lock was cleared automatically");
+        rmSync(lock, { recursive: true, force: true });
+      }
     }
     const faults: object[] = [];
     let registry: { installations: Array<{ extensionId: string; snapshot: string; previous?: { snapshot: string } }> } | undefined;
@@ -78,7 +89,13 @@ for (const op of operations) {
       try { await new ExtensionRuntime({ root, installationId: hostId }).install({ source, trustBrowserCode: true }); }
       catch (error) { faults.push({ check: "c", ...errorInfo(error) }); }
     }
-    records.push({ op, k, killed, stranded, busy, leftovers, faults });
+    const automatic = killed && publishedOwner && faults.length === 0;
+    if (faults.length === 0) {
+      assert(!existsSync(lock), "retry left the canonical lock");
+      assert(!existsSync(`${lock}.recovery`), "retry left a recovery guard");
+      assert(!readdirSync(root).some(name => name.startsWith(".registry-lock.stale-")), "retry left a retired lock");
+    }
+    records.push({ op, k, killed, stranded, busy, publishedOwner, automatic, leftovers, faults });
     save();
     if (faults.length) throw new Error(`STOP half-written ${op}/${k}: ${JSON.stringify(faults)}`);
     if (!killed) {
