@@ -178,6 +178,34 @@ for (const scenario of [
   }
 });
 
+test("a phone defaults a capped reply-only panel to collapsed, but retains an explicit expansion", async ({ page }, info) => {
+  test.skip(info.project.name === "desktop", "mobile default sizing");
+  await realisticFocus(page, false, "scroll"); await ready(page);
+  const toggle = page.locator('#dashboard-focus [data-focus-action="toggle-dashboard"]');
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await toggle.tap();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await page.reload();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+});
+
+test("phone controls stay above the scrolling session list without changing the panel cap", async ({ page }, info) => {
+  test.skip(info.project.name === "desktop", "mobile sticky controls");
+  await realisticFocus(page, true, "scroll"); await ready(page);
+  const controls = page.locator("#session-dashboard-controls");
+  await expect(controls).toHaveCSS("position", "sticky");
+  const before = await controls.boundingBox();
+  await page.locator("#session-list").evaluate(el => { el.scrollTop = 500; });
+  expect((await controls.boundingBox())!.y).toBe(before!.y);
+  expect((await page.locator("#dashboard-focus").boundingBox())!.height).toBeLessThanOrEqual(page.viewportSize()!.height * .6 + 1);
+  await page.locator('#dashboard-focus [data-focus-action="toggle-dashboard"]').tap();
+  await page.locator("#sessions-view").evaluate(el => { el.scrollTop = 500; });
+  const bounds = await controls.boundingBox();
+  const view = await page.locator("#sessions-view").boundingBox();
+  expect(bounds!.y).toBeCloseTo(view!.y, 0);
+  expect(bounds!.y + bounds!.height).toBeLessThan(page.viewportSize()!.height - 84);
+});
+
 test("phone disclosure keeps its choice across reload, shows attention, and has a 44px target", async ({ page }, info) => {
   test.skip(info.project.name === "desktop", "mobile disclosure");
   await realisticFocus(page); await ready(page);
@@ -265,6 +293,8 @@ test("expanded dashboard scrolls its last card control while keeping a usable se
   });
   await ready(page);
   const panel = page.locator("#dashboard-focus");
+  const toggle = panel.locator('[data-focus-action="toggle-dashboard"]');
+  if (await toggle.getAttribute("aria-expanded") === "false") await toggle.click();
   const cards = panel.locator(".focus-next .focus-card");
   await expect(cards).toHaveCount(3);
   for (let i = 0; i < 3; i++) await cards.nth(i).locator("summary").click();

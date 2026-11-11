@@ -5,7 +5,7 @@ import { startTestServer, type TestServer } from "./helpers";
 let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer({ focusAssistant: true }); });
 test.afterAll(async () => { await server?.close(); });
-async function fixture(page: Page, denied = false) {
+async function fixture(page: Page, denied = false, attention?: { id: number; at: string }) {
   const episode = new Date().toISOString();
   await page.addInitScript(({ denied }) => {
     localStorage.setItem("wolfpack-sidebar-pinned", "1");
@@ -23,8 +23,9 @@ async function fixture(page: Page, denied = false) {
     const seed = body.sessions.find((s: { name: string }) => s.name === "prompt-project");
     body.sessions = [...body.sessions.filter((s: { name: string }) => s.name === "assistant"), ...Array.from({ length: 32 }, (_, i) => ({ ...seed,
       name: `work-${i}`, identity: { ...seed.identity, wolfpackSessionId: `mock:work-${i}`, projectPath: `/work/project-${i}` },
-      runtimeState: { ...seed.runtimeState, state: i === 0 ? "needs-input" : i === 1 ? "done" : "working", inputKind: i === 0 ? "question" : undefined,
-        authority: "program", stale: false, unseen: true, changedAt: episode, ...(i === 1 ? { stoppedAt: episode, stoppedSequence: 5, acknowledgedSequence: 0 } : {}) },
+      runtimeState: { ...seed.runtimeState, state: i === 0 || i === attention?.id ? "needs-input" : i === 1 ? "done" : "working", inputKind: i === 0 || i === attention?.id ? "question" : undefined,
+        authority: "program", stale: false, unseen: true, changedAt: i === attention?.id ? attention.at : episode,
+        ...(i === attention?.id ? { stoppedAt: attention.at } : i === 1 ? { stoppedAt: episode, stoppedSequence: 5, acknowledgedSequence: 0 } : {}) },
     }))];
     await route.fulfill({ response, json: body });
   });
@@ -128,6 +129,29 @@ for (const surface of ["main", "sidebar"]) test(`Space activation survives a dat
   await page.keyboard.up("Space");
   await expect(toggle).toBeFocused();
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
+});
+
+test("new desktop attention expands once and respects a later manual collapse", async ({ page }, info) => {
+  test.skip(info.project.name !== "desktop", "desktop attention");
+  const attention = { id: -1, at: "2026-11-11T12:01:00Z" };
+  await fixture(page, false, attention);
+  const toggle = page.locator('#dashboard-focus [data-focus-action="toggle-dashboard"]');
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  attention.id = 2;
+  const refresh = async () => {
+    const response = page.waitForResponse(r => new URL(r.url()).pathname === "/api/sessions");
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    await response;
+  };
+  await refresh();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await toggle.click();
+  await refresh();
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  attention.at = "2026-11-11T12:02:00Z";
+  await refresh();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
 });
 
 test("desktop disclosure retains an in-memory choice when storage is denied", async ({ page }, info) => {

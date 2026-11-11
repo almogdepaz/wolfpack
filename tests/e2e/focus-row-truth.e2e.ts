@@ -62,7 +62,7 @@ for (const [state, inputKind, label, verb] of [
   const row = block.locator(".focus-next li").filter({ hasText: "prompt-project" });
   const tag = state === "needs-input" ? inputKind === "permission" ? "approve" : inputKind === "auth" ? "log in" : inputKind === "question" ? "answer" : "needs you" : state === "done" ? "done" : label;
   await expect(row.locator("summary .focus-tag")).toHaveText(tag);
-  await expect(row.locator("summary span.focus-meta")).toContainText("prompt-project · 12m");
+  await expect(row.locator("summary span.focus-meta")).toContainText(state === "done" || state === "idle" ? /prompt-project · \d{2}:\d{2}/ : "prompt-project · 12m");
   await expandFocusCard(row);
   await expect(row.getByRole("button", { name: "Open prompt-project", exact: true })).toHaveText("open ›");
   await block.getByRole("button", { name: "Open assistant", exact: true }).click();
@@ -288,7 +288,7 @@ test("many stops: twelve unseen episodes remain capped without an hours cutoff",
   const block = page.locator("#dashboard-focus");
   await expect(block.locator(".focus-next > li")).toHaveCount(3);
   await expect(block.locator(".focus-next .focus-title")).toHaveText(names.slice(0, 3).map((name, i) => `${name} ${i % 2 ? "stopped" : "is done"}`));
-  await expect(block.locator(".focus-next span.focus-meta")).toHaveText(names.slice(0, 3).map((name, i) => `${name} · ${i + 2}d · research-${i % 3 + 1}`));
+  await expect(block.locator(".focus-next span.focus-meta")).toHaveText(names.slice(0, 3).map((name, i) => new RegExp(`${name} · \\d{2}:\\d{2} · research-${i % 3 + 1}`)));
   const shots = process.env.WOLFPACK_FOCUS_SHOTS;
   if (shots) {
     mkdirSync(shots, { recursive: true });

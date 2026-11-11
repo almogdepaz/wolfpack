@@ -85,6 +85,9 @@ export function createAssistantView(deps: {
   const desktopDisclosure = createFocusMobileDisclosure(undefined, { key: FOCUS_DESKTOP_EXPANDED_KEY, defaultExpanded: true });
   const dashboardDisclosure = () => isDesktop() ? desktopDisclosure : mobileDisclosure;
   let dashboardAttention = false;
+  let desktopAttentionKeys: Set<string> | undefined;
+  let mobileOverCap = false;
+  let mobileAttention = false;
   const pageNextCap = () => showAllNext ? Infinity : 5;
   let wasEnabled = false;
   let sidebarOwnsChooser = false;
@@ -155,7 +158,8 @@ export function createAssistantView(deps: {
   const nextRows = (cap: number) => cardOrder().cards.slice(0, Math.max(0, cap)).map(card => card.row);
   const orderLabel = () => {
     const order = nextOrder(0);
-    return order.order === "assistant" ? `ordered ${age(order.updatedAt!)} ago` : order.order === "expired" ? "by rules · order expired" : "by rules";
+    const relative = order.updatedAt && age(order.updatedAt);
+    return order.order === "assistant" ? `ordered ${relative === "now" ? "just now" : `${relative} ago`}` : order.order === "expired" ? "by rules · order expired" : "by rules";
   };
   // The cached copy carries the home's resolved name, so an offline first answer names the right machine.
   const cache = (value: FocusResponse) => { try { localStorage.setItem(cacheKey, JSON.stringify({ ...value, homeName, machine, terminalOwner })); } catch { /* storage unavailable; live view still works */ } };
@@ -448,13 +452,13 @@ export function createAssistantView(deps: {
       const actionName = replyBox ? `Send to ${row.session?.name ?? title}` : done ? `Mark done: ${done.title}` : row.session ? `${verb} ${title}` : title;
       const action = replyBox && (receipt?.state === "sent" || receipt?.state === "check") ? "" : `<button type="button"${replyBox ? ` aria-describedby="${messageId}-description"` : ' class="focus-action"'}${sessionLocked() || row.unavailable || (replyBox && (!reply.trim() || receipt && receipt.state !== "retry")) ? " disabled" : ""} data-focus-next="${escAttr(actionKey)}" data-focus-key="${escAttr(`act:${key}`)}" aria-label="${escAttr(actionName)}">${esc(verb)}${verb === "sending…" ? "" : '<span aria-hidden="true"> ›</span>'}</button>`;
       const open = row.session ? `<button type="button" data-focus-session="${escAttr(row.session.id)}" data-focus-key="${escAttr(`open:${key}`)}" aria-label="${escAttr(`Open ${name}`)}"${sessionLocked() || row.unavailable ? " disabled" : ""}>open<span aria-hidden="true"> ›</span></button>` : "";
-      const meta = row.session ? [`<b>${esc(name)}</b>`, row.session.changedAt && age(row.session.changedAt), project(row.session.cwd), new Set(sessions().map(s => s.machine)).size > 1 && esc(row.session.machine ?? "")].filter(Boolean).join(" · ") : [project(row.intention?.project), row.intention?.machine && row.intention.machine !== deps.localMachineName() ? esc(row.intention.machine) : ""].filter(Boolean).join(" · ");
+      const meta = row.session ? [`<b>${esc(name)}</b>`, row.session.changedAt && (kind === "done" ? clock(row.session.stoppedAt ?? row.session.changedAt) : age(row.session.changedAt)), project(row.session.cwd), new Set(sessions().map(s => s.machine)).size > 1 && esc(row.session.machine ?? "")].filter(Boolean).join(" · ") : [project(row.intention?.project), row.intention?.machine && row.intention.machine !== deps.localMachineName() ? esc(row.intention.machine) : ""].filter(Boolean).join(" · ");
       const lineChars = Array.from(row.session?.lastLine ?? "");
       const preview = lineChars.length > 100 ? "…" + lineChars.slice(-100).join("") : lineChars.join("");
       const summary = `<span class="focus-tag">${esc(cardTag(row))}${suggest && drafts.has(actionKey) && reply !== row.triage?.suggestion && !delivered ? " · edited" : ""}</span><span class="focus-title">${esc(cardHeadline(row))}</span><span class="focus-meta">${meta}</span>${!row.triage && preview ? `<q class="focus-meta">${esc(preview)}</q>` : ""}`;
       const lastLine = lineChars.length > 160 ? "…" + lineChars.slice(-160).join("") : lineChars.join("");
       const draft = replyBox ? `<div id="${messageId}-caption" class="focus-caption">message to ${esc(name)} · typed into its terminal and submitted</div><textarea id="${messageId}" data-focus-reply="${escAttr(actionKey)}" data-focus-key="${escAttr(`reply:${actionKey}`)}" aria-label="${escAttr(`reply to ${name}`)}" aria-describedby="${messageId}-caption" placeholder="${kind === "done" ? "follow up with" : "reply to"} ${escAttr(name)}…" maxlength="${FOCUS_REPLY_MAX_LENGTH}" rows="1"${readOnly ? " readonly" : ""}>${esc(reply)}</textarea><span id="${messageId}-description" class="visually-hidden">${esc(reply)}</span>${receipt && receipt.state !== "sending" ? `<small role="status"${receipt.state === "sent" ? "" : ' class="focus-notes"'}>${receipt.state === "sent" ? `✓ ${esc(receipt.label)} · ${age(receipt.at)} ago` : esc(receipt.label)}</small>` : ""}${action} ${suggest && !delivered && reply !== row.triage!.suggestion! ? `<button type="button" data-focus-reset="${escAttr(actionKey)}" data-focus-key="${escAttr(`reset:${actionKey}`)}"${readOnly ? " disabled" : ""}>reset</button>` : ""}${done ? `<button type="button" data-focus-mark-done="${escAttr(bindAction(row, "done"))}" aria-label="${escAttr(`Mark done: ${done.title}`)}" data-focus-key="${escAttr(`done:${key}`)}"${sessionLocked() || row.unavailable ? " disabled" : ""}>done ›</button>` : ""}` : "";
-      const body = row.session ? field(`last line from ${esc(name)}`, lastLine ? `<q><code>${esc(lastLine)}</code></q>` : "")
+      const body = row.session ? field("last line", lastLine ? `<q><code>${esc(lastLine)}</code></q>` : "")
         + (row.triage ? `<div data-focus-clamped hidden><dt>assistant</dt><dd>${esc(row.reason)}</dd></div>` : "") + field("for", esc(row.intention?.title ?? ""))
         : row.intention ? intentionBody(row.intention, key, row.triage?.reason ?? "no live session") : field("reason", esc(row.reason));
       const controls = `<div class="focus-draft">${draft}${!replyBox && (!row.session || done) ? action : ""}${row.session && !replyBox ? '<span class="focus-caption">answer in the terminal</span>' : ""}${row.unavailable ? '<p class="focus-notes">not reached</p>' : ""}${kind === "done" ? `<button type="button" data-focus-next="${escAttr(bindAction(row, "seen"))}" data-focus-key="${escAttr(`seen:${key}`)}"${sessionLocked() || row.unavailable ? " disabled" : ""}>mark seen</button>` : ""}${open}</div>`;
@@ -651,7 +655,15 @@ export function createAssistantView(deps: {
     const suggestions = replyReady;
     const attentionLabel = nextSummary;
     dashboardAttention = needsYouCount > 0 || suggestions > 0 || sessions().some(session => session.state === "failed") || state === "needs you" || state === "failed" || !!r?.surfaced;
-    const dashboardExpanded = dashboardDisclosure().expanded(dashboardAttention);
+    if (answered && deps.sessionsAvailable()) {
+      const attentionKeys = new Set(cards.filter(card => card.kind === "action").map(({ row }) => describeAction(row)?.key ?? ""));
+      // Seed on load, so a saved collapse survives reload. Only newly arriving
+      // attention overrides it; a manual collapse after that survives polls.
+      if (isDesktop() && desktopAttentionKeys && [...attentionKeys].some(key => !desktopAttentionKeys!.has(key)) && !desktopDisclosure.expanded(dashboardAttention)) desktopDisclosure.toggle(dashboardAttention);
+      desktopAttentionKeys = attentionKeys;
+    }
+    mobileAttention = dashboardAttention && (!mobileOverCap || actionCards > 0 || state === "needs you");
+    const dashboardExpanded = isDesktop() ? desktopDisclosure.expanded(dashboardAttention) : mobileDisclosure.expanded(mobileAttention);
     const sidebarExpanded = desktopDisclosure.expanded(dashboardAttention);
     // Keep frame buttons attached across polls: replacing a focused button between Space down/up cancels native activation.
     const disclosureFrame = (id: string) => `<button id="${id}" type="button" class="focus-mobile-toggle" data-focus-action="toggle-dashboard" data-focus-key="action:toggle-dashboard"></button>`;
@@ -689,6 +701,12 @@ export function createAssistantView(deps: {
     const dashboardBody = !enabled ? "" : `<div class="focus-header">${attn || `${tone}${button("view", "assistant", "Open assistant", false, "view-title")}<small${catching ? ' class="focus-spin"' : ""}>${esc(info)}</small>`}${sessionNotice}<small>${esc(orderLabel())}</small>${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${focus?.document ? nextHtml("d", 3) + takeHtml() + `<small>${esc(nextSummary)}${current.intentions.length ? ` · today ${summary}` : ""}</small>` : `<p>Set your focus</p>${addForm(true)}`}${error && !focusUnavailable ? `<p role="status">${esc(error)}</p>` : ""}`;
     replace("dashboard-focus-details", dashboardBody);
     replace("assistant-content", !enabled ? "" : `<div class="focus-header">${attn || `<span title="${escAttr(info)}"${catching ? ' class="focus-spin"' : ""}>${tone} ${esc(info)}</span>`}${sessionNotice}<small>${esc(orderLabel())}</small><span class="focus-header-actions"><button type="button" class="focus-talk" data-focus-action="talk" data-focus-key="action:talk" aria-label="Talk to assistant"${terminalUnavailable() ? ` title="${escAttr(terminalUnavailable()!)}"` : ""}${!terminalTarget() ? " disabled" : ""}>talk<span aria-hidden="true"> ›</span></button>${button("settings", "settings", "Assistant settings")}</span></div>${notes}<h2>next <small>${esc(nextSummary)}</small></h2>${nextHtml("p", pageNextCap(), showAllNext)}${moreNext}${takeHtml()}${current.intentions.length && next.length ? `<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details>` : ""}${current.intentions.length ? `<h2>today <small>${summary}</small></h2>${todayHtml(open)}` : ""}${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>${doneHtml}${yesterday}`);
+    // Initial session/peer lists can arrive separately. Latch the oversized default
+    // from rendered content; a stored/in-memory user preference still wins.
+    if (!isDesktop() && !mobileOverCap && dashboardExpanded && answered && deps.sessionsAvailable() && block?.clientHeight) {
+      mobileOverCap = block.scrollHeight > innerHeight * .6;
+      if (mobileOverCap && !actionCards && state !== "needs you" && dashboardExpanded && !mobileDisclosure.expanded(false)) { render(); return; }
+    }
     syncReplyControls();
     for (const field of document.querySelectorAll<HTMLElement>("[data-focus-clamped]")) {
       const headline = field.closest("details")?.querySelector<HTMLElement>("summary .focus-title");
@@ -971,7 +989,7 @@ export function createAssistantView(deps: {
       if (!target) return;
       const action = target.dataset.focusAction;
       if (action === "toggle-dashboard") {
-        (id === "sidebar-assistant" ? desktopDisclosure : dashboardDisclosure()).toggle(dashboardAttention); render();
+        (id === "sidebar-assistant" ? desktopDisclosure : dashboardDisclosure()).toggle(isDesktop() ? dashboardAttention : mobileAttention); render();
         return;
       }
       if (action === "view") deps.show("assistant");

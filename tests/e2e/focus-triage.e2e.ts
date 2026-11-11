@@ -83,7 +83,7 @@ for (const width of [1440, 1280, 390]) test(`triage ${width}: exact draft, reaso
   await expandFocusCard(block.locator(".focus-next > li").first());
   await expect(block.getByRole("textbox", { name: "reply to prompt-project", exact: true })).toHaveValue(draft);
   await expect(block.locator(".focus-next")).not.toContainText("another-project");
-  await expect(block).toContainText(/ordered (now|\d+m) ago/);
+  await expect(block).toContainText(/ordered (just now|\d+m ago)/);
   await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("1 reply ready:");
   await expect(page.locator("#sidebar-assistant .assistant-tile-next")).toContainText("The approved plan is ready to continue");
   expect(sends).toEqual([]);
@@ -93,7 +93,7 @@ for (const width of [1440, 1280, 390]) test(`triage ${width}: exact draft, reaso
   const row = view.locator(".focus-next > li").first();
   await expandFocusCard(row);
   await expect(row.locator("summary")).toContainText("The approved plan is ready to continue");
-  await expect(row.locator(".focus-card-body")).toContainText("last line from prompt-projectStep 2 done. Continue with step 3?");
+  await expect(row.locator(".focus-card-body")).toContainText("last lineStep 2 done. Continue with step 3?");
   const send = row.locator(".focus-draft").getByRole("button", { name: "Send to prompt-project", exact: true });
   await expect(send).toHaveText("send to prompt-project ›");
   await expect(send).toHaveAttribute("aria-describedby", `${await row.locator(".focus-draft textarea").getAttribute("id")}-description`);

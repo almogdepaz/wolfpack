@@ -120,6 +120,23 @@ test("mixed cards, waiting line and grouped done work expose the next decision",
     }), "done controls stay inside the 720px/390px container, including element screenshots").toBe(true);
   }
   await expect(view.locator(".focus-yesterday")).toHaveText("yesterday· 1 question for you · 2 carried over · 3 doneread ›");
+  const finishClock = await page.evaluate(at => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }), at(11));
+  await expect.soft(view.locator('.focus-next > [data-kind="done"] span.focus-meta')).toContainText(finishClock);
+  await expect.soft(replyCard.locator("dt").first()).toHaveText("last line");
+  await expect.soft(view.locator(".focus-header")).toContainText(/ordered (just now|\d+[mhd] ago)/);
+  const why = view.locator(":scope > details").filter({ hasText: "why this order" });
+  await expect.soft(why.locator("summary")).toHaveCSS("min-height", desktop ? "24px" : "44px");
+  if (!desktop) {
+    const read = view.locator(".focus-yesterday button");
+    const readBox = (await read.boundingBox())!;
+    const lineBox = (await view.locator(".focus-yesterday").boundingBox())!;
+    expect.soft(readBox.y + readBox.height / 2, "read stays beside yesterday's summary, not below it").toBeLessThan(lineBox.y + lineBox.height - readBox.height / 2 + 1);
+    expect.soft(await read.evaluate(el => el.getBoundingClientRect().top <= el.previousElementSibling!.getBoundingClientRect().bottom)).toBe(true);
+  }
+  for (const width of desktop ? [1024, 1280, 1440] : [390]) {
+    await page.setViewportSize({ width, height: desktop ? 1200 : 844 });
+    for (const time of await view.locator(".focus-done .focus-time").all()) await expect(time).toBeVisible();
+  }
   expect((await new AxeBuilder({ page }).include("#assistant-content").analyze()).violations).toEqual([]);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   if (shots) {

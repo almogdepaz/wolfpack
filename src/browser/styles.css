@@ -2858,7 +2858,7 @@ body > header { height: 52px; min-height: 52px; }
   body.sessions-expanded #sessions-view #session-list { grid-template-columns: minmax(0,1fr); }
 }
 @media (max-width:768px) {
-  #session-dashboard-controls { padding: 4px 16px 12px; gap: 16px; }
+  #session-dashboard-controls { position: sticky; top: 0; z-index: 2; background: var(--surface-1); padding: 4px 16px 12px; gap: 16px; }
   .session-heading { flex: 1; }
   #session-summary { margin-top: 0; }
   #session-summary strong { white-space: nowrap; }
@@ -3080,9 +3080,11 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 .assistant-column summary { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; list-style: none; cursor: pointer; }
 .assistant-column details[open] > summary::before { transform: rotate(90deg); }
 .assistant-column details ol { margin: 0 0 4px; padding-left: 26px; line-height: 1.6; }
-.focus-yesterday { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 24px; color: var(--text-2); font-size: 13px; }
+#assistant-content > details + h2 { margin-top: 12px; }
+.focus-yesterday { display: flex; align-items: center; gap: 12px; margin-top: 24px; color: var(--text-2); font-size: 13px; }
+.focus-yesterday > span { flex: 1; min-width: 0; }
 .assistant-column .focus-yesterday h2 { margin: 0; }
-.focus-yesterday button { margin-left: auto; }
+.focus-yesterday button { flex: none; margin-left: auto; }
 .focus-terminal-header { flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--hairline); font-size: 13px; }
 .focus-terminal-header[hidden] { display: none; }
 .focus-terminal-header span { margin-right: auto; color: var(--text-3); }
@@ -3102,6 +3104,7 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 .app-dialog .app-dialog-scroll { max-height: 60vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 var(--font-mono); }
 .session-pin { width: 12px; height: 12px; color: var(--text-3); flex: none; }
 @media (min-width: 769px) {
+  #assistant-content > details > summary { min-height: 24px; }
   .focus-title { flex-basis: auto; }
   body.sessions-expanded #dashboard-focus { width: calc(100% - 96px); max-width: 1200px; margin: 12px auto 0; }
 }
