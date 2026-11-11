@@ -136,7 +136,7 @@ export async function createSelectedHostFixture(options: { readonly timeoutMs?: 
   }
   const context = createServerContext({ readTailscaleStatus: async () => JSON.parse(process.env.WOLFPACK_TAILSCALE_STATUS_JSON ?? "{}"), jwtAuthConfig: getJwtAuthConfig(), backend: new MockBackend({ sessions: [] }), extensionRouteService: new FixtureLocalRoutes(serviceOptions) });
   const { createServerInstance } = await import("../../src/server/index.ts");
-  const { server } = createServerInstance(context); const base = await listen(server);
+  const { server } = createServerInstance(context, { allowLocalOrigins: true }); const base = await listen(server);
   return {
     root, peers, localRuntime, base, localToken: fixtureToken(localSecret), fetchTrace, updateTopology, redirectBase, redirectTrace,
     async close() {
