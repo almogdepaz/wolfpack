@@ -106,23 +106,25 @@ test.skipIf(!source)("an exact retry remains confirmed when its mailbox becomes 
   } finally { release(); await f.close(); }
 });
 
-test.skipIf(!source)("mail arriving during fresh-generation inspection prevents predecessor replacement", async () => {
+test.skipIf(!source)("mail arriving during fresh-generation inspection belongs only to the retired lifetime", async () => {
   let delay = false, entered!: () => void, release!: () => void;
   const observed = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
   const f = await fixture(async selector => { if (delay && selector === "a") { entered(); await gate; } });
   try {
     const a = await f.open("a"), b = await f.open("b"); delay = true;
-    const pending = f.open("a").then(() => undefined, error => error);
+    const pending = f.open("a");
     await observed;
     const envelope = { envelopeId: randomUUID(), protocolVersion: 2, source: b.endpoint, target: a.endpoint,
       createdAt: new Date(f.clock.now).toISOString(), payload: "accepted during inspection" };
     expect(await f.gateway.request({ ...f.bound("b", b.endpoint), operation: "send", envelope })).toMatchObject({ ok: true });
-    // The live owner still wins. Once released, replacement must also preserve the new obligation.
+    // The live owner still wins. After disconnect, unread old-lifetime mail is discarded.
     delay = false;
     expect(await f.gateway.request({ ...f.bound("a", a.endpoint), operation: "disconnect" })).toMatchObject({ ok: true });
-    release(); expect(await pending).toMatchObject({ code: "RELAY_RESET" });
-    f.clock.now += 61_000; await a.connect();
-    expect(await f.gateway.request({ ...f.bound("a", a.endpoint), operation: "receive", cursor: "0" })).toMatchObject({ ok: true, value: { deliveries: [{ envelope }] } });
+    release(); const fresh = await pending;
+    expect(fresh.endpoint).not.toEqual(a.endpoint);
+    await fresh.receive(); expect(fresh.listTasks()).toHaveLength(0);
+    expect(await f.gateway.request({ ...f.bound("a", a.endpoint), operation: "receive", cursor: "0" })).toMatchObject({ ok: false, error: { code: "REGISTRATION_EXPIRED" } });
+    expect(await f.gateway.request({ ...f.bound("b", b.endpoint), operation: "send", envelope })).toMatchObject({ ok: false, error: { code: "TARGET_NOT_REGISTERED" } });
   } finally { release(); await f.close(); }
 });
 

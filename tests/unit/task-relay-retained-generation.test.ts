@@ -60,23 +60,34 @@ for (const limit of ["registrations", "metadataBytes"] as const) test(`terminal-
   } finally { owner.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
-for (const state of ["mailbox", "in-flight", "retryable"] as const) test(`fresh generation cannot retain nonterminal ${state} obligations`, () => {
+for (const state of ["mailbox", "in-flight", "retryable"] as const) test(`fresh generation resolves old incoming or peer ${state} obligations`, () => {
   const root = mkdtempSync("/tmp/relay-retained-active-"), now = Date.now(), input = registration(randomUUID());
-  const owner = createRecoveryStore({ root });
+  let owner = createRecoveryStore({ root });
   try {
-    const store = owner.store, old = store.register(input, now);
+    let store = owner.store;
+    const old = store.register(input, now);
     const peer = state === "mailbox" ? undefined : store.peerRoute(store.epoch, "https://peer.tail123.ts.net", randomUUID());
     const envelope = { envelopeId: randomUUID(), protocolVersion: 2, source: old.endpoint,
       target: peer ? { relay: peer.id, id: randomUUID() } : old.endpoint, createdAt: new Date(now).toISOString(), payload: "pending" };
+    let token: string | undefined;
     if (state === "mailbox") store.accept(store.epoch, envelope, now);
     else {
       const attempt = store.beginForward(store.epoch, envelope, now);
       expect(attempt.kind).toBe("attempt");
+      if (attempt.kind === "attempt") token = attempt.token;
       if (state === "retryable" && attempt.kind === "attempt") store.finishForward(store.epoch, envelope.envelopeId, attempt.token, { kind: "retryable" }, now);
     }
     const rows = store.recoveryRows();
-    expect(() => store.register(registration(input.sessionId), now + 60_000)).toThrow("RELAY_RESET");
+    expect(() => store.register(registration(input.sessionId), now + 1)).toThrow("SESSION_ALREADY_REGISTERED");
     expect(store.recoveryRows()).toEqual(rows);
+    const fresh = store.register(registration(input.sessionId), now + 60_000);
+    expect(fresh.endpoint).not.toEqual(old.endpoint);
+    if (token) expect(store.finishForward(store.epoch, envelope.envelopeId, token, { kind: "confirmed", acceptanceId: randomUUID() }, now + 60_000)).toBe(false);
+    expect(store.stats()).toMatchObject({ registrations: 1, sessions: 1, receipts: 0, activeItems: 0, activeBytes: 0, receiptBytes: 0 });
+    owner.close(); owner = createRecoveryStore({ root }); store = owner.store;
+    expect(store.inbox(store.epoch, fresh.endpoint.id, "0", now + 60_000).deliveries).toEqual([]);
+    expect(store.forwardStatus(store.epoch, envelope.envelopeId, now + 60_000)).toBeUndefined();
+    expect(() => store.register(input, now + 60_000, "renew")).toThrow("RELAY_RESET");
   } finally { owner.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -140,7 +151,7 @@ test("explicit memory-only storage keeps its baseline expired-target rejection i
   } finally { await gateway.close(); }
 });
 
-test("restore rejects duplicate current owners and nonterminal or empty retained predecessors", () => {
+test("restore rejects duplicate owners, retained mailbox targets, pending peer sources and empty predecessors", () => {
   const root = mkdtempSync("/tmp/relay-retained-restore-"), now = Date.now(), a = registration(randomUUID()), b = registration(randomUUID());
   const owner = createRecoveryStore({ root });
   try {
