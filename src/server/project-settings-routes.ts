@@ -82,7 +82,7 @@ import {
   TASK_WORKER_DEFAULT_EXTENSION_POLICY,
   TASK_WORKER_POLICY_MAX_BYTES,
 } from "../task-worker-policy-contract.js";
-import { writePrivateJsonFile } from "./persistence.js";
+import { writePrivateJsonFile } from "../persistence.js";
 import { getTaskRelayProfile } from "../task-relay/gateway.js";
 import {
   DEFAULT_QUIET_ALERT_POLICY,

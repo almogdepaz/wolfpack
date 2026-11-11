@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { loadConfigFromText, parseConfig } from "../../src/cli/config.ts";
+import { loadConfigFromText, parseConfig } from "../../src/config.ts";
 
 describe("parseConfig", () => {
   test("keeps the Claude task integration opt-in only when it is true", () => {

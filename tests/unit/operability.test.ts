@@ -2,9 +2,9 @@ import { describe, expect, test } from "bun:test";
 import {
   BrokerHealthMonitor,
   classifyRequestClient,
-  isLoopbackAddress,
   operationalHealth,
 } from "../../src/server/operability";
+import { isLoopbackAddress } from "../../src/server/client-address";
 import { createServerContext } from "../../src/server/context";
 import { getJwtAuthConfig } from "../../src/auth";
 import { MockBackend } from "../../src/server/mock-backend";

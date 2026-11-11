@@ -28,7 +28,7 @@ const { getJwtAuthConfig } = await import("../../src/auth.ts");
 const { createServerContext, setDefaultServerContext } = await import("../../src/server/context.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
 
-const { EventBus, eventSubscriberCount, publishEvent, subscribeEvents } = await import("../../src/server/event-bus.ts");
+const { EventBus, eventSubscriberCount, publishEvent, subscribeEvents } = await import("../../src/event-bus.ts");
 const mockBackend = new MockBackend({ sessions: [] });
 let context = createServerContext({ taskRoot: join(TEST_DIR, "owned-gateway"), events: new EventBus(), jwtAuthConfig: getJwtAuthConfig(), observationCacheTtlMs: 0, backend: mockBackend });
 // Retain the production event-publisher bridge until the D3a characterization.

@@ -7,13 +7,14 @@ import { dirname, join } from "node:path";
 import { printAccessUrls } from "./access-output.js";
 import { exitAfterOutput } from "./exit.js";
 import { requireManagedCurl, waitForApplicationReady } from "./readiness.js";
-import { print, printError, printJson, bold, dim, red, WOLF } from "./formatting.js";
+import { print, printError } from "../terminal-output.js";
+import { printJson, bold, dim, red, WOLF } from "./formatting.js";
 import pkg from "../../package.json";
 import {
   loadConfig,
   remoteUrl,
   WOLFPACK_DIR,
-} from "./config.js";
+} from "../config.js";
 import {
   serviceInstall,
   serviceUninstall,
@@ -35,7 +36,7 @@ import { applyServiceAuthFile } from "./service-auth.js";
 import { logsCommand } from "./logs.js";
 import { EVENTS_USAGE, eventsCommand } from "./events.js";
 import { execCommand, fileCommand } from "./remote-ops.js";
-import { issueJwt } from "./api.js";
+import { issueJwt } from "../jwt-issue.js";
 import { isMachineDisplayName } from "../tailnet-machine-contract.js";
 import { extensionsCommand } from "./extensions.ts";
 import { extensionDataCommand, extensionDataUsage } from "./extension-data.ts";
@@ -49,13 +50,8 @@ import type {
   VerifiedMachineTarget,
 } from "./machine-target.js";
 
-export {
-  loadConfig,
-  saveConfig,
-  isPortInUse,
-  killPortHolder,
-  type Config,
-} from "./config.js";
+export { loadConfig, saveConfig, type Config } from "../config.js";
+export { isPortInUse, killPortHolder } from "./config.js";
 export { generatePlist, generateSystemdUnit } from "./service.js";
 
 export function planServiceEnsureAction(

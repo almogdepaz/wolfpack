@@ -30,7 +30,8 @@ import {
 import { startLogRotationMonitor } from "../log-rotation.js";
 import { createTailnetOriginPolicy } from "./tailnet-origin-policy.js";
 import { createHostPolicy } from "./host-policy.js";
-import { classifyRequestClient, isLoopbackAddress } from "./operability.js";
+import { isLoopbackAddress } from "./client-address.js";
+import { classifyRequestClient } from "./operability.js";
 import { installShutdownSignalHandlers } from "./shutdown.js";
 
 const log = createLogger("server");

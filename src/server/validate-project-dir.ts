@@ -10,7 +10,6 @@ import { isAbsolute, resolve } from "node:path";
 import { isUnderDevDir } from "./dev-dir.js";
 
 import { MAX_PROJECT_DIR_LENGTH } from "../directory-browse-contract.js";
-export { MAX_PROJECT_DIR_LENGTH } from "../directory-browse-contract.js";
 
 const NOT_FOUND_FILESYSTEM_CODES: ReadonlySet<string> = new Set(["ENOENT", "ENOTDIR"]);
 

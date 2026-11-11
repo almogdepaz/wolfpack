@@ -16,10 +16,10 @@ process.env.WOLFPACK_TASK_ROOT = join(scratch, "tasks");
 process.env.WOLFPACK_TASK_RELAY_ROOT = join(scratch, "relay");
 process.env.WOLFPACK_JWT_SECRET = "isolated-runtime-review-secret-not-a-credential";
 writeFileSync(process.env.WOLFPACK_MACHINE_ID_PATH, `${hostId}\n`, { mode: 0o600 });
-const persistence = await import("../../../src/server/persistence.ts");
+const persistence = await import("../../../src/persistence.ts");
 const realWrite = persistence.writePrivateJsonFile;
 let failRegistryWrite = false;
-mock.module("../../../src/server/persistence.ts", () => ({
+mock.module("../../../src/persistence.ts", () => ({
   ...persistence,
   writePrivateJsonFile(path: string, value: unknown) {
     if (failRegistryWrite && path.endsWith("/registry.json")) throw new Error("injected registry commit I/O failure");

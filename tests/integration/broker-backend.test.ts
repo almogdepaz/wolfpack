@@ -18,7 +18,7 @@ import * as path from "node:path";
 
 import { BrokerClient } from "../../src/broker/client";
 import { BrokerBackend } from "../../src/server/broker-backend";
-import { subscribeEvents } from "../../src/server/event-bus";
+import { subscribeEvents } from "../../src/event-bus";
 import type { WolfpackEvent } from "../../src/events-contract";
 
 const REPO_ROOT = path.resolve(import.meta.dir, "..", "..");

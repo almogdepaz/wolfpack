@@ -15,12 +15,8 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import {
-  DIRECTORY_BREADCRUMB_LIMIT,
-  DIRECTORY_BROWSE_LIMIT,
-  DIRECTORY_BROWSE_SCAN_LIMIT,
-  browseServerDirectory,
-} from "../../src/server/directory-browser.ts";
+import { DIRECTORY_BREADCRUMB_LIMIT, DIRECTORY_BROWSE_LIMIT } from "../../src/directory-browse-contract.ts";
+import { DIRECTORY_BROWSE_SCAN_LIMIT, browseServerDirectory } from "../../src/server/directory-browser.ts";
 import { createServerContext } from "../../src/server/context.js";
 import { MockBackend } from "../../src/server/mock-backend.js";
 

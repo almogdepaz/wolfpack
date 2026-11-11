@@ -61,7 +61,7 @@ import type {
 import type { ControlResponse, EventBody, OutputBinaryFrame } from "../broker/codec.js";
 import type { SessionInspectionResult } from "../session-status-contract.js";
 import { SESSION_EXIT_REASON, WOLFPACK_EVENT_KIND, type SessionExitReason } from "../events-contract.js";
-import { publishEvent } from "./event-bus.js";
+import { publishEvent } from "../event-bus.js";
 import { notifyProgramStatusChanged } from "./program-status-signal.js";
 import {
   AGENT_KIND,

@@ -74,6 +74,7 @@ function runSetupFlow(home: string, fixture?: SetupFlowFixture): SetupFlowResult
     const fixture = ${serializedFixture};
     const configPath = join(home, ".wolfpack", "config.json");
     const config = await import("./src/cli/config.ts");
+    const rootConfig = await import("./src/config.ts");
     if (fixture?.tailscale || fixture?.failsTailscaleInstallation) {
       const childProcess = await import("node:child_process");
       await mock.module("node:child_process", () => ({
@@ -112,12 +113,23 @@ function runSetupFlow(home: string, fixture?: SetupFlowFixture): SetupFlowResult
       Object.defineProperty(process.stdin, "isTTY", { value: true });
       Object.defineProperty(process.stdout, "isTTY", { value: true });
     }
-    await mock.module("./src/cli/config.js", () => ({
-      ...config,
+    await mock.module("./src/config.js", () => ({
+      ...rootConfig,
       CONFIG_PATH: configPath,
       WOLFPACK_DIR: join(home, ".wolfpack"),
       IS_MACOS: fixture?.failsTailscaleInstallation ?? false,
       IS_LINUX: false,
+      loadConfig: () => fixture?.existingConfig ?? (fixture?.tailscale?.previousHostname
+        ? { devDir: home, port: 18790, tailscaleHostname: fixture.tailscale.previousHostname }
+        : null),
+      saveConfig: (nextConfig) => {
+        mkdirSync(join(home, ".wolfpack"), { recursive: true });
+        writeFileSync(configPath, JSON.stringify(nextConfig));
+      },
+      remoteUrl: (nextConfig) => nextConfig.tailscaleHostname ? "https://" + nextConfig.tailscaleHostname : null,
+    }));
+    await mock.module("./src/cli/config.js", () => ({
+      ...config,
       ask: (prompt) => {
         if (!interactiveFixture) throw new Error("noninteractive setup must not prompt");
         for (const [promptPart, answer] of Object.entries(fixture?.claude?.answers ?? {})) {
@@ -136,14 +148,6 @@ function runSetupFlow(home: string, fixture?: SetupFlowFixture): SetupFlowResult
         }
         return "n";
       },
-      loadConfig: () => fixture?.existingConfig ?? (fixture?.tailscale?.previousHostname
-        ? { devDir: home, port: 18790, tailscaleHostname: fixture.tailscale.previousHostname }
-        : null),
-      saveConfig: (nextConfig) => {
-        mkdirSync(join(home, ".wolfpack"), { recursive: true });
-        writeFileSync(configPath, JSON.stringify(nextConfig));
-      },
-      remoteUrl: (nextConfig) => nextConfig.tailscaleHostname ? "https://" + nextConfig.tailscaleHostname : null,
       tailscaleBin: () => fixture?.tailscale ? "tailscale" : null,
     }));
     if (fixture?.serviceRunning || fixture?.serviceInstalled) {

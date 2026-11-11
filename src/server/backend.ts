@@ -1,5 +1,4 @@
 /** Session backend contracts and compatibility re-exports. */
-export { BrokerSupervisor as BackendRouter, checkBrokerSocketExists } from "./broker-supervisor.js";
 export { DuplicateSessionError, UnsupportedTerminalKeyError } from "./backend-contract.js";
 export type {
   CapturePaneOptions,

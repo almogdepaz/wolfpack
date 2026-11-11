@@ -13,7 +13,7 @@ import {
 } from "../quiet-alert-policy-invalidation.js";
 import { isQuietAlertFact, QUIET_ALERT_KIND } from "../quiet-alert-policy.js";
 import type { QuietAlertFact, QuietAlertKind } from "../quiet-alert-policy.js";
-import { readValidatedJsonFile } from "./persistence.js";
+import { readValidatedJsonFile } from "../persistence.js";
 import { resolveWolfpackDir } from "../wolfpack-dir.js";
 
 const log = createLogger("push");

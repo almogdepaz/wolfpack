@@ -12,7 +12,7 @@ import { RELAY_ID } from "../../src/task-relay/domain.ts";
 import {
   DIRECTORY_BREADCRUMB_LIMIT,
   DIRECTORY_BROWSE_LIMIT,
-} from "../../src/server/directory-browser.ts";
+} from "../../src/directory-browse-contract.ts";
 import {
   MACHINE_CAPABILITY,
   MACHINE_MAX_CAPABILITIES,

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { shouldUseColor } from "../../src/cli/formatting.ts";
+import { shouldUseColor } from "../../src/terminal-output.ts";
 
 const TTY_STREAM = { isTTY: true } as const;
 const PIPE_STREAM = { isTTY: false } as const;

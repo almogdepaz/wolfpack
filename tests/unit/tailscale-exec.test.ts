@@ -3,15 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getMachineDisplayName } from "../../src/machine-display-name.ts";
-import {
-  TAILSCALE_STATUS_CACHE_TTL_MS,
-  TAILSCALE_STATUS_TIMEOUT_MS,
-  buildTailscaleSelfStatusArgv,
-  buildTailscaleStatusArgv,
-  createTailscaleStatusCache,
-  executeTailscaleStatus,
-  getLocalMachineHandshake,
-} from "../../src/server/http.js";
+import { TAILSCALE_STATUS_CACHE_TTL_MS, TAILSCALE_STATUS_TIMEOUT_MS, buildTailscaleSelfStatusArgv, buildTailscaleStatusArgv, createTailscaleStatusCache, executeTailscaleStatus } from "../../src/server/tailscale-status.js";
+import { getLocalMachineHandshake } from "../../src/server/http.js";
 
 // Regression: commit d6ffb69 "fixed" ISS-19 by dropping the login shell
 // wrapper, which broke peer discovery under launchd for users with the macOS

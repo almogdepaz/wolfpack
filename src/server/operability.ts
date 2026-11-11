@@ -1,6 +1,5 @@
 import { defaultServerContext, type ServerContext } from "./context.js";
 import { isLoopbackAddress } from "./client-address.js";
-export { isLoopbackAddress } from "./client-address.js";
 
 export interface RequestClientInput {
   readonly remoteAddress: string | undefined;

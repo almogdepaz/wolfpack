@@ -6,7 +6,6 @@ import { createHash, randomBytes } from "node:crypto";
 import { brotliCompressSync, constants as zlibConstants, gzipSync } from "node:zlib";
 import { ASSET_VERSIONS, assets } from "../public-assets.js";
 import { readLocalTailscaleStatus } from "./tailscale-status.js";
-export { buildTailscaleStatusArgv, buildTailscaleSelfStatusArgv, createTailscaleStatusCache, executeTailscaleStatus, readRelayPeerTopology, TAILSCALE_STATUS_TIMEOUT_MS, TAILSCALE_STATUS_CACHE_TTL_MS } from "./tailscale-status.js";
 import type { SessionBackend } from "./backend-contract.js";
 import { createLogger, errMsg } from "../log.js";
 import {

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { assertNotificationFixtureHome } from "./run-notification-test.ts";
 assertNotificationFixtureHome();
-const { CONFIG_PATH, saveConfig } = await import("../../../src/cli/config.ts");
+const { CONFIG_PATH, saveConfig } = await import("../../../src/config.ts");
 const { MockBackend } = await import("../../../src/server/mock-backend.ts");
 const { createServerContext } = await import("../../../src/server/context.ts");
 const { buildMachineHandshake } = await import("../../../src/tailnet-machine-contract.ts");

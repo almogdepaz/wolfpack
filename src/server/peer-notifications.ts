@@ -5,7 +5,7 @@ import { isQuietAlertFact } from "../quiet-alert-policy.ts";
 import { readPeerResponse, withPeerAbort } from "../task-relay/peer-response.ts";
 import type { RelayPeerTopology } from "../task-relay/peer-topology.ts";
 import { createLogger, errMsg } from "../log.ts";
-import { readRelayPeerTopology } from "./http.ts";
+import { readRelayPeerTopology } from "./tailscale-status.ts";
 import { readLocalTailscaleStatus } from "./tailscale-status.ts";
 import type { NotificationMachine } from "./push.ts";
 import type { QuietAlertFact } from "../quiet-alert-policy.ts";

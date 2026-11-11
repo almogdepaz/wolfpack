@@ -9,7 +9,7 @@ import {
 import type { AgentKind } from "../agent-kind.js";
 export type { AgentKind } from "../agent-kind.js";
 import { DEV_DIR } from "./dev-dir.js";
-import { readValidatedJsonFile, writePrivateJsonFile } from "./persistence.js";
+import { readValidatedJsonFile, writePrivateJsonFile } from "../persistence.js";
 import { isChildCleanupPolicy, type ChildCleanupPolicy } from "../session-cascade-contract.js";
 
 export const SESSION_IDENTITY_SCHEMA_VERSION = 1;
