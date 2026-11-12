@@ -75,7 +75,7 @@ test("enabling is one button and one dialog; the assistant then opens for its fi
   await expect(first).toBeVisible();
   await first.fill("ship focus");
   await first.press("Enter");
-  await expect(view.getByRole("button", { name: /start.*ship focus/i })).toBeVisible();
+  await expect(view.getByRole("button", { name: /plan.*ship focus/i })).toBeVisible();
   await view.getByRole("textbox", { name: "Add an intention" }).fill("reply to issue");
   await view.getByRole("textbox", { name: "Add an intention" }).press("Enter");
   await view.getByRole("checkbox", { name: "Done: reply to issue" }).check();
@@ -93,7 +93,7 @@ test("enabling is one button and one dialog; the assistant then opens for its fi
   await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");
   await expect(block).toBeVisible();
-  await expect(block.getByRole("button", { name: /start.*ship focus/i })).toHaveCount(0);
+  await expect(block.getByRole("button", { name: /plan.*ship focus/i })).toHaveCount(0);
   await expect(block).toContainText("1 needs you · today 1 of 2 done");
   expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
   await expandFocusCard(block.locator(".focus-next > li").filter({ hasText: "prompt-project" }));

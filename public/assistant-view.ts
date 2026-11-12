@@ -1,4 +1,3 @@
-import { linkStartedFocusSession, type FocusSessionStart, type StartedFocusSession } from "../src/focus-start";
 import { esc, escAttr, isDesktop } from "./app-state";
 import { focusCards, mergeFocus, takeVisible, stoppedUnseen, linkedFocusSessions, doneToday, groupFocusDone, type FocusDoneGroup, focusSessionLabel, focusActionVerb, type FocusAction, type FocusSession } from "../src/focus-ranking";
 import { emptyFocus, isFocusDocument, focusNextRefKey, type FocusDocument, type FocusIntention, type FocusOp } from "../src/focus-contract";
@@ -44,7 +43,6 @@ export function createAssistantView(deps: {
   sessionMachineKnown: (identity: string) => boolean;
   open: (name: string, machine?: string) => void;
   acknowledge: (session: FocusSession) => Promise<void>;
-  start: (intention: FocusIntention) => void;
   show: (view: string) => void;
   confirm: (enabled: boolean) => Promise<boolean>;
 }) {
@@ -55,7 +53,6 @@ export function createAssistantView(deps: {
   let timingOwner: HomeOwner | undefined;
   let timingSave: HomeOwner | undefined;
   let timingLoad = 0;
-  const startOwners = new WeakMap<FocusSessionStart, HomeOwner>();
   let machine = "";
   let localInstallationId = "";
   let homeName = "sgt";
@@ -133,6 +130,14 @@ export function createAssistantView(deps: {
     // Cached identity alone cannot authorize a missing/replaced/offline session.
     return !focusUnavailable || deps.terminalSessionAvailable(target) ? target : null;
   }
+  const planLabel = (intention: FocusIntention) => `Plan “${intention.title}” with the assistant`;
+  const planUnavailable = () => !terminalTarget() ? "The assistant terminal is unavailable."
+    : focus?.assistant?.state === "needs-input" ? "Answer the assistant's dialog before planning; a paste could answer it."
+    : sessionLocked() ? "Focus session actions are unavailable." : "";
+  const planAttributes = (intention: FocusIntention) => {
+    const reason = planUnavailable();
+    return `aria-label="${escAttr(planLabel(intention))}"${reason ? ` disabled title="${escAttr(reason)}"` : ""}`;
+  };
   // Presentation only: retain the last verified projection during a self-offline poll.
   // All session actions are disabled until the local projection is available again.
   let lastSessions: FocusSession[] = [];
@@ -446,12 +451,13 @@ export function createAssistantView(deps: {
       const readOnly = sessionLocked() || row.unavailable || delivered || receipt?.state === "sending";
       const name = row.session?.name ?? title;
       const messageId = `fd-${host}-${index}`;
-      const verb = replyBox ? receipt?.state === "sending" ? "sending…" : receipt?.state === "retry" ? `retry send to ${name}` : `send to ${name}` : done ? "done" : row.kind === "intention" ? "review" : focusActionVerb(row);
+      const planning = row.kind === "start" && !!row.intention;
+      const verb = planning ? "plan" : replyBox ? receipt?.state === "sending" ? "sending…" : receipt?.state === "retry" ? `retry send to ${name}` : `send to ${name}` : done ? "done" : row.kind === "intention" ? "review" : focusActionVerb(row);
       // A start row and the same intention's today card are separate cards: `start:` here, `intention:` in today.
       const key = row.session ? `session:${row.session.machineInstallationId ?? ""}:${row.session.id}` : row.intention ? `start:${row.intention.id}` : `unavailable:${JSON.stringify(row.triage?.ref)}`;
       if (row.session) renderedSessions.set(key, row.session);
       const actionName = replyBox ? `Send to ${row.session?.name ?? title}` : done ? `Mark done: ${done.title}` : row.session ? `${verb} ${title}` : title;
-      const action = replyBox && (receipt?.state === "sent" || receipt?.state === "check") ? "" : `<button type="button"${replyBox ? ` aria-describedby="${messageId}-description"` : ' class="focus-action"'}${sessionLocked() || row.unavailable || (replyBox && (!reply.trim() || receipt && receipt.state !== "retry")) ? " disabled" : ""} data-focus-next="${escAttr(actionKey)}" data-focus-key="${escAttr(`act:${key}`)}" aria-label="${escAttr(actionName)}">${esc(verb)}${verb === "sending…" ? "" : '<span aria-hidden="true"> ›</span>'}</button>`;
+      const action = replyBox && (receipt?.state === "sent" || receipt?.state === "check") ? "" : `<button type="button"${replyBox ? ` aria-describedby="${messageId}-description"` : ' class="focus-action"'}${!planning && (sessionLocked() || row.unavailable || (replyBox && (!reply.trim() || receipt && receipt.state !== "retry"))) ? " disabled" : ""} data-focus-next="${escAttr(actionKey)}" data-focus-key="${escAttr(`act:${key}`)}" ${planning ? planAttributes(row.intention!) : `aria-label="${escAttr(actionName)}"`}>${esc(verb)}${verb === "sending…" ? "" : '<span aria-hidden="true"> ›</span>'}</button>`;
       const open = row.session ? `<button type="button" data-focus-session="${escAttr(row.session.id)}" data-focus-key="${escAttr(`open:${key}`)}" aria-label="${escAttr(`Open ${name}`)}"${sessionLocked() || row.unavailable ? " disabled" : ""}>open<span aria-hidden="true"> ›</span></button>` : "";
       const meta = row.session ? [`<b>${esc(name)}</b>`, row.session.changedAt && (kind === "done" ? clock(row.session.stoppedAt ?? row.session.changedAt) : age(row.session.changedAt)), project(row.session.cwd), new Set(sessions().map(s => s.machine)).size > 1 && esc(row.session.machine ?? "")].filter(Boolean).join(" · ") : [project(row.intention?.project), row.intention?.machine && row.intention.machine !== deps.localMachineName() ? esc(row.intention.machine) : ""].filter(Boolean).join(" · ");
       const lineChars = Array.from(row.session?.lastLine ?? "");
@@ -562,7 +568,7 @@ export function createAssistantView(deps: {
     return changed;
   }
   function todayHtml(items: FocusIntention[]) {
-    return `<ul class="focus-today" aria-label="Intentions">${items.map(i => `<li style="--f-chips:${compactChips.get(i.id)?.width ?? 0}px"${i.done ? ' class="done"' : ""}><label class="focus-check"><input type="checkbox" data-focus-done="${escAttr(i.id)}" data-focus-key="${escAttr(i.id)}" aria-label="Done: ${escAttr(i.title)}"${i.done ? " checked" : ""}${locked() ? " disabled" : ""}></label>${card(`intention:${i.id}`, `<span class="focus-title">${esc(i.title)}${rowContext(i, undefined, undefined, isDesktop() && compactChips.get(i.id)?.showContext === false)}</span>`, intentionBody(i, `intention:${i.id}`))}${chipsHtml(i)}${!i.done && !linkedFocusSessions(i, sessions()).length ? `<button type="button" class="focus-action" data-focus-start="${escAttr(i.id)}" data-focus-key="${escAttr(`start:${i.id}`)}" aria-label="${escAttr(`start “${i.title}”`)}"${sessionLocked() ? " disabled" : ""}>start ›</button>` : ""}</li>`).join("")}</ul>`;
+    return `<ul class="focus-today" aria-label="Intentions">${items.map(i => `<li style="--f-chips:${compactChips.get(i.id)?.width ?? 0}px"${i.done ? ' class="done"' : ""}><label class="focus-check"><input type="checkbox" data-focus-done="${escAttr(i.id)}" data-focus-key="${escAttr(i.id)}" aria-label="Done: ${escAttr(i.title)}"${i.done ? " checked" : ""}${locked() ? " disabled" : ""}></label>${card(`intention:${i.id}`, `<span class="focus-title">${esc(i.title)}${rowContext(i, undefined, undefined, isDesktop() && compactChips.get(i.id)?.showContext === false)}</span>`, intentionBody(i, `intention:${i.id}`))}${chipsHtml(i)}${!i.done && !linkedFocusSessions(i, sessions()).length ? `<button type="button" class="focus-action" data-focus-plan="${escAttr(i.id)}" data-focus-key="${escAttr(`plan:${i.id}`)}" ${planAttributes(i)}>plan ›</button>` : ""}</li>`).join("")}</ul>`;
   }
   // The live dom holds the newest open state: a tap sets `open` at once, but the browser queues its toggle event, and a
   // render in between would rebuild the card from `openCards` and the toggle would then fire on the detached node (N6).
@@ -922,6 +928,29 @@ export function createAssistantView(deps: {
     }).finally(() => { homeChanging = false; render(); });
   });
   function talk() { const target = terminalTarget(); if (target && !deps.expandTerminal()) deps.open(target.session, target.machine); }
+  async function planIntention(id: string) {
+    const owner = captureOwner();
+    // Revalidate the home and assistant state before pasting into a potentially changed dialog.
+    await flight; requireOwner(owner);
+    await refresh(); requireOwner(owner);
+    if (focusUnavailable) throw new Error(error || "focus is unavailable; nothing was pasted");
+    const target = terminalTarget();
+    if (!target || focus?.assistant?.state === "needs-input" || !deps.sessionsAvailable()) return;
+    const intention = doc().intentions.find(i => i.id === id && !i.done);
+    if (!intention || linkedFocusSessions(intention, sessions()).length) return;
+    const line = (text: string) => text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").replace(/\s+/gu, " ").trim();
+    const title = Array.from(line(intention.title));
+    const visibleTitle = title.length > 200 ? title.slice(0, 199).join("") + "…" : title.join("");
+    const text = `plan “${visibleTitle}” (task ${intention.id}${intention.project ? `, project ${line(intention.project)}` : ""}${intention.machine ? `, on ${line(intention.machine)}` : ""}): `;
+    const result = await deps.request<{ outcome: SessionSendOutcome }>("/session-control/send", {
+      method: "POST", body: JSON.stringify({ session: target.session, text, noEnter: true }),
+    }, target.machine);
+    requireOwner(owner, OLD_HOME_DELIVERY);
+    if (result.outcome !== SESSION_SEND_OUTCOME.DELIVERED && result.outcome !== SESSION_SEND_OUTCOME.PASTED_NOT_SUBMITTED && result.outcome !== SESSION_SEND_OUTCOME.SUBMITTED) {
+      throw new Error(result.outcome === SESSION_SEND_OUTCOME.NOT_DELIVERED ? "The plan was not delivered to the assistant." : "Plan delivery is not confirmed; check the assistant input before retrying.");
+    }
+    talk();
+  }
   async function showHomeChanged(message: string) {
     try { await showAppDialog({ title: "Home changed", message, confirmLabel: "Close", cancelLabel: null }); }
     catch (dialogError) { console.warn("Could not show the home-change notice", dialogError); }
@@ -1034,10 +1063,8 @@ export function createAssistantView(deps: {
       }
       if (target.dataset.focusUndo) void run(() => write({ type: "undo", id: target.dataset.focusUndo! }));
       if (target.dataset.focusComplete) void run(() => write({ type: "done", id: target.dataset.focusComplete! }));
-      if (target.dataset.focusStart) {
-        if (sessionLocked()) return;
-        const intention = doc().intentions.find(i => i.id === target.dataset.focusStart && !i.done);
-        if (intention && !linkedFocusSessions(intention, sessions()).length) deps.start(intention);
+      if (target.dataset.focusPlan) {
+        if (!planUnavailable()) void run(() => planIntention(target.dataset.focusPlan!));
         return;
       }
       const rowAction = target.dataset.focusNext ?? target.dataset.focusMarkDone;
@@ -1055,7 +1082,7 @@ export function createAssistantView(deps: {
         if (kind === "seen" && row.session) { void run(() => deps.acknowledge(row.session!)); return; }
         if (kind === "done") { void run(() => write({ type: "done", id: row.triage!.doneIntention! })); return; }
         if (kind === "open" && row.session) deps.open(row.session.name, row.session.machineUrl);
-        else if (kind === "start" && row.intention) deps.start(row.intention);
+        else if (kind === "start" && row.intention) { if (!planUnavailable()) void run(() => planIntention(row.intention!.id)); }
         else if (row.intention) { openCard(`start:${row.intention.id}`); render(); }
       }
       if (target.dataset.focusSession) {
@@ -1117,18 +1144,6 @@ export function createAssistantView(deps: {
   render();
   return { refresh, render, loadTiming,
     setSidebarOwner(owns: boolean) { sidebarOwnsChooser = owns; updateSidebarVisibility(); },
-    captureStart: (intentionId: string): FocusSessionStart => {
-      const owner = captureOwner();
-      const start = { intentionId, home: owner.home };
-      startOwners.set(start, owner);
-      return start;
-    },
-    linkStartedSession: async (start: FocusSessionStart, session: StartedFocusSession) => {
-      const owner = startOwners.get(start);
-      if (!owner) throw new FocusHomeChanged();
-      await write(() => linkStartedFocusSession(doc(), start.intentionId, session), owner);
-      render();
-    },
     enabled: () => !!focus?.assistant?.enabled,
     isAssistant: (name: string, key: string) => name === focus?.assistant?.session && key === machine };
 }

@@ -308,7 +308,7 @@ test("disclosure markers are not the action's glyph and are silent to screen rea
   const view = page.locator("#assistant-view");
   await expect(view.locator(".focus-next details.focus-card").first()).toBeVisible();
   const marker = (selector: string, pseudo: string) => view.locator(selector).first().evaluate((el, p) => getComputedStyle(el, p).content, pseudo);
-  // the card's marker is drawn, not a "›" beside the "start ›" action
+  // the card's marker is drawn, not a "›" beside the "plan ›" action
   expect(await marker(".focus-next details.focus-card > summary", "::after")).not.toContain("›");
   expect(await marker(".focus-today details.focus-card > summary", "::after")).not.toContain("›");
   // glyph markers carry empty alternative text

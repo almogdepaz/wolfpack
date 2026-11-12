@@ -43,7 +43,7 @@ test("full merge is classified before the cap; delegated stops wait and starts l
   await block.getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-content");
   await expect(view.getByRole("heading", { name: /^next / })).toHaveText("next 1 needs you · 2 done");
-  await expect(view.locator(".focus-today [data-focus-start]")).toHaveCount(6);
+  await expect(view.locator(".focus-today [data-focus-plan]")).toHaveCount(6);
   const quiet = view.locator(".focus-next > li").filter({ hasText: "The documentation is complete" });
   await expect(quiet).toHaveAttribute("data-kind", "done");
   await expandFocusCard(quiet);

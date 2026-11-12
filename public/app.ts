@@ -1,7 +1,6 @@
 import { createAssistantView } from "./assistant-view";
 import { createAssistantTerminal } from "./assistant-terminal";
 import { stoppedUnseen } from "../src/focus-ranking";
-import type { FocusSessionStart } from "../src/focus-start";
 import { isFocusAssistantSession, withoutFocusAssistant } from "../src/focus-session";
 import { sessionMetaHtml } from "./session-meta";
 import type { SessionMeta } from "../src/session-meta-contract";
@@ -1239,7 +1238,6 @@ async function api<TResponse = unknown>(path: string, opts?: RequestInit, machin
   return data as TResponse;
 }
 
-let pendingFocusStart: FocusSessionStart | undefined;
 // One copy for the settings toggle and the terminal header / kill path.
 const DISABLE_ASSISTANT_MESSAGE = "Stop the assistant? Its conversation and your focus list are kept; enable it again any time.";
 const assistantPane = createAssistantTerminal({ createController: createPtyTerminalController, scrollback: DESKTOP_TERMINAL_SCROLLBACK, createConflictOverlay });
@@ -1268,25 +1266,6 @@ const focusUi = createAssistantView({
       ?.sessions.find(s => sessionIdentityId(s) === target.id);
     if (!session) throw new Error("This session changed; review the updated card.");
     await acknowledgeTerminalRuntimeState(session.name, target.machineUrl ?? "", true);
-  },
-  start: intention => {
-    const group = intention.machine ? state.lastSessionGroups.find(g => g.machine.name === intention.machine || g.machine.url === intention.machine) : state.lastSessionGroups.find(g => !g.machine.url);
-    if (intention.machine && !group?.online) { void showMachineUnavailable(); return; }
-    let start: FocusSessionStart;
-    try { start = focusUi.captureStart(intention.id); }
-    catch (error) {
-      pendingFocusStart = undefined;
-      void showAppDialog({ title: "Focus unavailable", message: errorMessage(error), confirmLabel: "Close", cancelLabel: null });
-      return;
-    }
-    if (!intention.project) { void showProjectPicker(group?.machine.url, start); return; }
-    pendingFocusStart = start;
-    state.projectMachine = group?.machine.url || "";
-    state.viewBeforePicker = "assistant";
-    state.selectedProject = intention.project;
-    state.selectedProjectDir = intention.project;
-    state.isNewProject = false;
-    void showAgentPicker();
   },
   show: view => { if (view === "sessions") backToSessions(); else showView(view); },
   confirm: async enabled => !!await showAppDialog({ title: enabled ? "Enable assistant" : "Disable assistant", message: enabled ? "Wolfpack starts one persistent pi terminal on the home machine and keeps it running across restarts. If pi is not logged in there yet, run pi and /login first; the assistant opens right after so you can see it start." : DISABLE_ASSISTANT_MESSAGE, confirmLabel: enabled ? "Enable" : "Disable", destructive: !enabled }),
@@ -1609,7 +1588,6 @@ function showView(requested: string, skipAnimation?: boolean, refreshSessions = 
   // The assistant page exists only while the assistant is enabled; nothing of the focus ui shows when it is off.
   const name = requested === "assistant" && !focusUi.enabled() ? "sessions" : requested;
   const previousView = state.currentView;
-  if (name !== "projects" && name !== "agent") pendingFocusStart = undefined;
   const previousElement = document.getElementById(previousView + "-view");
   const isMobile = !isDesktop();
 
@@ -2820,7 +2798,6 @@ function renderProjectNames(projects: readonly string[]): void {
 }
 
 function returnFromProjectPicker(): void {
-  pendingFocusStart = undefined;
   if (!isDesktop()) requestAnimationFrame(() => document.querySelector<HTMLElement>(`#session-list .machine-add-btn[data-machine="${CSS.escape(state.projectMachine)}"]`)?.focus({ preventScroll: true }));
   if (state.viewBeforePicker === "sessions") {
     backToSessions();
@@ -2836,8 +2813,7 @@ function returnFromProjectPicker(): void {
   showView(state.viewBeforePicker || "sessions");
 }
 
-async function showProjectPicker(machineUrl?: string, focusStart?: FocusSessionStart): Promise<void> {
-  pendingFocusStart = focusStart;
+async function showProjectPicker(machineUrl?: string): Promise<void> {
   state.projectMachine = machineUrl || "";
   setState({ viewBeforePicker: state.currentView });
   showView("projects");
@@ -3510,8 +3486,6 @@ async function createSessionWithAgent(cmd) {
   const sessionName = (nameInput.value || "").trim();
   if (sessionName && !/^[a-zA-Z0-9_-]+$/.test(sessionName)) return;
   const machine = state.projectMachine;
-  const focusStart = pendingFocusStart;
-  const focusMachine = machine || state.selfName || "this machine";
   const createError = document.getElementById("agent-create-error");
   createError.textContent = "";
   createError.classList.remove("visible");
@@ -3531,8 +3505,6 @@ async function createSessionWithAgent(cmd) {
       body: JSON.stringify(body),
     }, machine);
     if (data.session) {
-      const association = focusStart && pendingFocusStart === focusStart ? focusStart : undefined;
-      if (association) pendingFocusStart = undefined;
       showTerminalLoading(sessionName || state.selectedProject);
       setState({ currentSession: data.session, currentMachine: machine });
       // Refresh session list in background so it doesn't block terminal init
@@ -3544,9 +3516,6 @@ async function createSessionWithAgent(cmd) {
         destroyTerminal();
         initTerminal();
       }
-      if (association) void focusUi.linkStartedSession(association, { sessionId: data.sessionId, projectDir: data.projectDir, machine: focusMachine }).catch(error => {
-        void showAppDialog({ title: "Session created; focus not updated", message: errorMessage(error), confirmLabel: "Close", cancelLabel: null });
-      });
     } else {
       throw new Error("Server returned no session (is wolfpack up to date?)");
     }
