@@ -451,7 +451,7 @@ export function createAssistantView(deps: {
       const readOnly = sessionLocked() || row.unavailable || delivered || receipt?.state === "sending";
       const name = row.session?.name ?? title;
       const messageId = `fd-${host}-${index}`;
-      const planning = row.kind === "start" && !!row.intention;
+      const planning = !done && row.kind === "start" && !!row.intention;
       const verb = planning ? "plan" : replyBox ? receipt?.state === "sending" ? "sending…" : receipt?.state === "retry" ? `retry send to ${name}` : `send to ${name}` : done ? "done" : row.kind === "intention" ? "review" : focusActionVerb(row);
       // A start row and the same intention's today card are separate cards: `start:` here, `intention:` in today.
       const key = row.session ? `session:${row.session.machineInstallationId ?? ""}:${row.session.id}` : row.intention ? `start:${row.intention.id}` : `unavailable:${JSON.stringify(row.triage?.ref)}`;
