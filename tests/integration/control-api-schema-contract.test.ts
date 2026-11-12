@@ -187,6 +187,19 @@ describe("control api generated schema against runtime responses", () => {
     }
   });
 
+  test("validates real focus and activity responses, including local-only fields", async () => {
+    const focus = await getJson("/api/focus");
+    const activity = await getJson("/api/activity");
+    // Both fields are always emitted on these local reads; a closed schema must declare them.
+    // Plain typeof checks: an asymmetric toMatchObject would rewrite these values in the received object.
+    if (!isObject(focus) || !isObject(activity)) throw new Error("expected JSON objects");
+    expect(focus.local).toBe(true);
+    expect(typeof focus.nextOrderTtlHours).toBe("number");
+    expect(typeof activity.journalId).toBe("string");
+    expect(validate(httpResponse("getFocus"), focus, artifact)).toEqual([]);
+    expect(validate(httpResponse("readActivity"), activity, artifact)).toEqual([]);
+  });
+
   test("validates real pi footer metadata as optional listSessions fields", async () => {
     const { __resetSessionObservationForTests } = await import("../../src/server/session-observation.ts");
     __resetSessionObservationForTests();
