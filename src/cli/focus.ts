@@ -2,12 +2,14 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { isFocusOp, type FocusDocument, type FocusOp } from "../focus-contract.js";
 import { candidateEnumerationCandidates } from "../tailnet-machine-contract.js";
-import { call, issueJwt } from "./api.js";
-import { CONFIG_PATH, loadConfig, parseConfig } from "./config.js";
+import { call } from "./api.js";
+import { issueJwt } from "../jwt-issue.js";
+import { CONFIG_PATH, loadConfig, parseConfig } from "../config.js";
 import { FOCUS_HOME_DISABLE_FIRST, isFocusHome, readFocusHomeConfig, writeFocusHome } from "../focus-home.js";
 import { dirname, join } from "node:path";
 import { verifyMachineTarget, type VerifiedMachineTarget } from "./machine-target.js";
-import { print, printError, printJson } from "./formatting.js";
+import { print, printError } from "../terminal-output.js";
+import { printJson } from "./formatting.js";
 
 export const FOCUS_USAGE = `Usage: wolfpack focus show|add|edit|done|undo|drop|reorder|next|nudge|note|day-summary [--json]
   add <title> [--id id] [--project /path] [--on machine] [--sessions id,id]

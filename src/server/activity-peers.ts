@@ -2,7 +2,7 @@ import { loadConfig, remoteUrl } from "../config.js";
 import { issueJwt } from "../jwt-issue.js";
 import { classifyMachineHandshake } from "../tailnet-machine-contract.js";
 import { readPeerResponse, withPeerAbort } from "../task-relay/peer-response.js";
-import { readRelayPeerTopology } from "./tailscale-status.js";
+import { readRelayPeerTopology, readLocalTailscaleStatus } from "./tailscale-status.js";
 import { createLogger, errMsg } from "../log.js";
 
 const log = createLogger("server");
@@ -12,7 +12,7 @@ const HANDSHAKE_TTL_MS = 10 * 60_000;
 export interface ActivityPeer { origin: string; installationId: string; name: string; get<T>(path: string, maxBytes: number): Promise<T> }
 
 /**
- * Test-only transport seam (WOLFPACK_TEST, like WOLFPACK_TAILSCALE_STATUS_JSON):
+ * Test-only transport seam (WOLFPACK_TEST):
  * maps a canonical tailnet origin to a local URL so private servers can act as peers.
  * Identity is still verified against the canonical origin by the handshake.
  */
@@ -47,10 +47,10 @@ async function peerGet<T>(origin: string, path: string, maxBytes: number): Promi
 let topologyError: string | undefined;
 const handshakes = new Map<string, { nodeId: string; installationId: string; name: string; expiresAt: number }>();
 /** Online verified tailnet peers. A missing tailnet is a single-machine setup, not an error. */
-export async function discoverActivityPeers(now = Date.now()): Promise<{ peers: ActivityPeer[]; failures: { origin: string; error: string }[] }> {
+export async function discoverActivityPeers(now = Date.now(), readStatus: typeof readLocalTailscaleStatus = readLocalTailscaleStatus): Promise<{ peers: ActivityPeer[]; failures: { origin: string; error: string }[] }> {
   const config = loadConfig();
   let topology;
-  try { topology = await readRelayPeerTopology(config ? remoteUrl(config) ?? undefined : undefined); topologyError = undefined; }
+  try { topology = await readRelayPeerTopology(config ? remoteUrl(config) ?? undefined : undefined, readStatus); topologyError = undefined; }
   catch (error) {
     const message = errMsg(error);
     if (message !== topologyError) log.warn("activity peers unavailable: tailnet topology unreadable; using this machine only", { error: message });

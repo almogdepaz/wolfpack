@@ -14,16 +14,13 @@ import {
 import type { JsonObject } from "../control-api-schema-validator.ts";
 
 const PRIOR_ENV = {
-  WOLFPACK_TEST: process.env.WOLFPACK_TEST,
   WOLFPACK_JWT_SECRET: process.env.WOLFPACK_JWT_SECRET,
   WOLFPACK_DEV_DIR: process.env.WOLFPACK_DEV_DIR,
   WOLFPACK_SETTINGS_PATH: process.env.WOLFPACK_SETTINGS_PATH,
   WOLFPACK_MACHINE_ID_PATH: process.env.WOLFPACK_MACHINE_ID_PATH,
   WOLFPACK_TAILSCALE_STATUS_JSON: process.env.WOLFPACK_TAILSCALE_STATUS_JSON,
 } as const;
-const { DEV_DIR: PRIOR_CACHED_DEV_DIR } = await import("../../src/server/dev-dir.ts");
 
-process.env.WOLFPACK_TEST = "1";
 delete process.env.WOLFPACK_JWT_SECRET;
 
 const rawTmpDir = mkdtempSync(join(tmpdir(), "wolfpack-schema-contract-"));
@@ -46,13 +43,10 @@ process.env.WOLFPACK_TAILSCALE_STATUS_JSON = JSON.stringify({
   },
 });
 
-const {
-  __resetJwtAuthConfig,
-  __setDevDir,
-  MockBackend,
-} = await import("../../src/test-hooks.ts");
-__resetJwtAuthConfig();
-__setDevDir(TEST_DEV_DIR);
+const { getJwtAuthConfig } = await import("../../src/auth.ts");
+const { MockBackend, } = await import("../../src/server/mock-backend.ts");
+
+
 
 const mockBackend = new MockBackend({
   sessions: ["wolf-1"],
@@ -67,18 +61,15 @@ mockBackend.listIdentities = async () => {
 };
 let selectedBackend = mockBackend;
 const { createServerContext } = await import("../../src/server/context.ts");
-const context = createServerContext({
+const context = createServerContext({ readTailscaleStatus: async () => JSON.parse(process.env.WOLFPACK_TAILSCALE_STATUS_JSON ?? "{}"), devDir: TEST_DEV_DIR, jwtAuthConfig: getJwtAuthConfig(), observationCacheTtlMs: 0,
   get backend() { return selectedBackend; },
   taskRoot: join(TEST_DEV_DIR, "tasks"), taskRelayRoot: join(TEST_DEV_DIR, "relay"),
 });
 
 const {
   createServerInstance,
-  __globalRateLimiter,
-  __pollRateLimiter,
 } = await import("../../src/server/index.ts") as any;
-const { _testing: pushTesting } = await import("../../src/server/push.ts");
-const { server } = createServerInstance(context);
+const { server, globalRateLimiter, pollRateLimiter } = createServerInstance(context, { allowLocalOrigins: true });
 
 let base = "";
 const artifact = JSON.parse(readFileSync(CONTROL_API_SCHEMA_ARTIFACT, "utf-8")) as JsonObject;
@@ -119,9 +110,8 @@ async function postJson(path: string, body: unknown): Promise<unknown> {
 }
 
 beforeEach(() => {
-  __globalRateLimiter._map.clear();
-  __pollRateLimiter._map.clear();
-  pushTesting.resetDebounce();
+  globalRateLimiter._map.clear();
+  pollRateLimiter._map.clear();
 });
 
 beforeAll(async () => {
@@ -137,19 +127,16 @@ beforeAll(async () => {
 
 afterAll(async () => {
   (server as Server).close();
-  await context.taskRelayGateway.close();
-  __globalRateLimiter._map.clear();
-  __pollRateLimiter._map.clear();
+  await context.close();
+  globalRateLimiter._map.clear();
+  pollRateLimiter._map.clear();
   rmSync(rawTmpDir, { recursive: true, force: true });
-  __setDevDir(PRIOR_CACHED_DEV_DIR);
+
   for (const [key, value] of Object.entries(PRIOR_ENV)) {
-    if (key === "WOLFPACK_TEST") continue;
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
-  __resetJwtAuthConfig();
-  if (PRIOR_ENV.WOLFPACK_TEST === undefined) delete process.env.WOLFPACK_TEST;
-  else process.env.WOLFPACK_TEST = PRIOR_ENV.WOLFPACK_TEST;
+
 });
 
 describe("control api generated schema against runtime responses", () => {
@@ -188,9 +175,8 @@ describe("control api generated schema against runtime responses", () => {
   });
 
   test("validates real pi footer metadata as optional listSessions fields", async () => {
-    const { __resetSessionObservationForTests } = await import("../../src/server/session-observation.ts");
-    __resetSessionObservationForTests();
     mockBackend.setCapturePane(async () => `Agent answer\n~/dev/wolfpack (ui/last-line-meta)\n${PI_FOOTER}`);
+    mockBackend.setOutputSequence("wolf-1", "1");
     try {
       const response = await getJson("/api/sessions");
       expect(validate(httpResponse("listSessions"), response, artifact)).toEqual([]);
@@ -204,8 +190,8 @@ describe("control api generated schema against runtime responses", () => {
       expect(validate(httpResponse("listSessions"), { sessions: [{ name: "bad-meta", lastLine: "", triage: "idle", meta: { contextPct: "85" } }] }, artifact)).not.toEqual([]);
     } finally {
       mockBackend.setCapturePane(async () => "ready\n");
-      __resetSessionObservationForTests();
-    }
+      mockBackend.setOutputSequence("wolf-1", "2");
+      }
   });
 
   test("validates a notified parent's inbox and the live event against generated contracts", async () => {

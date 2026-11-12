@@ -21,10 +21,9 @@ import {
   PTY_BINARY_FRAME_MAX_BYTES,
   WS_CLOSE_REASONS,
 } from "../ws-constants.js";
-import { defaultServerContext, type ServerContext } from "./context.js";
+import type { ServerContext } from "./context.js";
 import type { SessionAttachLease, SessionBackend, PtyBackendMethods } from "./backend.js";
 import { createRateLimiter } from "./http.js";
-import { registerSubSessionOpenedNotifier } from "./session-notifications.js";
 import { createLogger, errMsg } from "../log.js";
 import { INPUT_SOURCE } from "../activity-journal.js";
 import type { ViewerRedrawTracker } from "./viewer-redraw.js";
@@ -74,15 +73,6 @@ function createServerTerminalLoadTiming(session: string, mode: TerminalLoadMode 
     },
   };
   return timing;
-}
-
-function testPrefillDelayMs(): number {
-  if (!process.env.WOLFPACK_TEST) return 0;
-  const raw = process.env.WOLFPACK_TEST_PREFILL_DELAY_MS;
-  if (!raw) return 0;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) return 0;
-  return Math.min(Math.round(n), 10_000);
 }
 
 // ── PTY session tracking ──
@@ -138,10 +128,6 @@ interface PtyEntryContext {
   readonly timing: ServerTerminalLoadTiming | null;
 }
 
-export const activePtySessions = new Map<string, PtyEntry>();
-
-const ptySpawnAttempts = new Map<string, number>();
-
 function sameSize(a: { cols: number; rows: number } | null, b: { cols: number; rows: number } | null): boolean {
   return !!a && !!b && a.cols === b.cols && a.rows === b.rows;
 }
@@ -151,9 +137,8 @@ const DESKTOP_PREFILL_MAX_BYTES = 256 * 1024;
 // Grid cells receive enough recent context for inspection without fetching
 // each terminal's full scrollback during multi-cell hydration.
 const GRID_PREFILL_SCROLLBACK_LINES = 200;
-const PREFILL_CHUNK_SIZE = 32 * 1024;
+export const PREFILL_CHUNK_SIZE = 32 * 1024;
 const PREFILL_CHUNK_DELAY_MS = 8;
-const PREFILL_OVERLAP_LIMIT = 32 * 1024;
 const MAX_WS_MESSAGE_BYTES = 4096;
 const PING_INTERVAL_MS = 25_000;
 
@@ -287,39 +272,6 @@ const COALESCE_WINDOW_MS = 8;
 const COALESCE_IDLE_MS = 16;
 const COALESCE_SMALL_CHUNK_BYTES = 1024;
 const COALESCE_MAX_BYTES = 128 * 1024;
-function bufferStartsWithPrefillSuffix(prefillTail: Buffer, attachPrefix: Buffer, overlap: number): boolean {
-  const prefillStart = prefillTail.length - overlap;
-  for (let i = 0; i < overlap; i++) {
-    if (prefillTail[prefillStart + i] !== attachPrefix[i]) return false;
-  }
-  return true;
-}
-
-export function __stripInitialPtyOverlap(
-  prefill: Buffer,
-  attachPrefix: Buffer,
-): { awaitingMore: boolean; data: Buffer } {
-  if (!prefill.length || !attachPrefix.length) {
-    return { awaitingMore: false, data: attachPrefix };
-  }
-
-  const prefillTail = prefill.subarray(Math.max(0, prefill.length - PREFILL_OVERLAP_LIMIT));
-  const maxOverlap = Math.min(prefillTail.length, attachPrefix.length);
-
-  for (let overlap = maxOverlap; overlap > 0; overlap--) {
-    if (!bufferStartsWithPrefillSuffix(prefillTail, attachPrefix, overlap)) continue;
-    if (overlap === attachPrefix.length) {
-      return { awaitingMore: true, data: Buffer.alloc(0) };
-    }
-    return {
-      awaitingMore: false,
-      data: attachPrefix.subarray(overlap),
-    };
-  }
-
-  return { awaitingMore: false, data: attachPrefix };
-}
-
 function sendPrefillDone(entry: { viewer: WebSocket | null; alive: boolean }, session: string): boolean {
   return safeViewerSend(entry, session, JSON.stringify({ type: "prefill_done" }));
 }
@@ -333,20 +285,6 @@ function sendAttachAck(entry: ViewerSendEntry, session: string, outputAck = entr
     type: "attach_ack",
     capabilities: [PTY_ATTACH_CAPABILITY.ORDERED_RESIZE_ACK, ...(outputAck ? [PTY_ATTACH_CAPABILITY.OUTPUT_ACK] : [])],
   }));
-}
-
-/** True when `entry` is still the live, current owner of `session` and `ws`
- *  is still its active viewer. After every `await`, the entry may have been
- *  torn down, replaced by a takeover, or had its viewer displaced — bail
- *  if any of that happened. */
-function entryStillCurrent(
-  entry: { alive: boolean; viewer: WebSocket | null },
-  session: string,
-  ws: WebSocket,
-): boolean {
-  return entry.alive
-    && (activePtySessions.get(session) as unknown) === entry
-    && entry.viewer === ws;
 }
 
 /** Try-close a WebSocket and log failures at debug. The close codes used
@@ -392,19 +330,9 @@ function safeViewerSend(
   }
 }
 
-registerSubSessionOpenedNotifier((parentSession, session) => {
-  const entry = activePtySessions.get(parentSession);
-  if (!entry) return false;
-  return safeViewerSend(entry, parentSession, JSON.stringify({
-    type: "sub_session_opened",
-    parentSession,
-    session,
-  }));
-});
-
 /** Send prefill buffer in 32KB chunks with short delays to avoid stalling mobile connections.
  *  Sends `prefill_done` message at the end so the client exits buffering state. */
-async function sendPrefillChunked(
+export async function sendPrefillChunked(
   entry: ViewerSendEntry,
   prefill: Buffer,
   session: string,
@@ -426,1186 +354,1213 @@ async function sendPrefillChunked(
   return sendPrefillDone(entry, session);
 }
 
-/** Test hook: expose PTY internal state for assertions */
-export function __getTestState(): {
-  activePtySessions: typeof activePtySessions;
-  ptySpawnAttempts: Map<string, number>;
-  sendPrefillChunked: typeof sendPrefillChunked;
-  PREFILL_CHUNK_SIZE: number;
-} {
-  if (!process.env.WOLFPACK_TEST) throw new Error("__getTestState() is only available in test mode (WOLFPACK_TEST=1)");
-  return { activePtySessions, ptySpawnAttempts, sendPrefillChunked, PREFILL_CHUNK_SIZE };
+export interface TerminalSessionOptions {
+  readonly prefillDelayMs?: number;
+  readonly onAttachAttempt?: (session: string) => void;
 }
 
-export function teardownPty(session: string): void {
-  const entry = activePtySessions.get(session);
-  if (!entry) return;
-  entry.alive = false;
-  // Tear down sub/proc state BEFORE deleting from the map. Kill failures
-  // are logged at warn (not debug) so an orphan PTY surfaces in the log
-  // stream rather than silently accumulating. The map delete still happens
-  // unconditionally in finally so a thrown kill never strands the entry —
-  // a re-attach is always possible.
-  try {
-    if (entry.unsubscribe) {
-      try { entry.unsubscribe(); } catch (e: unknown) { log.debug(`teardownPty: unsubscribe failed`, { session, error: errMsg(e) }); }
-      entry.unsubscribe = null;
-    }
-    if (entry.unsubscribeLifecycle) {
-      try { entry.unsubscribeLifecycle(); } catch (e: unknown) { log.debug(`teardownPty: unsubscribeLifecycle failed`, { session, error: errMsg(e) }); }
-      entry.unsubscribeLifecycle = null;
-    }
-    if (entry.viewer) {
-      tryWsClose(entry.viewer, CLOSE_CODE_NORMAL, WS_CLOSE_REASONS.PTY_TEARDOWN, "teardownPty: viewer close failed", session);
-      entry.viewer = null;
-    }
-    if (entry.pendingViewer) {
-      tryWsClose(entry.pendingViewer, CLOSE_CODE_NORMAL, WS_CLOSE_REASONS.PTY_TEARDOWN, "teardownPty: pendingViewer close failed", session);
-      entry.pendingViewer = null;
-    }
-    if (entry.proc) {
-      try { entry.proc.terminal!.close(); } catch (e: unknown) { log.debug(`teardownPty: terminal close failed`, { session, error: errMsg(e) }); }
-      try { entry.proc.kill(); } catch (e: unknown) {
-        // Warn (not debug): a swallowed kill failure means a zombie PTY
-        // process is still running with no map reference — the operator
-        // needs to see this to chase it down.
-        log.warn(`teardownPty: proc kill failed; PTY may be orphaned`, { session, pid: entry.proc.pid, error: errMsg(e) });
-      }
-    }
-  } finally {
-    activePtySessions.delete(session);
-  }
-}
+export function createTerminalSessions(serverContext: ServerContext, terminalOptions: TerminalSessionOptions = {}) {
+  const activePtySessions = new Map<string, PtyEntry>();
+  const rawDelay = terminalOptions.prefillDelayMs ?? 0;
+  const prefillDelayMs = Number.isFinite(rawDelay) && rawDelay > 0 ? Math.min(Math.round(rawDelay), 10_000) : 0;
 
-export function handlePtyWs(ws: WebSocket, session: string, reset = false, serverContext: ServerContext = defaultServerContext): void {
-  const initialTiming = createServerTerminalLoadTiming(session);
-  initialTiming?.mark("upgrade.accepted", { reset });
-  // Force teardown existing PTY so a fresh one is spawned at the caller's dimensions
-  if (reset) {
-    const stale = activePtySessions.get(session);
-    if (stale && stale.alive) {
-      teardownPty(session);
-    }
+  /** True when `entry` is still the live, current owner of `session` and `ws`
+   *  is still its active viewer. After every `await`, the entry may have been
+   *  torn down, replaced by a takeover, or had its viewer displaced — bail
+   *  if any of that happened. */
+  function entryStillCurrent(
+    entry: { alive: boolean; viewer: WebSocket | null },
+    session: string,
+    ws: WebSocket,
+  ): boolean {
+    return entry.alive
+      && (activePtySessions.get(session) as unknown) === entry
+      && entry.viewer === ws;
   }
 
-  const maybeExisting = activePtySessions.get(session);
+  function notifySubSessionOpened(parentSession: string, session: string): boolean {
+    const entry = activePtySessions.get(parentSession);
+    if (!entry) return false;
+    return safeViewerSend(entry, parentSession, JSON.stringify({
+      type: "sub_session_opened",
+      parentSession,
+      session,
+    }));
+  }
 
-  if (maybeExisting && maybeExisting.alive) {
-    const existing = maybeExisting; // const binding for closure narrowing
-
-    // ── Fast path: immediate takeover ──
-    function performImmediateTakeover(dims: PtyAttachDimensions | null) {
-      const oldViewer = existing.viewer;
-      existing.viewer = null;
-      if (oldViewer) {
-        tryWsClose(oldViewer, CLOSE_CODE_DISPLACED, WS_CLOSE_REASONS.DISPLACED, "takeover: oldViewer close failed", session);
+  function teardownPty(session: string): void {
+    const entry = activePtySessions.get(session);
+    if (!entry) return;
+    entry.alive = false;
+    // Tear down sub/proc state BEFORE deleting from the map. Kill failures
+    // are logged at warn (not debug) so an orphan PTY surfaces in the log
+    // stream rather than silently accumulating. The map delete still happens
+    // unconditionally in finally so a thrown kill never strands the entry —
+    // a re-attach is always possible.
+    try {
+      if (entry.unsubscribe) {
+        try { entry.unsubscribe(); } catch (e: unknown) { log.debug(`teardownPty: unsubscribe failed`, { session, error: errMsg(e) }); }
+        entry.unsubscribe = null;
       }
-      if (existing.unsubscribe) {
-        existing.unsubscribe();
-        existing.unsubscribe = null;
+      if (entry.unsubscribeLifecycle) {
+        try { entry.unsubscribeLifecycle(); } catch (e: unknown) { log.debug(`teardownPty: unsubscribeLifecycle failed`, { session, error: errMsg(e) }); }
+        entry.unsubscribeLifecycle = null;
       }
-      if (existing.unsubscribeLifecycle) {
-        existing.unsubscribeLifecycle();
-        existing.unsubscribeLifecycle = null;
+      if (entry.viewer) {
+        tryWsClose(entry.viewer, CLOSE_CODE_NORMAL, WS_CLOSE_REASONS.PTY_TEARDOWN, "teardownPty: viewer close failed", session);
+        entry.viewer = null;
       }
-      const oldProc = existing.proc;
-      existing.alive = false;
+      if (entry.pendingViewer) {
+        tryWsClose(entry.pendingViewer, CLOSE_CODE_NORMAL, WS_CLOSE_REASONS.PTY_TEARDOWN, "teardownPty: pendingViewer close failed", session);
+        entry.pendingViewer = null;
+      }
+      if (entry.proc) {
+        try { entry.proc.terminal!.close(); } catch (e: unknown) { log.debug(`teardownPty: terminal close failed`, { session, error: errMsg(e) }); }
+        try { entry.proc.kill(); } catch (e: unknown) {
+          // Warn (not debug): a swallowed kill failure means a zombie PTY
+          // process is still running with no map reference — the operator
+          // needs to see this to chase it down.
+          log.warn(`teardownPty: proc kill failed; PTY may be orphaned`, { session, pid: entry.proc.pid, error: errMsg(e) });
+        }
+      }
+    } finally {
       activePtySessions.delete(session);
-      if (oldProc) {
-        try { oldProc.terminal!.close(); } catch (e: unknown) { log.debug(`takeover: terminal close failed`, { session, error: errMsg(e) }); }
-        try { oldProc.kill(); } catch (e: unknown) { log.debug(`takeover: proc kill failed`, { session, error: errMsg(e) }); }
+    }
+  }
+
+  function handlePtyWs(ws: WebSocket, session: string, reset = false): void {
+    const initialTiming = createServerTerminalLoadTiming(session);
+    initialTiming?.mark("upgrade.accepted", { reset });
+    // Force teardown existing PTY so a fresh one is spawned at the caller's dimensions
+    if (reset) {
+      const stale = activePtySessions.get(session);
+      if (stale && stale.alive) {
+        teardownPty(session);
       }
+    }
+
+    const maybeExisting = activePtySessions.get(session);
+
+    if (maybeExisting && maybeExisting.alive) {
+      const existing = maybeExisting; // const binding for closure narrowing
+
+      // ── Fast path: immediate takeover ──
+      function performImmediateTakeover(dims: PtyAttachDimensions | null) {
+        const oldViewer = existing.viewer;
+        existing.viewer = null;
+        if (oldViewer) {
+          tryWsClose(oldViewer, CLOSE_CODE_DISPLACED, WS_CLOSE_REASONS.DISPLACED, "takeover: oldViewer close failed", session);
+        }
+        if (existing.unsubscribe) {
+          existing.unsubscribe();
+          existing.unsubscribe = null;
+        }
+        if (existing.unsubscribeLifecycle) {
+          existing.unsubscribeLifecycle();
+          existing.unsubscribeLifecycle = null;
+        }
+        const oldProc = existing.proc;
+        existing.alive = false;
+        activePtySessions.delete(session);
+        if (oldProc) {
+          try { oldProc.terminal!.close(); } catch (e: unknown) { log.debug(`takeover: terminal close failed`, { session, error: errMsg(e) }); }
+          try { oldProc.kill(); } catch (e: unknown) { log.debug(`takeover: proc kill failed`, { session, error: errMsg(e) }); }
+        }
+        if (existing.pendingViewer) {
+          tryWsClose(existing.pendingViewer, CLOSE_CODE_DISPLACED, WS_CLOSE_REASONS.DISPLACED, "displaced pendingViewer close failed", session);
+          existing.pendingViewer = null;
+        }
+        setupNewPtyEntry(ws, session, serverContext, dims, initialTiming);
+        safeViewerSend({ viewer: ws, alive: true }, session, JSON.stringify({ type: "control_granted" }));
+      }
+
+      // Session occupied — send conflict, hold connection open as pending
+      safeViewerSend({ viewer: ws, alive: true }, session, JSON.stringify({ type: "viewer_conflict" }));
+
+      // If there's already a pending viewer, close it
       if (existing.pendingViewer) {
         tryWsClose(existing.pendingViewer, CLOSE_CODE_DISPLACED, WS_CLOSE_REASONS.DISPLACED, "displaced pendingViewer close failed", session);
+      }
+      existing.pendingViewer = ws;
+
+      const stopHeartbeat = startViewerHeartbeat(ws, session, "pending");
+      const pendingRateLimiter = createRateLimiter(RATE_LIMIT_PER_SEC);
+
+      let pendingAttachDims: PtyAttachDimensions | null = null;
+
+      function cleanupPending() {
+        stopHeartbeat();
+        if (existing.pendingViewer && existing.pendingViewer !== ws) {
+          tryWsClose(existing.pendingViewer, CLOSE_CODE_DISPLACED, WS_CLOSE_REASONS.DISPLACED, "cleanupPending: displaced other pending", session);
+        }
+        ws.removeListener("message", pendingMessage);
+        ws.removeListener("close", cleanup);
+        ws.removeListener("error", cleanup);
         existing.pendingViewer = null;
       }
-      setupNewPtyEntry(ws, session, serverContext, dims, initialTiming);
-      safeViewerSend({ viewer: ws, alive: true }, session, JSON.stringify({ type: "control_granted" }));
-    }
 
-    // Session occupied — send conflict, hold connection open as pending
-    safeViewerSend({ viewer: ws, alive: true }, session, JSON.stringify({ type: "viewer_conflict" }));
-
-    // If there's already a pending viewer, close it
-    if (existing.pendingViewer) {
-      tryWsClose(existing.pendingViewer, CLOSE_CODE_DISPLACED, WS_CLOSE_REASONS.DISPLACED, "displaced pendingViewer close failed", session);
-    }
-    existing.pendingViewer = ws;
-
-    const stopHeartbeat = startViewerHeartbeat(ws, session, "pending");
-    const pendingRateLimiter = createRateLimiter(RATE_LIMIT_PER_SEC);
-
-    let pendingAttachDims: PtyAttachDimensions | null = null;
-
-    function cleanupPending() {
-      stopHeartbeat();
-      if (existing.pendingViewer && existing.pendingViewer !== ws) {
-        tryWsClose(existing.pendingViewer, CLOSE_CODE_DISPLACED, WS_CLOSE_REASONS.DISPLACED, "cleanupPending: displaced other pending", session);
-      }
-      ws.removeListener("message", pendingMessage);
-      ws.removeListener("close", cleanup);
-      ws.removeListener("error", cleanup);
-      existing.pendingViewer = null;
-    }
-
-    function pendingMessage(raw: Buffer | string, isBinary = false) {
-      try {
-        if (isBinary || raw.length > MAX_WS_MESSAGE_BYTES || !pendingRateLimiter.allow()) {
-          tryWsClose(
-            ws,
-            CLOSE_CODE_POLICY_VIOLATION,
-            WS_CLOSE_REASONS.INVALID_MESSAGE,
-            "invalid pending viewer message close failed",
-            session,
-          );
-          return;
-        }
-        const str = String(raw);
-        const parsed: unknown = JSON.parse(str);
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
-        const msg = parsed as Readonly<Record<string, unknown>>;
-        if (msg.type === PTY_LIVENESS_MESSAGE.PING) {
-          safeViewerSend({ viewer: ws, alive: true }, session, JSON.stringify({ type: PTY_LIVENESS_MESSAGE.PONG }));
-          return;
-        }
-        if (msg.type === "attach" && typeof msg.cols === "number" && typeof msg.rows === "number") {
-          const pm = typeof msg.prefillMode === "string" ? msg.prefillMode : undefined;
-          pendingAttachDims = {
-            cols: msg.cols, rows: msg.rows, prefillMode: pm,
-            outputAck: Array.isArray(msg.capabilities) && msg.capabilities.includes(PTY_ATTACH_CAPABILITY.OUTPUT_ACK),
-          };
-          const parsedPrefillMode = pm && isTerminalPrefillMode(pm) ? pm : TERMINAL_PREFILL_MODE.FULL;
-          if (initialTiming) initialTiming.mode = terminalLoadModeFromPrefill(parsedPrefillMode);
-          initialTiming?.mark("attach.parsed", {
-            cols: clampCols(msg.cols),
-            rows: clampRows(msg.rows),
-            prefillMode: parsedPrefillMode,
-          });
-          if (msg.takeControl) {
+      function pendingMessage(raw: Buffer | string, isBinary = false) {
+        try {
+          if (isBinary || raw.length > MAX_WS_MESSAGE_BYTES || !pendingRateLimiter.allow()) {
+            tryWsClose(
+              ws,
+              CLOSE_CODE_POLICY_VIOLATION,
+              WS_CLOSE_REASONS.INVALID_MESSAGE,
+              "invalid pending viewer message close failed",
+              session,
+            );
+            return;
+          }
+          const str = String(raw);
+          const parsed: unknown = JSON.parse(str);
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+          const msg = parsed as Readonly<Record<string, unknown>>;
+          if (msg.type === PTY_LIVENESS_MESSAGE.PING) {
+            safeViewerSend({ viewer: ws, alive: true }, session, JSON.stringify({ type: PTY_LIVENESS_MESSAGE.PONG }));
+            return;
+          }
+          if (msg.type === "attach" && typeof msg.cols === "number" && typeof msg.rows === "number") {
+            const pm = typeof msg.prefillMode === "string" ? msg.prefillMode : undefined;
+            pendingAttachDims = {
+              cols: msg.cols, rows: msg.rows, prefillMode: pm,
+              outputAck: Array.isArray(msg.capabilities) && msg.capabilities.includes(PTY_ATTACH_CAPABILITY.OUTPUT_ACK),
+            };
+            const parsedPrefillMode = pm && isTerminalPrefillMode(pm) ? pm : TERMINAL_PREFILL_MODE.FULL;
+            if (initialTiming) initialTiming.mode = terminalLoadModeFromPrefill(parsedPrefillMode);
+            initialTiming?.mark("attach.parsed", {
+              cols: clampCols(msg.cols),
+              rows: clampRows(msg.rows),
+              prefillMode: parsedPrefillMode,
+            });
+            if (msg.takeControl) {
+              cleanupPending();
+              performImmediateTakeover(pendingAttachDims);
+              return;
+            }
+            sendAttachAck({ viewer: ws, alive: true }, session, pendingAttachDims.outputAck);
+            return;
+          }
+          if (msg.type === "take_control") {
+            if (!pendingAttachDims) {
+              log.warn("take_control without prior attach — ignoring", { session });
+              return;
+            }
             cleanupPending();
             performImmediateTakeover(pendingAttachDims);
-            return;
           }
-          sendAttachAck({ viewer: ws, alive: true }, session, pendingAttachDims.outputAck);
-          return;
+        } catch (e: unknown) {
+          if (!(e instanceof SyntaxError)) log.warn("pendingMessage handler failed", { session, error: errMsg(e) });
         }
-        if (msg.type === "take_control") {
-          if (!pendingAttachDims) {
-            log.warn("take_control without prior attach — ignoring", { session });
-            return;
-          }
-          cleanupPending();
-          performImmediateTakeover(pendingAttachDims);
+      }
+
+      function cleanup() {
+        stopHeartbeat();
+        ws.removeListener("message", pendingMessage);
+        ws.removeListener("close", cleanup);
+        ws.removeListener("error", cleanup);
+        if (existing.pendingViewer === ws) {
+          existing.pendingViewer = null;
         }
-      } catch (e: unknown) {
-        if (!(e instanceof SyntaxError)) log.warn("pendingMessage handler failed", { session, error: errMsg(e) });
       }
+      ws.on("message", pendingMessage);
+      ws.on("close", cleanup);
+      ws.on("error", cleanup);
+      return;
     }
 
-    function cleanup() {
-      stopHeartbeat();
-      ws.removeListener("message", pendingMessage);
-      ws.removeListener("close", cleanup);
-      ws.removeListener("error", cleanup);
-      if (existing.pendingViewer === ws) {
-        existing.pendingViewer = null;
-      }
-    }
-    ws.on("message", pendingMessage);
-    ws.on("close", cleanup);
-    ws.on("error", cleanup);
-    return;
+    // No active PTY — create new entry
+    setupNewPtyEntry(ws, session, serverContext, undefined, initialTiming);
   }
 
-  // No active PTY — create new entry
-  setupNewPtyEntry(ws, session, serverContext, undefined, initialTiming);
-}
-
-/** Returns true iff the helper should bail because the entry is no longer
- *  current. Convenience wrapper around {@link entryStillCurrent}. */
-function bail(ctx: PtyEntryContext): boolean {
-  return !!ctx.entry.exitDraining || !entryStillCurrent(ctx.entry, ctx.session, ctx.ws);
-}
-
-/** Resize failure invalidates the browser's proposed geometry. Close instead of
- * continuing an attach with an acknowledgement or readiness signal. */
-async function applyAttachResize(
-  ctx: PtyEntryContext,
-  size: { cols: number; rows: number },
-): Promise<boolean> {
-  try {
-    // Every settle/finalizer await must revalidate its viewer before geometry.
-    if (bail(ctx)) return false;
-    ctx.viewerRedraw.begin(ctx.session);
-    await ctx.backend.resize(ctx.session, size.cols, size.rows);
-  } catch (error: unknown) {
-    if (entryStillCurrent(ctx.entry, ctx.session, ctx.ws)) {
-      log.warn("attach resize failed — reconnecting viewer", { session: ctx.session, error: errMsg(error) });
-      tryWsClose(ctx.ws, CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.RESIZE_FAILED, "attach resize failure viewer close failed", ctx.session);
-    }
-    return false;
+  /** Returns true iff the helper should bail because the entry is no longer
+   *  current. Convenience wrapper around {@link entryStillCurrent}. */
+  function bail(ctx: PtyEntryContext): boolean {
+    return !!ctx.entry.exitDraining || !entryStillCurrent(ctx.entry, ctx.session, ctx.ws);
   }
-  return entryStillCurrent(ctx.entry, ctx.session, ctx.ws);
-}
 
-/** Wait for the client's pre-snapshot resize messages to settle so we apply
- *  a single backend.resize at final dims (one SIGWINCH, one redraw, one
- *  snapshot capture). See call site comments at L477 for full reasoning.
- *  Returns the settled size, or `null` if the entry was torn down. */
-async function waitForResizeSettle(
-  ctx: PtyEntryContext,
-  initialSize: { cols: number; rows: number },
-  options?: { readonly initialWaitMs?: number; readonly settleMs?: number; readonly timeoutMs?: number },
-): Promise<{ cols: number; rows: number } | null> {
-  const initialWaitMs = options?.initialWaitMs ?? PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS;
-  const settleMs = options?.settleMs ?? PRE_SNAPSHOT_RESIZE_SETTLE_MS;
-  const timeoutMs = options?.timeoutMs ?? PRE_SNAPSHOT_RESIZE_TIMEOUT_MS;
-  let pendingSize = initialSize;
-  ctx.timing?.mark("resize_settle.start", { cols: initialSize.cols, rows: initialSize.rows });
-  const settleStart = Date.now();
-  let lastChangeAt = -1;
-  let settleReason = "timeout";
-  while (true) {
-    if (bail(ctx)) return null;
-    const elapsedTotal = Date.now() - settleStart;
-    if (elapsedTotal >= timeoutMs) {
-      settleReason = "timeout";
-      break;
-    }
-    if (sameSize(ctx.layoutStable.current, pendingSize)) {
-      settleReason = "layout_stable";
-      break;
-    }
-    if (lastChangeAt < 0) {
-      if (elapsedTotal >= initialWaitMs) {
-        settleReason = "initial_wait";
-        break;
+  /** Resize failure invalidates the browser's proposed geometry. Close instead of
+   * continuing an attach with an acknowledgement or readiness signal. */
+  async function applyAttachResize(
+    ctx: PtyEntryContext,
+    size: { cols: number; rows: number },
+  ): Promise<boolean> {
+    try {
+      // Every settle/finalizer await must revalidate its viewer before geometry.
+      if (bail(ctx)) return false;
+      ctx.viewerRedraw.begin(ctx.session);
+      await ctx.backend.resize(ctx.session, size.cols, size.rows);
+    } catch (error: unknown) {
+      if (entryStillCurrent(ctx.entry, ctx.session, ctx.ws)) {
+        log.warn("attach resize failed — reconnecting viewer", { session: ctx.session, error: errMsg(error) });
+        tryWsClose(ctx.ws, CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.RESIZE_FAILED, "attach resize failure viewer close failed", ctx.session);
       }
-    } else {
-      const elapsedSinceChange = Date.now() - lastChangeAt;
-      if (elapsedSinceChange >= settleMs) {
-        settleReason = "settled";
-        break;
-      }
+      return false;
     }
-    await new Promise(resolve => setTimeout(resolve, 16));
-    const latest = ctx.requestedSize.current;
-    if (latest && (latest.cols !== pendingSize.cols || latest.rows !== pendingSize.rows)) {
-      pendingSize = latest;
-      lastChangeAt = Date.now();
-    }
+    return entryStillCurrent(ctx.entry, ctx.session, ctx.ws);
   }
-  ctx.timing?.mark("resize_settle.end", {
-    cols: pendingSize.cols,
-    rows: pendingSize.rows,
-    elapsedMs: Date.now() - settleStart,
-    reason: settleReason,
-  });
-  return pendingSize;
-}
 
-/** Apply settled dims and wait for the SIGWINCH-triggered shell redraw to
- *  land in the broker stream so the snapshot captures it (not the live
- *  replay). Re-resizes mid-loop if the client sends another dim change.
- *  Returns the final applied size, or `null` if the entry was torn down.
- *  See call site comments at L553 for full reasoning. */
-async function waitForOutputQuiescence(
-  ctx: PtyEntryContext,
-  pendingSize: { cols: number; rows: number },
-): Promise<{ cols: number; rows: number } | null> {
-  let appliedSize = pendingSize;
-  const samples: Array<{ t: number; bytes: number }> = [];
-  let outputDecision: ReturnType<typeof quiescenceDecision> | null = null;
-  let settleStart = Date.now();
-  ctx.timing?.mark("quiescence_wait.start", { cols: pendingSize.cols, rows: pendingSize.rows });
-  const observe = ctx.backend.onSessionData(ctx.session, (data: Uint8Array) => {
-    samples.push({ t: Date.now(), bytes: data.length });
-  }, {
-    // Probe-only observer for the resize-settle window. If the
-    // subscribe RPC fails here, the main per-viewer subscription
-    // (registered after settle) carries its own teardown handler;
-    // this probe just stops collecting samples — settle will time
-    // out naturally and we move on.
-    onSubscribeError: (err: unknown) => {
-      log.debug("resize-settle observer subscribe failed", { session: ctx.session, error: errMsg(err) });
-    },
-  });
-  try {
-    if (!await applyAttachResize(ctx, appliedSize)) return null;
-    let lastResizeAt = Date.now();
-    settleStart = lastResizeAt;
+  /** Wait for the client's pre-snapshot resize messages to settle so we apply
+   *  a single backend.resize at final dims (one SIGWINCH, one redraw, one
+   *  snapshot capture). See call site comments at L477 for full reasoning.
+   *  Returns the settled size, or `null` if the entry was torn down. */
+  async function waitForResizeSettle(
+    ctx: PtyEntryContext,
+    initialSize: { cols: number; rows: number },
+    options?: { readonly initialWaitMs?: number; readonly settleMs?: number; readonly timeoutMs?: number },
+  ): Promise<{ cols: number; rows: number } | null> {
+    const initialWaitMs = options?.initialWaitMs ?? PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS;
+    const settleMs = options?.settleMs ?? PRE_SNAPSHOT_RESIZE_SETTLE_MS;
+    const timeoutMs = options?.timeoutMs ?? PRE_SNAPSHOT_RESIZE_TIMEOUT_MS;
+    let pendingSize = initialSize;
+    ctx.timing?.mark("resize_settle.start", { cols: initialSize.cols, rows: initialSize.rows });
+    const settleStart = Date.now();
+    let lastChangeAt = -1;
+    let settleReason = "timeout";
     while (true) {
-      if (bail(ctx)) break;
-      // Dim changed since we last applied? Re-resize and restart the
-      // quiescence clock so we capture this redraw too.
-      const latest = ctx.requestedSize.current;
-      if (latest && (latest.cols !== appliedSize.cols || latest.rows !== appliedSize.rows)) {
-        appliedSize = latest;
-        if (!await applyAttachResize(ctx, appliedSize)) return null;
-        lastResizeAt = Date.now();
-      }
-      const now = Date.now();
-      // Trim samples outside the rolling window so the array stays
-      // bounded across long never-quiet sessions.
-      const cutoff = now - QUIESCE_WINDOW_MS;
-      while (samples.length > 0 && samples[0].t < cutoff) samples.shift();
-      const decision = quiescenceDecision({ samples, now, lastResizeAt, settleStart });
-      if (decision !== "continue") {
-        outputDecision = decision;
-        if (decision === "animated_cap" || decision === "timeout") {
-          log.debug("quiescence loop exited without quiet", { session: ctx.session, reason: decision, elapsedMs: now - settleStart });
-        }
+      if (bail(ctx)) return null;
+      const elapsedTotal = Date.now() - settleStart;
+      if (elapsedTotal >= timeoutMs) {
+        settleReason = "timeout";
         break;
+      }
+      if (sameSize(ctx.layoutStable.current, pendingSize)) {
+        settleReason = "layout_stable";
+        break;
+      }
+      if (lastChangeAt < 0) {
+        if (elapsedTotal >= initialWaitMs) {
+          settleReason = "initial_wait";
+          break;
+        }
+      } else {
+        const elapsedSinceChange = Date.now() - lastChangeAt;
+        if (elapsedSinceChange >= settleMs) {
+          settleReason = "settled";
+          break;
+        }
       }
       await new Promise(resolve => setTimeout(resolve, 16));
-    }
-  } finally {
-    if (observe) {
-      observe();
-      if (observe.closed) await observe.closed;
-    }
-  }
-  ctx.timing?.mark("quiescence_wait.end", {
-    cols: appliedSize.cols,
-    rows: appliedSize.rows,
-    elapsedMs: Date.now() - settleStart,
-    outputDecision,
-  });
-  return bail(ctx) ? null : appliedSize;
-}
-
-/** Full prefill can overlap the initial resize-settle window with the
- *  SIGWINCH redraw wait: apply the attach dims immediately, observe output
- *  while still waiting for late client resize messages, and snapshot only
- *  once both dimensions are stable and output has quiesced. */
-async function waitForSettledResizeAndOutputQuiescence(
-  ctx: PtyEntryContext,
-  initialSize: { cols: number; rows: number },
-  options?: { readonly initialWaitMs?: number; readonly settleMs?: number; readonly timeoutMs?: number },
-): Promise<{ cols: number; rows: number } | null> {
-  const initialWaitMs = options?.initialWaitMs ?? PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS;
-  const settleMs = options?.settleMs ?? PRE_SNAPSHOT_RESIZE_SETTLE_MS;
-  const timeoutMs = options?.timeoutMs ?? PRE_SNAPSHOT_RESIZE_TIMEOUT_MS;
-  let pendingSize = initialSize;
-  let appliedSize = initialSize;
-  let lastChangeAt = -1;
-  let resizeStableAtMs: number | null = null;
-  let resizeStableReason: string | null = null;
-  let outputStableAtMs: number | null = null;
-  let outputDecision: ReturnType<typeof quiescenceDecision> | null = null;
-  let resizeApplyCount = 0;
-  const samples: Array<{ t: number; bytes: number }> = [];
-
-  ctx.timing?.mark("resize_settle.start", { cols: initialSize.cols, rows: initialSize.rows });
-  ctx.timing?.mark("quiescence_wait.start", { cols: initialSize.cols, rows: initialSize.rows });
-
-  const observe = ctx.backend.onSessionData(ctx.session, (data: Uint8Array) => {
-    samples.push({ t: Date.now(), bytes: data.length });
-  }, {
-    onSubscribeError: (err: unknown) => {
-      log.debug("resize-settle observer subscribe failed", { session: ctx.session, error: errMsg(err) });
-    },
-  });
-
-  let lastResizeAt = Date.now();
-  const settleStart = lastResizeAt;
-  try {
-    if (!await applyAttachResize(ctx, appliedSize)) return null;
-    resizeApplyCount += 1;
-    lastResizeAt = Date.now();
-
-    while (true) {
-      if (bail(ctx)) break;
       const latest = ctx.requestedSize.current;
       if (latest && (latest.cols !== pendingSize.cols || latest.rows !== pendingSize.rows)) {
         pendingSize = latest;
         lastChangeAt = Date.now();
       }
-      if (pendingSize.cols !== appliedSize.cols || pendingSize.rows !== appliedSize.rows) {
-        appliedSize = pendingSize;
-        if (!await applyAttachResize(ctx, appliedSize)) return null;
-        resizeApplyCount += 1;
-        lastResizeAt = Date.now();
-      }
-
-      const now = Date.now();
-      const elapsedTotal = now - settleStart;
-      const resizeStableByTimeout = elapsedTotal >= timeoutMs;
-      const resizeStableByLayout = sameSize(ctx.layoutStable.current, pendingSize);
-      const resizeStableByWait = lastChangeAt < 0 ? elapsedTotal >= initialWaitMs : now - lastChangeAt >= settleMs;
-      const resizeStable = resizeStableByTimeout || resizeStableByLayout || resizeStableByWait;
-      if (resizeStable && resizeStableAtMs === null) {
-        resizeStableAtMs = elapsedTotal;
-        resizeStableReason = resizeStableByTimeout ? "timeout" : resizeStableByLayout ? "layout_stable" : lastChangeAt < 0 ? "initial_wait" : "settled";
-      }
-
-      const cutoff = now - QUIESCE_WINDOW_MS;
-      while (samples.length > 0 && samples[0].t < cutoff) samples.shift();
-      const decision = quiescenceDecision({ samples, now, lastResizeAt, settleStart });
-      const outputStable = decision !== "continue";
-      if (outputStable && outputStableAtMs === null) {
-        outputStableAtMs = elapsedTotal;
-        outputDecision = decision;
-      }
-      if (outputStable && (decision === "animated_cap" || decision === "timeout")) {
-        log.debug("quiescence loop exited without quiet", { session: ctx.session, reason: decision, elapsedMs: now - settleStart });
-      }
-      if (resizeStable && outputStable) break;
-      await new Promise(resolve => setTimeout(resolve, 16));
     }
-  } finally {
-    if (observe) {
-      observe();
-      if (observe.closed) await observe.closed;
-    }
+    ctx.timing?.mark("resize_settle.end", {
+      cols: pendingSize.cols,
+      rows: pendingSize.rows,
+      elapsedMs: Date.now() - settleStart,
+      reason: settleReason,
+    });
+    return pendingSize;
   }
 
-  const elapsedMs = Date.now() - settleStart;
-  ctx.timing?.mark("resize_settle.end", {
-    cols: appliedSize.cols,
-    rows: appliedSize.rows,
-    elapsedMs,
-    reason: resizeStableReason,
-    resizeStableAtMs,
-    outputStableAtMs,
-    outputDecision,
-    resizeApplyCount,
-  });
-  ctx.timing?.mark("quiescence_wait.end", {
-    cols: appliedSize.cols,
-    rows: appliedSize.rows,
-    elapsedMs,
-    resizeStableAtMs,
-    resizeStableReason,
-    outputStableAtMs,
-    outputDecision,
-    resizeApplyCount,
-  });
-  return bail(ctx) ? null : appliedSize;
-}
-
-/** Take a broker snapshot at `appliedSize.cols` and stream it to the viewer.
- *  Returns the prefill seq (used as `sinceSeq` for live subscribe) or
- *  undefined when no snapshot is required (prefillMode === "none" or
- *  empty data). */
-async function sendSnapshotPrefill(
-  ctx: PtyEntryContext,
-  appliedSize: { cols: number; rows: number },
-  prefillMode: Exclude<PrefillMode, "none">,
-): Promise<SessionAttachLease> {
-  const scrollbackLines = prefillMode === TERMINAL_PREFILL_MODE.VIEWPORT ? GRID_PREFILL_SCROLLBACK_LINES : undefined;
-  ctx.timing?.mark("snapshot_fetch.start", { cols: appliedSize.cols, rows: appliedSize.rows, scrollbackLines });
-  const lease = await ctx.backend.beginSessionAttach(ctx.session, appliedSize.cols, {
-    scrollbackLines,
-    maxBytes: DESKTOP_PREFILL_MAX_BYTES,
-  });
-  const { prefill } = lease;
-  ctx.timing?.mark("snapshot_fetch.end", { bytes: prefill.data.length, scrollbackLines });
-  ctx.timing?.mark("prefill_send.start", { bytes: prefill.data.length, prefillMode });
-  const delayMs = testPrefillDelayMs();
-  if (delayMs > 0) {
-    ctx.timing?.mark("prefill_delay.start", { delayMs });
-    await new Promise(resolve => setTimeout(resolve, delayMs));
-    ctx.timing?.mark("prefill_delay.end", { delayMs });
+  /** Apply settled dims and wait for the SIGWINCH-triggered shell redraw to
+   *  land in the broker stream so the snapshot captures it (not the live
+   *  replay). Re-resizes mid-loop if the client sends another dim change.
+   *  Returns the final applied size, or `null` if the entry was torn down.
+   *  See call site comments at L553 for full reasoning. */
+  async function waitForOutputQuiescence(
+    ctx: PtyEntryContext,
+    pendingSize: { cols: number; rows: number },
+  ): Promise<{ cols: number; rows: number } | null> {
+    let appliedSize = pendingSize;
+    const samples: Array<{ t: number; bytes: number }> = [];
+    let outputDecision: ReturnType<typeof quiescenceDecision> | null = null;
+    let settleStart = Date.now();
+    ctx.timing?.mark("quiescence_wait.start", { cols: pendingSize.cols, rows: pendingSize.rows });
+    const observe = ctx.backend.onSessionData(ctx.session, (data: Uint8Array) => {
+      samples.push({ t: Date.now(), bytes: data.length });
+    }, {
+      // Probe-only observer for the resize-settle window. If the
+      // subscribe RPC fails here, the main per-viewer subscription
+      // (registered after settle) carries its own teardown handler;
+      // this probe just stops collecting samples — settle will time
+      // out naturally and we move on.
+      onSubscribeError: (err: unknown) => {
+        log.debug("resize-settle observer subscribe failed", { session: ctx.session, error: errMsg(err) });
+      },
+    });
+    try {
+      if (!await applyAttachResize(ctx, appliedSize)) return null;
+      let lastResizeAt = Date.now();
+      settleStart = lastResizeAt;
+      while (true) {
+        if (bail(ctx)) break;
+        // Dim changed since we last applied? Re-resize and restart the
+        // quiescence clock so we capture this redraw too.
+        const latest = ctx.requestedSize.current;
+        if (latest && (latest.cols !== appliedSize.cols || latest.rows !== appliedSize.rows)) {
+          appliedSize = latest;
+          if (!await applyAttachResize(ctx, appliedSize)) return null;
+          lastResizeAt = Date.now();
+        }
+        const now = Date.now();
+        // Trim samples outside the rolling window so the array stays
+        // bounded across long never-quiet sessions.
+        const cutoff = now - QUIESCE_WINDOW_MS;
+        while (samples.length > 0 && samples[0].t < cutoff) samples.shift();
+        const decision = quiescenceDecision({ samples, now, lastResizeAt, settleStart });
+        if (decision !== "continue") {
+          outputDecision = decision;
+          if (decision === "animated_cap" || decision === "timeout") {
+            log.debug("quiescence loop exited without quiet", { session: ctx.session, reason: decision, elapsedMs: now - settleStart });
+          }
+          break;
+        }
+        await new Promise(resolve => setTimeout(resolve, 16));
+      }
+    } finally {
+      if (observe) {
+        observe();
+        if (observe.closed) await observe.closed;
+      }
+    }
+    ctx.timing?.mark("quiescence_wait.end", {
+      cols: appliedSize.cols,
+      rows: appliedSize.rows,
+      elapsedMs: Date.now() - settleStart,
+      outputDecision,
+    });
+    return bail(ctx) ? null : appliedSize;
   }
-  if (prefill.data.length > 0 && ctx.entry.viewer && ctx.entry.viewer.readyState === 1) {
-    // The backend applied DESKTOP_PREFILL_MAX_BYTES (`maxBytes`) already.
-    const sendBuf = prefill.data;
-    if (prefillMode === TERMINAL_PREFILL_MODE.VIEWPORT) {
-      if (!safeViewerSend(ctx.entry, ctx.session, sendBuf)) return lease;
-      ctx.timing?.mark("prefill_chunk.send", { chunkIndex: 0, bytes: sendBuf.length });
-      if (!safeViewerSend(ctx.entry, ctx.session, JSON.stringify({ type: "prefill_viewport" }))) return lease;
-      sendPrefillDone(ctx.entry, ctx.session);
+
+  /** Full prefill can overlap the initial resize-settle window with the
+   *  SIGWINCH redraw wait: apply the attach dims immediately, observe output
+   *  while still waiting for late client resize messages, and snapshot only
+   *  once both dimensions are stable and output has quiesced. */
+  async function waitForSettledResizeAndOutputQuiescence(
+    ctx: PtyEntryContext,
+    initialSize: { cols: number; rows: number },
+    options?: { readonly initialWaitMs?: number; readonly settleMs?: number; readonly timeoutMs?: number },
+  ): Promise<{ cols: number; rows: number } | null> {
+    const initialWaitMs = options?.initialWaitMs ?? PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS;
+    const settleMs = options?.settleMs ?? PRE_SNAPSHOT_RESIZE_SETTLE_MS;
+    const timeoutMs = options?.timeoutMs ?? PRE_SNAPSHOT_RESIZE_TIMEOUT_MS;
+    let pendingSize = initialSize;
+    let appliedSize = initialSize;
+    let lastChangeAt = -1;
+    let resizeStableAtMs: number | null = null;
+    let resizeStableReason: string | null = null;
+    let outputStableAtMs: number | null = null;
+    let outputDecision: ReturnType<typeof quiescenceDecision> | null = null;
+    let resizeApplyCount = 0;
+    const samples: Array<{ t: number; bytes: number }> = [];
+
+    ctx.timing?.mark("resize_settle.start", { cols: initialSize.cols, rows: initialSize.rows });
+    ctx.timing?.mark("quiescence_wait.start", { cols: initialSize.cols, rows: initialSize.rows });
+
+    const observe = ctx.backend.onSessionData(ctx.session, (data: Uint8Array) => {
+      samples.push({ t: Date.now(), bytes: data.length });
+    }, {
+      onSubscribeError: (err: unknown) => {
+        log.debug("resize-settle observer subscribe failed", { session: ctx.session, error: errMsg(err) });
+      },
+    });
+
+    let lastResizeAt = Date.now();
+    const settleStart = lastResizeAt;
+    try {
+      if (!await applyAttachResize(ctx, appliedSize)) return null;
+      resizeApplyCount += 1;
+      lastResizeAt = Date.now();
+
+      while (true) {
+        if (bail(ctx)) break;
+        const latest = ctx.requestedSize.current;
+        if (latest && (latest.cols !== pendingSize.cols || latest.rows !== pendingSize.rows)) {
+          pendingSize = latest;
+          lastChangeAt = Date.now();
+        }
+        if (pendingSize.cols !== appliedSize.cols || pendingSize.rows !== appliedSize.rows) {
+          appliedSize = pendingSize;
+          if (!await applyAttachResize(ctx, appliedSize)) return null;
+          resizeApplyCount += 1;
+          lastResizeAt = Date.now();
+        }
+
+        const now = Date.now();
+        const elapsedTotal = now - settleStart;
+        const resizeStableByTimeout = elapsedTotal >= timeoutMs;
+        const resizeStableByLayout = sameSize(ctx.layoutStable.current, pendingSize);
+        const resizeStableByWait = lastChangeAt < 0 ? elapsedTotal >= initialWaitMs : now - lastChangeAt >= settleMs;
+        const resizeStable = resizeStableByTimeout || resizeStableByLayout || resizeStableByWait;
+        if (resizeStable && resizeStableAtMs === null) {
+          resizeStableAtMs = elapsedTotal;
+          resizeStableReason = resizeStableByTimeout ? "timeout" : resizeStableByLayout ? "layout_stable" : lastChangeAt < 0 ? "initial_wait" : "settled";
+        }
+
+        const cutoff = now - QUIESCE_WINDOW_MS;
+        while (samples.length > 0 && samples[0].t < cutoff) samples.shift();
+        const decision = quiescenceDecision({ samples, now, lastResizeAt, settleStart });
+        const outputStable = decision !== "continue";
+        if (outputStable && outputStableAtMs === null) {
+          outputStableAtMs = elapsedTotal;
+          outputDecision = decision;
+        }
+        if (outputStable && (decision === "animated_cap" || decision === "timeout")) {
+          log.debug("quiescence loop exited without quiet", { session: ctx.session, reason: decision, elapsedMs: now - settleStart });
+        }
+        if (resizeStable && outputStable) break;
+        await new Promise(resolve => setTimeout(resolve, 16));
+      }
+    } finally {
+      if (observe) {
+        observe();
+        if (observe.closed) await observe.closed;
+      }
+    }
+
+    const elapsedMs = Date.now() - settleStart;
+    ctx.timing?.mark("resize_settle.end", {
+      cols: appliedSize.cols,
+      rows: appliedSize.rows,
+      elapsedMs,
+      reason: resizeStableReason,
+      resizeStableAtMs,
+      outputStableAtMs,
+      outputDecision,
+      resizeApplyCount,
+    });
+    ctx.timing?.mark("quiescence_wait.end", {
+      cols: appliedSize.cols,
+      rows: appliedSize.rows,
+      elapsedMs,
+      resizeStableAtMs,
+      resizeStableReason,
+      outputStableAtMs,
+      outputDecision,
+      resizeApplyCount,
+    });
+    return bail(ctx) ? null : appliedSize;
+  }
+
+  /** Take a broker snapshot at `appliedSize.cols` and stream it to the viewer.
+   *  Returns the prefill seq (used as `sinceSeq` for live subscribe) or
+   *  undefined when no snapshot is required (prefillMode === "none" or
+   *  empty data). */
+  async function sendSnapshotPrefill(
+    ctx: PtyEntryContext,
+    appliedSize: { cols: number; rows: number },
+    prefillMode: Exclude<PrefillMode, "none">,
+  ): Promise<SessionAttachLease> {
+    const scrollbackLines = prefillMode === TERMINAL_PREFILL_MODE.VIEWPORT ? GRID_PREFILL_SCROLLBACK_LINES : undefined;
+    ctx.timing?.mark("snapshot_fetch.start", { cols: appliedSize.cols, rows: appliedSize.rows, scrollbackLines });
+    const lease = await ctx.backend.beginSessionAttach(ctx.session, appliedSize.cols, {
+      scrollbackLines,
+      maxBytes: DESKTOP_PREFILL_MAX_BYTES,
+    });
+    const { prefill } = lease;
+    ctx.timing?.mark("snapshot_fetch.end", { bytes: prefill.data.length, scrollbackLines });
+    ctx.timing?.mark("prefill_send.start", { bytes: prefill.data.length, prefillMode });
+    const delayMs = prefillDelayMs;
+    if (delayMs > 0) {
+      ctx.timing?.mark("prefill_delay.start", { delayMs });
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+      ctx.timing?.mark("prefill_delay.end", { delayMs });
+    }
+    if (prefill.data.length > 0 && ctx.entry.viewer && ctx.entry.viewer.readyState === 1) {
+      // The backend applied DESKTOP_PREFILL_MAX_BYTES (`maxBytes`) already.
+      const sendBuf = prefill.data;
+      if (prefillMode === TERMINAL_PREFILL_MODE.VIEWPORT) {
+        if (!safeViewerSend(ctx.entry, ctx.session, sendBuf)) return lease;
+        ctx.timing?.mark("prefill_chunk.send", { chunkIndex: 0, bytes: sendBuf.length });
+        if (!safeViewerSend(ctx.entry, ctx.session, JSON.stringify({ type: "prefill_viewport" }))) return lease;
+        sendPrefillDone(ctx.entry, ctx.session);
+      } else {
+        await sendPrefillChunked(ctx.entry, sendBuf, ctx.session, ctx.timing);
+      }
     } else {
-      await sendPrefillChunked(ctx.entry, sendBuf, ctx.session, ctx.timing);
+      sendPrefillDone(ctx.entry, ctx.session);
     }
-  } else {
-    sendPrefillDone(ctx.entry, ctx.session);
+    ctx.timing?.mark("prefill_send.end", { bytes: prefill.data.length, prefillMode });
+    return lease;
   }
-  ctx.timing?.mark("prefill_send.end", { bytes: prefill.data.length, prefillMode });
-  return lease;
-}
 
-/** Subscribe to the broker's live output stream and wire it to the viewer
- *  with adaptive coalescing (see comments below for rationale). Also sets
- *  up the lifecycle subscription. Mutates `ctx.entry.unsubscribe` and
- *  `ctx.entry.unsubscribeLifecycle`. Returns `true` if the subscription
- *  was established, `false` if the session vanished and the viewer was
- *  closed. */
-async function subscribeWithCoalescing(
-  ctx: PtyEntryContext,
-  source: LiveSubscriptionSource,
-): Promise<boolean> {
-  const { entry, session, backend } = ctx;
-  const prefillSeq = source.kind === "attach-lease"
-    ? source.lease.prefill.seq
-    : source.sinceSeq;
+  /** Subscribe to the broker's live output stream and wire it to the viewer
+   *  with adaptive coalescing (see comments below for rationale). Also sets
+   *  up the lifecycle subscription. Mutates `ctx.entry.unsubscribe` and
+   *  `ctx.entry.unsubscribeLifecycle`. Returns `true` if the subscription
+   *  was established, `false` if the session vanished and the viewer was
+   *  closed. */
+  async function subscribeWithCoalescing(
+    ctx: PtyEntryContext,
+    source: LiveSubscriptionSource,
+  ): Promise<boolean> {
+    const { entry, session, backend } = ctx;
+    const prefillSeq = source.kind === "attach-lease"
+      ? source.lease.prefill.seq
+      : source.sinceSeq;
 
-  // Subscribe after prefill. sinceSeq: prefillSeq replays any broker output
-  // (e.g. post-resize redraws) that arrived after the snapshot was taken.
-  //
-  // ── Adaptive coalescing ──
-  // Broker frames may already combine contiguous PTY reads up to 8 KiB, but a
-  // heavy TUI redraw still spans many broker frames. Without this second-stage
-  // time-based coalescing, each frame becomes one ws.send, one browser
-  // macrotask, and one ghostty parse pass; ghostty may paint between frames so
-  // the user sees mid-redraw fragments scrolling/painting incrementally.
-  //
-  // Isolated small output sends immediately after COALESCE_IDLE_MS of idle,
-  // but never ahead of buffered bytes. Larger redraws and bursts share one
-  // COALESCE_WINDOW_MS deadline from the first buffered chunk; later chunks
-  // do not extend it. Flush queued bytes before reaching the size cap or
-  // sending an oversized chunk directly, preserving broker output order.
-  //
-  // Added coalescing latency: 0ms for isolated small output, at most 8ms
-  // inside a burst (subject to event-loop scheduling). Redraw siblings within
-  // the window paint together; synchronized output protects longer redraws.
-  let _coalesceBuf: Buffer[] = [];
-  let _coalesceBytes = 0;
-  let _coalesceTimer: NodeJS.Timeout | null = null;
-  let _exitDrainTimer: NodeJS.Timeout | null = null;
-  let _lastSendAt = Number.NEGATIVE_INFINITY;
-  let _sawFirstOutputForward = false;
-  const flow = entry.outputFlow;
-  const availableBytes = (): number => flow?.enabled
-    ? VIEWER_WINDOW_BYTES - (flow.sentBytes - flow.ackedBytes)
-    : Number.POSITIVE_INFINITY;
-  // The browser can recover a dropped stream from the broker's canonical
-  // snapshot; retaining more pending bytes only risks process-wide pressure.
-  const bufferOutput = (buf: Buffer): boolean => {
-    if (_coalesceBytes + buf.length > MAX_VIEWER_PENDING_BYTES) {
-      log.warn("slow terminal viewer exceeded pending output", { session, pendingBytes: _coalesceBytes, nextBytes: buf.length });
-      if (entry.viewer) tryWsClose(entry.viewer, CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.SLOW_VIEWER, "slow-viewer close failed", session);
+    // Subscribe after prefill. sinceSeq: prefillSeq replays any broker output
+    // (e.g. post-resize redraws) that arrived after the snapshot was taken.
+    //
+    // ── Adaptive coalescing ──
+    // Broker frames may already combine contiguous PTY reads up to 8 KiB, but a
+    // heavy TUI redraw still spans many broker frames. Without this second-stage
+    // time-based coalescing, each frame becomes one ws.send, one browser
+    // macrotask, and one ghostty parse pass; ghostty may paint between frames so
+    // the user sees mid-redraw fragments scrolling/painting incrementally.
+    //
+    // Isolated small output sends immediately after COALESCE_IDLE_MS of idle,
+    // but never ahead of buffered bytes. Larger redraws and bursts share one
+    // COALESCE_WINDOW_MS deadline from the first buffered chunk; later chunks
+    // do not extend it. Flush queued bytes before reaching the size cap or
+    // sending an oversized chunk directly, preserving broker output order.
+    //
+    // Added coalescing latency: 0ms for isolated small output, at most 8ms
+    // inside a burst (subject to event-loop scheduling). Redraw siblings within
+    // the window paint together; synchronized output protects longer redraws.
+    let _coalesceBuf: Buffer[] = [];
+    let _coalesceBytes = 0;
+    let _coalesceTimer: NodeJS.Timeout | null = null;
+    let _exitDrainTimer: NodeJS.Timeout | null = null;
+    let _lastSendAt = Number.NEGATIVE_INFINITY;
+    let _sawFirstOutputForward = false;
+    const flow = entry.outputFlow;
+    const availableBytes = (): number => flow?.enabled
+      ? VIEWER_WINDOW_BYTES - (flow.sentBytes - flow.ackedBytes)
+      : Number.POSITIVE_INFINITY;
+    // The browser can recover a dropped stream from the broker's canonical
+    // snapshot; retaining more pending bytes only risks process-wide pressure.
+    const bufferOutput = (buf: Buffer): boolean => {
+      if (_coalesceBytes + buf.length > MAX_VIEWER_PENDING_BYTES) {
+        log.warn("slow terminal viewer exceeded pending output", { session, pendingBytes: _coalesceBytes, nextBytes: buf.length });
+        if (entry.viewer) tryWsClose(entry.viewer, CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.SLOW_VIEWER, "slow-viewer close failed", session);
+        teardownPty(session);
+        return false;
+      }
+      _coalesceBuf.push(buf);
+      _coalesceBytes += buf.length;
+      return true;
+    };
+    const sendOutputBuffer = (buf: Buffer): void => {
+      if (!entry.alive || !entry.viewer || entry.viewer.readyState !== 1) return;
+      let offset = 0;
+      while (offset < buf.length) {
+        const credit = availableBytes();
+        if (credit === 0) break;
+        const end = Math.min(offset + COALESCE_MAX_BYTES, offset + credit, buf.length);
+        const chunk = buf.subarray(offset, end);
+        if (!_sawFirstOutputForward) {
+          _sawFirstOutputForward = true;
+          ctx.timing?.mark("first_output.forward", { bytes: chunk.length });
+        }
+        if (!safeViewerSend(entry, session, chunk)) return;
+        offset = end;
+        _lastSendAt = Date.now();
+      }
+      if (offset < buf.length) bufferOutput(buf.subarray(offset));
+    };
+    const flushCoalesce = (): void => {
+      if (_coalesceTimer) { clearTimeout(_coalesceTimer); _coalesceTimer = null; }
+      if (!_coalesceBuf.length) return;
+      const merged = _coalesceBuf.length === 1 ? _coalesceBuf[0] : Buffer.concat(_coalesceBuf, _coalesceBytes);
+      _coalesceBuf = [];
+      _coalesceBytes = 0;
+      sendOutputBuffer(merged);
+      if (entry.exitDraining && _coalesceBytes === 0) finishExit();
+    };
+    if (flow) flow.flushPending = flushCoalesce;
+    ctx.timing?.mark("subscribe.start", { sinceSeq: typeof prefillSeq === "bigint" ? prefillSeq.toString() : undefined });
+    const handleOutput = (data: Uint8Array): void => {
+      if (!entry.alive || entry.exitDraining) return;
+      if (!entry.viewer || entry.viewer.readyState !== 1) return;
+      const next = Buffer.from(data);
+      const decision = decideOutputCoalescing({
+        queuedBytes: _coalesceBytes,
+        nextBytes: next.length,
+        sinceLastSendMs: Date.now() - _lastSendAt,
+        maxBytes: COALESCE_MAX_BYTES,
+        smallChunkBytes: COALESCE_SMALL_CHUNK_BYTES,
+        idleMs: COALESCE_IDLE_MS,
+        availableBytes: flow?.enabled ? availableBytes() : undefined,
+      });
+      if (decision === "flush_then_buffer" || decision === "flush_then_send") {
+        flushCoalesce();
+        if (!entry.alive || !entry.viewer || entry.viewer.readyState !== 1) return;
+      }
+      if (decision === "send_now" || decision === "flush_then_send") {
+        // A partial flush exhausted credit: newer bytes must follow its suffix.
+        if (_coalesceBytes > 0) bufferOutput(next);
+        else sendOutputBuffer(next);
+        return;
+      }
+      if (!bufferOutput(next)) return;
+      if (decision !== "buffer_until_ack" && !_coalesceTimer) {
+        _coalesceTimer = setTimeout(flushCoalesce, COALESCE_WINDOW_MS);
+      }
+    };
+    const cancelOutput = (): void => {
+      if (_exitDrainTimer) { clearTimeout(_exitDrainTimer); _exitDrainTimer = null; }
+      if (flow) flow.flushPending = null;
+      if (_coalesceTimer) { clearTimeout(_coalesceTimer); _coalesceTimer = null; }
+      _coalesceBuf = [];
+      _coalesceBytes = 0;
+    };
+    // When the broker `subscribe` RPC fails after onSessionData returns, the
+    // backend unwinds locally but the WS would otherwise stay open with no data.
+    const onSubscribeError = (err: unknown): void => {
+      log.warn("subscribe rpc failed — tearing down viewer", { session, error: errMsg(err) });
+      if (!entry.alive) return;
+      if (entry.viewer && entry.viewer.readyState === 1) {
+        tryWsClose(entry.viewer, CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.SUBSCRIBE_FAILED, "subscribe-error: viewer close failed", session);
+      }
       teardownPty(session);
+    };
+    const unsub = source.kind === "attach-lease"
+      ? source.lease.activate(handleOutput, { onSubscribeError })
+      : backend.onSessionData(session, handleOutput, { sinceSeq: prefillSeq, onSubscribeError });
+    if (!unsub) {
+      cancelOutput();
+      log.warn("onSessionData returned null — session vanished", { session });
+      entry.alive = false;
+      activePtySessions.delete(session);
+      if (entry.viewer) {
+        tryWsClose(entry.viewer, CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE, "onSessionData null: viewer close failed", session);
+        entry.viewer = null;
+      }
       return false;
     }
-    _coalesceBuf.push(buf);
-    _coalesceBytes += buf.length;
-    return true;
-  };
-  const sendOutputBuffer = (buf: Buffer): void => {
-    if (!entry.alive || !entry.viewer || entry.viewer.readyState !== 1) return;
-    let offset = 0;
-    while (offset < buf.length) {
-      const credit = availableBytes();
-      if (credit === 0) break;
-      const end = Math.min(offset + COALESCE_MAX_BYTES, offset + credit, buf.length);
-      const chunk = buf.subarray(offset, end);
-      if (!_sawFirstOutputForward) {
-        _sawFirstOutputForward = true;
-        ctx.timing?.mark("first_output.forward", { bytes: chunk.length });
-      }
-      if (!safeViewerSend(entry, session, chunk)) return;
-      offset = end;
-      _lastSendAt = Date.now();
+    // Activation can synchronously replay enough output to close the viewer
+    // before the unsubscribe handle exists. Release that handle once returned.
+    if (!entryStillCurrent(entry, session, ctx.ws)) {
+      cancelOutput();
+      unsub();
+      return false;
     }
-    if (offset < buf.length) bufferOutput(buf.subarray(offset));
-  };
-  const flushCoalesce = (): void => {
-    if (_coalesceTimer) { clearTimeout(_coalesceTimer); _coalesceTimer = null; }
-    if (!_coalesceBuf.length) return;
-    const merged = _coalesceBuf.length === 1 ? _coalesceBuf[0] : Buffer.concat(_coalesceBuf, _coalesceBytes);
-    _coalesceBuf = [];
-    _coalesceBytes = 0;
-    sendOutputBuffer(merged);
-    if (entry.exitDraining && _coalesceBytes === 0) finishExit();
-  };
-  if (flow) flow.flushPending = flushCoalesce;
-  ctx.timing?.mark("subscribe.start", { sinceSeq: typeof prefillSeq === "bigint" ? prefillSeq.toString() : undefined });
-  const handleOutput = (data: Uint8Array): void => {
-    if (!entry.alive || entry.exitDraining) return;
-    if (!entry.viewer || entry.viewer.readyState !== 1) return;
-    const next = Buffer.from(data);
-    const decision = decideOutputCoalescing({
-      queuedBytes: _coalesceBytes,
-      nextBytes: next.length,
-      sinceLastSendMs: Date.now() - _lastSendAt,
-      maxBytes: COALESCE_MAX_BYTES,
-      smallChunkBytes: COALESCE_SMALL_CHUNK_BYTES,
-      idleMs: COALESCE_IDLE_MS,
-      availableBytes: flow?.enabled ? availableBytes() : undefined,
-    });
-    if (decision === "flush_then_buffer" || decision === "flush_then_send") {
-      flushCoalesce();
-      if (!entry.alive || !entry.viewer || entry.viewer.readyState !== 1) return;
-    }
-    if (decision === "send_now" || decision === "flush_then_send") {
-      // A partial flush exhausted credit: newer bytes must follow its suffix.
-      if (_coalesceBytes > 0) bufferOutput(next);
-      else sendOutputBuffer(next);
-      return;
-    }
-    if (!bufferOutput(next)) return;
-    if (decision !== "buffer_until_ack" && !_coalesceTimer) {
-      _coalesceTimer = setTimeout(flushCoalesce, COALESCE_WINDOW_MS);
-    }
-  };
-  const cancelOutput = (): void => {
-    if (_exitDrainTimer) { clearTimeout(_exitDrainTimer); _exitDrainTimer = null; }
-    if (flow) flow.flushPending = null;
-    if (_coalesceTimer) { clearTimeout(_coalesceTimer); _coalesceTimer = null; }
-    _coalesceBuf = [];
-    _coalesceBytes = 0;
-  };
-  // When the broker `subscribe` RPC fails after onSessionData returns, the
-  // backend unwinds locally but the WS would otherwise stay open with no data.
-  const onSubscribeError = (err: unknown): void => {
-    log.warn("subscribe rpc failed — tearing down viewer", { session, error: errMsg(err) });
-    if (!entry.alive) return;
-    if (entry.viewer && entry.viewer.readyState === 1) {
-      tryWsClose(entry.viewer, CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.SUBSCRIBE_FAILED, "subscribe-error: viewer close failed", session);
-    }
-    teardownPty(session);
-  };
-  const unsub = source.kind === "attach-lease"
-    ? source.lease.activate(handleOutput, { onSubscribeError })
-    : backend.onSessionData(session, handleOutput, { sinceSeq: prefillSeq, onSubscribeError });
-  if (!unsub) {
-    cancelOutput();
-    log.warn("onSessionData returned null — session vanished", { session });
-    entry.alive = false;
-    activePtySessions.delete(session);
-    if (entry.viewer) {
-      tryWsClose(entry.viewer, CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE, "onSessionData null: viewer close failed", session);
-      entry.viewer = null;
-    }
-    return false;
-  }
-  // Activation can synchronously replay enough output to close the viewer
-  // before the unsubscribe handle exists. Release that handle once returned.
-  if (!entryStillCurrent(entry, session, ctx.ws)) {
-    cancelOutput();
-    unsub();
-    return false;
-  }
-  let sourceStopped = false;
-  const stopOutputSource = (): void => {
-    if (sourceStopped) return;
-    sourceStopped = true;
-    unsub();
-  };
-  // Detach still discards output; PTY exit stops ONLY the producer first.
-  entry.unsubscribe = () => {
-    cancelOutput();
-    stopOutputSource();
-  };
+    let sourceStopped = false;
+    const stopOutputSource = (): void => {
+      if (sourceStopped) return;
+      sourceStopped = true;
+      unsub();
+    };
+    // Detach still discards output; PTY exit stops ONLY the producer first.
+    entry.unsubscribe = () => {
+      cancelOutput();
+      stopOutputSource();
+    };
 
-  function finishExit(): void {
-    if (!entry.alive) return;
-    entry.alive = false;
-    if (activePtySessions.get(session) === entry) activePtySessions.delete(session);
-    if (entry.unsubscribe) {
-      try { entry.unsubscribe(); } catch (e: unknown) { log.debug("lifecycle exit: data unsub failed", { session, error: errMsg(e) }); }
-      entry.unsubscribe = null;
-    }
-    if (entry.viewer) {
-      tryWsClose(entry.viewer, CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE, "lifecycle exit: viewer close failed", session);
-      entry.viewer = null;
-    }
-    if (entry.pendingViewer) {
-      tryWsClose(entry.pendingViewer, CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE, "lifecycle exit: pendingViewer close failed", session);
-      entry.pendingViewer = null;
-    }
-  }
-
-  // Lifecycle: broker fires `session_exited` when the child reaps.
-  // Close the viewer with 4001 so the client distinguishes a remote-side
-  // session death from a normal disconnect. PtyBackend's stub no-ops.
-  const lifecycleUnsub = backend.onSessionLifecycle(session, (event) => {
-    if (event.kind === "replay_truncated") {
-      // Broker ring overran during a lag window — our cached prefill
-      // and any bytes since are out of sync with broker truth. Tear
-      // the viewer down with 1011 so the client reconnects and
-      // re-prefills from a fresh snapshot, instead of staring at stale
-      // terminal content.
+    function finishExit(): void {
       if (!entry.alive) return;
-      log.warn("replay_truncated — forcing client reconnect for fresh snapshot", { session });
-      if (entry.viewer && entry.viewer.readyState === 1) {
-        tryWsClose(entry.viewer, CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.SUBSCRIBE_FAILED, "replay_truncated: viewer close failed", session);
+      entry.alive = false;
+      if (activePtySessions.get(session) === entry) activePtySessions.delete(session);
+      if (entry.unsubscribe) {
+        try { entry.unsubscribe(); } catch (e: unknown) { log.debug("lifecycle exit: data unsub failed", { session, error: errMsg(e) }); }
+        entry.unsubscribe = null;
       }
-      teardownPty(session);
-      return;
+      if (entry.viewer) {
+        tryWsClose(entry.viewer, CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE, "lifecycle exit: viewer close failed", session);
+        entry.viewer = null;
+      }
+      if (entry.pendingViewer) {
+        tryWsClose(entry.pendingViewer, CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE, "lifecycle exit: pendingViewer close failed", session);
+        entry.pendingViewer = null;
+      }
     }
-    if (event.kind === "broker_unavailable") {
-      // The broker stayed down past the server's grace window. Close with
-      // 4004 so the client shows broker-down instead of a frozen terminal.
-      if (!entry.alive) return;
-      log.warn("broker unavailable — closing viewer", { session });
-      // Snapshot both: closing the owner can promote the pending viewer, which
-      // must also reconnect rather than see teardown's "pty teardown".
-      const viewers = [entry.viewer, entry.pendingViewer];
-      entry.pendingViewer = null;
-      for (const viewer of viewers) {
-        if (viewer && viewer.readyState === 1) {
-          tryWsClose(viewer, CLOSE_CODE_BROKER_UNAVAILABLE, WS_CLOSE_REASONS.BROKER_UNAVAILABLE, "broker_unavailable: viewer close failed", session);
+
+    // Lifecycle: broker fires `session_exited` when the child reaps.
+    // Close the viewer with 4001 so the client distinguishes a remote-side
+    // session death from a normal disconnect. PtyBackend's stub no-ops.
+    const lifecycleUnsub = backend.onSessionLifecycle(session, (event) => {
+      if (event.kind === "replay_truncated") {
+        // Broker ring overran during a lag window — our cached prefill
+        // and any bytes since are out of sync with broker truth. Tear
+        // the viewer down with 1011 so the client reconnects and
+        // re-prefills from a fresh snapshot, instead of staring at stale
+        // terminal content.
+        if (!entry.alive) return;
+        log.warn("replay_truncated — forcing client reconnect for fresh snapshot", { session });
+        if (entry.viewer && entry.viewer.readyState === 1) {
+          tryWsClose(entry.viewer, CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.SUBSCRIBE_FAILED, "replay_truncated: viewer close failed", session);
         }
+        teardownPty(session);
+        return;
       }
-      teardownPty(session);
-      return;
-    }
-    if (event.kind !== "exited" || !entry.alive || entry.exitDraining) return;
-    entry.exitDraining = true;
-    try { stopOutputSource(); } catch (e: unknown) { log.debug("lifecycle exit: data unsub failed", { session, error: errMsg(e) }); }
-    // Broker drops the lifecycle set on exit; keep only transport/credit alive.
-    entry.unsubscribeLifecycle = null;
-    if (_coalesceBytes === 0) {
-      finishExit();
-      return;
-    }
-    // Fixed deadline: acks never extend it. Normal close follows FIFO submission
-    // or, for an unresponsive peer, this bounded final-output loss tradeoff.
-    _exitDrainTimer = setTimeout(finishExit, EXIT_DRAIN_TIMEOUT_MS);
-    flushCoalesce();
-  });
-  if (lifecycleUnsub) entry.unsubscribeLifecycle = lifecycleUnsub;
-  if (unsub.ready && !await unsub.ready) return false;
-  if (entry.exitDraining || !entryStillCurrent(entry, session, ctx.ws)) return false;
-  ctx.timing?.mark("subscribe.success");
-  return true;
-}
-
-function setupNewPtyEntry(
-  ws: WebSocket,
-  session: string,
-  serverContext: ServerContext,
-  initialDims?: PtyAttachDimensions | null,
-  timing?: ServerTerminalLoadTiming | null,
-): void {
-  const outputFlow: ViewerOutputFlow = {
-    enabled: initialDims?.outputAck ?? false,
-    sentBytes: 0,
-    ackedBytes: 0,
-    flushPending: null,
-  };
-  const entry: PtyEntry = {
-    outputFlow,
-    viewer: ws as WebSocket | null,
-    pendingViewer: null,
-    proc: null,
-    alive: true,
-    unsubscribe: null,
-    unsubscribeLifecycle: null,
-  };
-  activePtySessions.set(session, entry);
-  let spawning = false;
-  let attachFinalizing = false;
-  let attachFinalizationRequest: { resizeId: number | undefined; cols: number; rows: number } | null = null;
-  // attach_ack is intentionally immediate, but broker subscribe is async.
-  // Hold input accepted after that acknowledgement until the replay-backed
-  // subscription is live, otherwise its PTY output can precede the snapshot
-  // → live boundary and disappear.
-  let inputGateActive = false;
-  const pendingInput: Buffer[] = [];
-  let pendingInputBytes = 0;
-  const requestedSize: { current: { cols: number; rows: number } | null } = { current: null };
-  let pendingAttachResizeAck: { resizeId: number; cols: number; rows: number } | null = null;
-  const layoutStable: { current: { cols: number; rows: number } | null } = { current: null };
-
-  function acknowledgeAttachedResize(applied: { cols: number; rows: number }): void {
-    const pending = pendingAttachResizeAck;
-    if (!pending || pending.cols !== applied.cols || pending.rows !== applied.rows) return;
-    pendingAttachResizeAck = null;
-    if (entryStillCurrent(entry, session, ws)) {
-      safeViewerSend(entry, session, JSON.stringify({ type: "resize_ack", ...pending }));
-    }
-  }
-
-  // Streaming attach path: snapshot prefill + subscribe to broker output stream.
-  const streamingBackend: (SessionBackend & PtyBackendMethods) | null =
-    serverContext.supervisor ? serverContext.supervisor.backend() : serverContext.backend;
-
-  if (!streamingBackend) {
-    log.warn("ws attach: streaming backend unavailable", { session });
-    tryWsClose(ws, CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE, "streaming backend missing close failed", session);
-    activePtySessions.delete(session);
-    return;
-  }
-
-  const viewerRedraw = serverContext.viewerRedraw;
-
-  /** Apply only finalizer-owned requests from the subscription boundary until
-   * the newest matching acknowledgement has been sent. */
-  async function finalizeAttachResizes(
-    ctx: PtyEntryContext,
-    initialAppliedSize: { cols: number; rows: number },
-    initialGeometryAlreadyApplied: boolean,
-  ): Promise<{ cols: number; rows: number } | null> {
-    let appliedSize = initialAppliedSize;
-    let hasAppliedSize = initialGeometryAlreadyApplied;
-    let sentFinalAck = false;
-    while (attachFinalizationRequest) {
-      const request = attachFinalizationRequest;
-      attachFinalizationRequest = null;
-      // A boundary request supersedes any older pre-attach acknowledgement.
-      pendingAttachResizeAck = null;
-      const needsResize = !hasAppliedSize || !sameSize(appliedSize, request);
-      appliedSize = { cols: request.cols, rows: request.rows };
-      if (needsResize) {
-        if (!await applyAttachResize(ctx, appliedSize)) return null;
-        hasAppliedSize = true;
-      }
-      // A request received while resize awaited is newer and becomes the
-      // next (and only) finalizer-owned application.
-      if (attachFinalizationRequest) continue;
-      if (request.resizeId !== undefined) {
-        safeViewerSend(entry, session, JSON.stringify({ type: "resize_ack", ...request }));
-        sentFinalAck = true;
-      }
-    }
-
-    if (!sentFinalAck) acknowledgeAttachedResize(appliedSize);
-    return appliedSize;
-  }
-
-  // ── Snapshot + subscribe attach path (PTY backend in-process, broker over RPC) ──
-  // Orchestrator only — sequencing logic lives in the helpers above:
-  // settle dimensions/output → sendSnapshotPrefill → subscribeWithCoalescing.
-  async function attachStreamingBackend(
-    backend: SessionBackend & PtyBackendMethods,
-    cols: number,
-    rows: number,
-    options?: { prefillMode?: PrefillMode },
-  ): Promise<void> {
-    const prefillMode = options?.prefillMode ?? TERMINAL_PREFILL_MODE.FULL;
-    if (timing) timing.mode = terminalLoadModeFromPrefill(prefillMode);
-    requestedSize.current = { cols, rows };
-    if (entry.unsubscribe || spawning) return;
-    spawning = true;
-    let attachLease: SessionAttachLease | null = null;
-    if (process.env.WOLFPACK_TEST) {
-      ptySpawnAttempts.set(session, (ptySpawnAttempts.get(session) || 0) + 1);
-    }
-
-    try {
-      if (!backend.isSessionAlive(session)) {
-        // Cache may be stale: BrokerBackend's isSessionAlive() only consults
-        // the in-memory nameToId map, which lags behind broker truth after
-        // a broker restart or out-of-band session creation. Refresh once
-        // via list() and re-check before closing 4001 — legitimate live
-        // sessions should not be rejected just because the local cache
-        // hasn't seen them yet.
-        try { await backend.list(); } catch (e: unknown) {
-          log.debug("isSessionAlive miss: list() refresh failed", { session, error: errMsg(e) });
-        }
-        if (!backend.isSessionAlive(session)) {
-          entry.alive = false;
-          activePtySessions.delete(session);
-          if (entry.viewer) {
-            tryWsClose(entry.viewer, CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE, "session unavailable: viewer close failed", session);
-            entry.viewer = null;
+      if (event.kind === "broker_unavailable") {
+        // The broker stayed down past the server's grace window. Close with
+        // 4004 so the client shows broker-down instead of a frozen terminal.
+        if (!entry.alive) return;
+        log.warn("broker unavailable — closing viewer", { session });
+        // Snapshot both: closing the owner can promote the pending viewer, which
+        // must also reconnect rather than see teardown's "pty teardown".
+        const viewers = [entry.viewer, entry.pendingViewer];
+        entry.pendingViewer = null;
+        for (const viewer of viewers) {
+          if (viewer && viewer.readyState === 1) {
+            tryWsClose(viewer, CLOSE_CODE_BROKER_UNAVAILABLE, WS_CLOSE_REASONS.BROKER_UNAVAILABLE, "broker_unavailable: viewer close failed", session);
           }
+        }
+        teardownPty(session);
+        return;
+      }
+      if (event.kind !== "exited" || !entry.alive || entry.exitDraining) return;
+      entry.exitDraining = true;
+      try { stopOutputSource(); } catch (e: unknown) { log.debug("lifecycle exit: data unsub failed", { session, error: errMsg(e) }); }
+      // Broker drops the lifecycle set on exit; keep only transport/credit alive.
+      entry.unsubscribeLifecycle = null;
+      if (_coalesceBytes === 0) {
+        finishExit();
+        return;
+      }
+      // Fixed deadline: acks never extend it. Normal close follows FIFO submission
+      // or, for an unresponsive peer, this bounded final-output loss tradeoff.
+      _exitDrainTimer = setTimeout(finishExit, EXIT_DRAIN_TIMEOUT_MS);
+      flushCoalesce();
+    });
+    if (lifecycleUnsub) entry.unsubscribeLifecycle = lifecycleUnsub;
+    if (unsub.ready && !await unsub.ready) return false;
+    if (entry.exitDraining || !entryStillCurrent(entry, session, ctx.ws)) return false;
+    ctx.timing?.mark("subscribe.success");
+    return true;
+  }
+
+  function setupNewPtyEntry(
+    ws: WebSocket,
+    session: string,
+    serverContext: ServerContext,
+    initialDims?: PtyAttachDimensions | null,
+    timing?: ServerTerminalLoadTiming | null,
+  ): void {
+    const outputFlow: ViewerOutputFlow = {
+      enabled: initialDims?.outputAck ?? false,
+      sentBytes: 0,
+      ackedBytes: 0,
+      flushPending: null,
+    };
+    const entry: PtyEntry = {
+      outputFlow,
+      viewer: ws as WebSocket | null,
+      pendingViewer: null,
+      proc: null,
+      alive: true,
+      unsubscribe: null,
+      unsubscribeLifecycle: null,
+    };
+    activePtySessions.set(session, entry);
+    let spawning = false;
+    let attachFinalizing = false;
+    let attachFinalizationRequest: { resizeId: number | undefined; cols: number; rows: number } | null = null;
+    // attach_ack is intentionally immediate, but broker subscribe is async.
+    // Hold input accepted after that acknowledgement until the replay-backed
+    // subscription is live, otherwise its PTY output can precede the snapshot
+    // → live boundary and disappear.
+    let inputGateActive = false;
+    const pendingInput: Buffer[] = [];
+    let pendingInputBytes = 0;
+    const requestedSize: { current: { cols: number; rows: number } | null } = { current: null };
+    let pendingAttachResizeAck: { resizeId: number; cols: number; rows: number } | null = null;
+    const layoutStable: { current: { cols: number; rows: number } | null } = { current: null };
+
+    function acknowledgeAttachedResize(applied: { cols: number; rows: number }): void {
+      const pending = pendingAttachResizeAck;
+      if (!pending || pending.cols !== applied.cols || pending.rows !== applied.rows) return;
+      pendingAttachResizeAck = null;
+      if (entryStillCurrent(entry, session, ws)) {
+        safeViewerSend(entry, session, JSON.stringify({ type: "resize_ack", ...pending }));
+      }
+    }
+
+    // Streaming attach path: snapshot prefill + subscribe to broker output stream.
+    const streamingBackend: (SessionBackend & PtyBackendMethods) | null =
+      serverContext.supervisor ? serverContext.supervisor.backend() : serverContext.backend;
+
+    if (!streamingBackend) {
+      log.warn("ws attach: streaming backend unavailable", { session });
+      tryWsClose(ws, CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE, "streaming backend missing close failed", session);
+      activePtySessions.delete(session);
+      return;
+    }
+
+    const viewerRedraw = serverContext.viewerRedraw;
+
+    /** Apply only finalizer-owned requests from the subscription boundary until
+     * the newest matching acknowledgement has been sent. */
+    async function finalizeAttachResizes(
+      ctx: PtyEntryContext,
+      initialAppliedSize: { cols: number; rows: number },
+      initialGeometryAlreadyApplied: boolean,
+    ): Promise<{ cols: number; rows: number } | null> {
+      let appliedSize = initialAppliedSize;
+      let hasAppliedSize = initialGeometryAlreadyApplied;
+      let sentFinalAck = false;
+      while (attachFinalizationRequest) {
+        const request = attachFinalizationRequest;
+        attachFinalizationRequest = null;
+        // A boundary request supersedes any older pre-attach acknowledgement.
+        pendingAttachResizeAck = null;
+        const needsResize = !hasAppliedSize || !sameSize(appliedSize, request);
+        appliedSize = { cols: request.cols, rows: request.rows };
+        if (needsResize) {
+          if (!await applyAttachResize(ctx, appliedSize)) return null;
+          hasAppliedSize = true;
+        }
+        // A request received while resize awaited is newer and becomes the
+        // next (and only) finalizer-owned application.
+        if (attachFinalizationRequest) continue;
+        if (request.resizeId !== undefined) {
+          safeViewerSend(entry, session, JSON.stringify({ type: "resize_ack", ...request }));
+          sentFinalAck = true;
+        }
+      }
+
+      if (!sentFinalAck) acknowledgeAttachedResize(appliedSize);
+      return appliedSize;
+    }
+
+    // ── Snapshot + subscribe attach path (PTY backend in-process, broker over RPC) ──
+    // Orchestrator only — sequencing logic lives in the helpers above:
+    // settle dimensions/output → sendSnapshotPrefill → subscribeWithCoalescing.
+    async function attachStreamingBackend(
+      backend: SessionBackend & PtyBackendMethods,
+      cols: number,
+      rows: number,
+      options?: { prefillMode?: PrefillMode },
+    ): Promise<void> {
+      const prefillMode = options?.prefillMode ?? TERMINAL_PREFILL_MODE.FULL;
+      if (timing) timing.mode = terminalLoadModeFromPrefill(prefillMode);
+      requestedSize.current = { cols, rows };
+      if (entry.unsubscribe || spawning) return;
+      spawning = true;
+      let attachLease: SessionAttachLease | null = null;
+      terminalOptions.onAttachAttempt?.(session);
+
+      try {
+        if (!backend.isSessionAlive(session)) {
+          // Cache may be stale: BrokerBackend's isSessionAlive() only consults
+          // the in-memory nameToId map, which lags behind broker truth after
+          // a broker restart or out-of-band session creation. Refresh once
+          // via list() and re-check before closing 4001 — legitimate live
+          // sessions should not be rejected just because the local cache
+          // hasn't seen them yet.
+          try { await backend.list(); } catch (e: unknown) {
+            log.debug("isSessionAlive miss: list() refresh failed", { session, error: errMsg(e) });
+          }
+          if (!backend.isSessionAlive(session)) {
+            entry.alive = false;
+            activePtySessions.delete(session);
+            if (entry.viewer) {
+              tryWsClose(entry.viewer, CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE, "session unavailable: viewer close failed", session);
+              entry.viewer = null;
+            }
+            return;
+          }
+        }
+
+        if (!entryStillCurrent(entry, session, ws)) return;
+
+        const ctx: PtyEntryContext = { entry, session, ws, backend, viewerRedraw, requestedSize, layoutStable, timing: timing || null };
+
+        if (prefillMode === TERMINAL_PREFILL_MODE.NONE) {
+          // Subscription is intentionally established before the first resize
+          // so no live output falls into an attach gap. Claim the finalizer
+          // before that boundary: ordered resize frames cannot also arm the
+          // ordinary post-attach debounce while the initial geometry awaits.
+          attachFinalizing = true;
+          const initialAppliedSize = requestedSize.current ?? { cols, rows };
+          attachFinalizationRequest = { resizeId: undefined, ...initialAppliedSize };
+          if (!await subscribeWithCoalescing(ctx, { kind: "replay", sinceSeq: undefined })) return;
+          if (!flushPendingInput()) return;
+          timing?.mark("resize_apply.start", { cols: initialAppliedSize.cols, rows: initialAppliedSize.rows, prefillMode });
+          const finalAppliedSize = await finalizeAttachResizes(ctx, initialAppliedSize, false);
+          if (finalAppliedSize === null) return;
+          timing?.mark("resize_apply.end", { cols: finalAppliedSize.cols, rows: finalAppliedSize.rows, prefillMode });
+          attachFinalizing = false;
+          timing?.mark("pty_ready.send");
+          sendPtyReady(entry, session);
           return;
         }
-      }
 
-      if (!entryStillCurrent(entry, session, ws)) return;
+        // Both prefill modes snapshot after the resize-triggered redraw settles.
+        // Viewport first coalesces dimensions, then observes output around one
+        // final resize; applying attach dimensions immediately would produce a
+        // second SIGWINCH when a same-turn cell fit arrives.
+        let appliedSize: { cols: number; rows: number };
+        if (prefillMode === TERMINAL_PREFILL_MODE.VIEWPORT) {
+          const pending = await waitForResizeSettle(ctx, { cols, rows }, {
+            initialWaitMs: VIEWPORT_PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS,
+            settleMs: VIEWPORT_PRE_SNAPSHOT_RESIZE_SETTLE_MS,
+            timeoutMs: VIEWPORT_PRE_SNAPSHOT_RESIZE_TIMEOUT_MS,
+          });
+          if (pending === null) return;
+          const settled = await waitForOutputQuiescence(ctx, pending);
+          if (settled === null) return;
+          appliedSize = settled;
+        } else {
+          const settled = await waitForSettledResizeAndOutputQuiescence(ctx, { cols, rows });
+          if (settled === null) return;
+          appliedSize = settled;
+        }
 
-      const ctx: PtyEntryContext = { entry, session, ws, backend, viewerRedraw, requestedSize, layoutStable, timing: timing || null };
-
-      if (prefillMode === TERMINAL_PREFILL_MODE.NONE) {
-        // Subscription is intentionally established before the first resize
-        // so no live output falls into an attach gap. Claim the finalizer
-        // before that boundary: ordered resize frames cannot also arm the
-        // ordinary post-attach debounce while the initial geometry awaits.
+        // Snapshot AFTER resize so scrollback is reflowed to client cols.
+        // From this point through pty_ready, the attach finalizer owns resize
+        // requests. It coalesces them instead of also scheduling a post-attach
+        // debounce, so the newest request has one authoritative application.
         attachFinalizing = true;
-        const initialAppliedSize = requestedSize.current ?? { cols, rows };
-        attachFinalizationRequest = { resizeId: undefined, ...initialAppliedSize };
-        if (!await subscribeWithCoalescing(ctx, { kind: "replay", sinceSeq: undefined })) return;
+        // Settling also awaits observer detach after its last geometry check.
+        // Transfer requests received in that gap to the finalizer; otherwise a
+        // different-size ordered request loses its acknowledgement and leaves
+        // the browser's prefill barrier closed indefinitely.
+        attachFinalizationRequest = pendingAttachResizeAck;
+        if (!attachFinalizationRequest && requestedSize.current && !sameSize(requestedSize.current, appliedSize)) {
+          attachFinalizationRequest = { resizeId: undefined, ...requestedSize.current };
+        }
+        attachLease = await sendSnapshotPrefill(ctx, appliedSize, prefillMode);
+
+        if (!entryStillCurrent(entry, session, ws)) return;
+        if (!await subscribeWithCoalescing(ctx, { kind: "attach-lease", lease: attachLease })) return;
         if (!flushPendingInput()) return;
-        timing?.mark("resize_apply.start", { cols: initialAppliedSize.cols, rows: initialAppliedSize.rows, prefillMode });
-        const finalAppliedSize = await finalizeAttachResizes(ctx, initialAppliedSize, false);
-        if (finalAppliedSize === null) return;
-        timing?.mark("resize_apply.end", { cols: finalAppliedSize.cols, rows: finalAppliedSize.rows, prefillMode });
+
+        if (await finalizeAttachResizes(ctx, appliedSize, true) === null) return;
         attachFinalizing = false;
         timing?.mark("pty_ready.send");
         sendPtyReady(entry, session);
-        return;
-      }
-
-      // Both prefill modes snapshot after the resize-triggered redraw settles.
-      // Viewport first coalesces dimensions, then observes output around one
-      // final resize; applying attach dimensions immediately would produce a
-      // second SIGWINCH when a same-turn cell fit arrives.
-      let appliedSize: { cols: number; rows: number };
-      if (prefillMode === TERMINAL_PREFILL_MODE.VIEWPORT) {
-        const pending = await waitForResizeSettle(ctx, { cols, rows }, {
-          initialWaitMs: VIEWPORT_PRE_SNAPSHOT_RESIZE_INITIAL_WAIT_MS,
-          settleMs: VIEWPORT_PRE_SNAPSHOT_RESIZE_SETTLE_MS,
-          timeoutMs: VIEWPORT_PRE_SNAPSHOT_RESIZE_TIMEOUT_MS,
-        });
-        if (pending === null) return;
-        const settled = await waitForOutputQuiescence(ctx, pending);
-        if (settled === null) return;
-        appliedSize = settled;
-      } else {
-        const settled = await waitForSettledResizeAndOutputQuiescence(ctx, { cols, rows });
-        if (settled === null) return;
-        appliedSize = settled;
-      }
-
-      // Snapshot AFTER resize so scrollback is reflowed to client cols.
-      // From this point through pty_ready, the attach finalizer owns resize
-      // requests. It coalesces them instead of also scheduling a post-attach
-      // debounce, so the newest request has one authoritative application.
-      attachFinalizing = true;
-      // Settling also awaits observer detach after its last geometry check.
-      // Transfer requests received in that gap to the finalizer; otherwise a
-      // different-size ordered request loses its acknowledgement and leaves
-      // the browser's prefill barrier closed indefinitely.
-      attachFinalizationRequest = pendingAttachResizeAck;
-      if (!attachFinalizationRequest && requestedSize.current && !sameSize(requestedSize.current, appliedSize)) {
-        attachFinalizationRequest = { resizeId: undefined, ...requestedSize.current };
-      }
-      attachLease = await sendSnapshotPrefill(ctx, appliedSize, prefillMode);
-
-      if (!entryStillCurrent(entry, session, ws)) return;
-      if (!await subscribeWithCoalescing(ctx, { kind: "attach-lease", lease: attachLease })) return;
-      if (!flushPendingInput()) return;
-
-      if (await finalizeAttachResizes(ctx, appliedSize, true) === null) return;
-      attachFinalizing = false;
-      timing?.mark("pty_ready.send");
-      sendPtyReady(entry, session);
-    } finally {
-      if (attachLease) {
-        try {
-          await attachLease.cancel();
-        } catch (error: unknown) {
-          log.warn("atomic attach lease cancellation failed", { session, error: errMsg(error) });
+      } finally {
+        if (attachLease) {
+          try {
+            await attachLease.cancel();
+          } catch (error: unknown) {
+            log.warn("atomic attach lease cancellation failed", { session, error: errMsg(error) });
+          }
         }
+        spawning = false;
+        attachFinalizing = false;
+        attachFinalizationRequest = null;
+        if (inputGateActive) discardPendingInput();
       }
-      spawning = false;
-      attachFinalizing = false;
-      attachFinalizationRequest = null;
-      if (inputGateActive) discardPendingInput();
     }
-  }
 
-  function discardPendingInput(): void {
-    pendingInput.length = 0;
-    pendingInputBytes = 0;
-  }
-
-  function flushPendingInput(): boolean {
-    const backend = streamingBackend;
-    if (!backend || entry.exitDraining || !entryStillCurrent(entry, session, ws)) {
-      discardPendingInput();
-      return false;
+    function discardPendingInput(): void {
+      pendingInput.length = 0;
+      pendingInputBytes = 0;
     }
-    inputGateActive = false;
-    const queuedInput = pendingInput.splice(0);
-    pendingInputBytes = 0;
-    for (const data of queuedInput) {
-      viewerRedraw.input(session);
-      if (!backend.writeToTerminal(session, data)) {
-        log.warn("terminal input write failed", { session });
-        tryWsClose(ws, CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.WRITE_FAILED, "buffered input write close failed", session);
+
+    function flushPendingInput(): boolean {
+      const backend = streamingBackend;
+      if (!backend || entry.exitDraining || !entryStillCurrent(entry, session, ws)) {
+        discardPendingInput();
         return false;
       }
-    }
-    if (queuedInput.length) serverContext.activityRecorder.notePresence(session, INPUT_SOURCE.BROWSER);
-    return true;
-  }
-
-  // Backend-uniform spawn — both PTY and broker use attachStreamingBackend.
-  const spawnPty = (cols: number, rows: number, options?: { prefillMode?: PrefillMode; skipPrefill?: boolean }): Promise<void> => {
-    let prefillMode: PrefillMode | undefined = options?.prefillMode;
-    if (!prefillMode && options?.skipPrefill === true) prefillMode = TERMINAL_PREFILL_MODE.NONE;
-    return attachStreamingBackend(streamingBackend, cols, rows, prefillMode ? { prefillMode } : undefined);
-  };
-  const startPtyAttach = (
-    cols: number,
-    rows: number,
-    options?: { prefillMode?: PrefillMode; skipPrefill?: boolean },
-  ): void => {
-    void spawnPty(cols, rows, options).catch((error: unknown) => {
-      if (!entryStillCurrent(entry, session, ws)) return;
-      log.warn("terminal attach failed", { session, error: errMsg(error) });
-      tryWsClose(
-        ws,
-        CLOSE_CODE_SERVER_ERROR,
-        WS_CLOSE_REASONS.ATTACH_FAILED,
-        "attach failure viewer close failed",
-        session,
-      );
-    });
-  };
-
-  const rl = createRateLimiter(RATE_LIMIT_PER_SEC);
-  const binaryInputLimiter = createRateLimiter(PTY_BINARY_BYTES_PER_SEC);
-  let resizeTimer: ReturnType<typeof setTimeout> | null = null;
-
-  ws.on("message", (raw: Buffer | string, isBinary: boolean) => {
-    if (!entry.alive) return;
-    try {
-      if (!isBinary) {
-        if (raw.length > MAX_WS_MESSAGE_BYTES) return; // reject oversized JSON frames
-        const parsed: unknown = JSON.parse(String(raw));
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
-        const msg = parsed as Readonly<Record<string, unknown>>;
-        if (msg.type === "ack") {
-          const bytes = msg.bytes;
-          if (!outputFlow.enabled || typeof bytes !== "number" || !Number.isSafeInteger(bytes)
-            || bytes <= outputFlow.ackedBytes || bytes > outputFlow.sentBytes) return;
-          const wasBlocked = outputFlow.sentBytes - outputFlow.ackedBytes === VIEWER_WINDOW_BYTES;
-          outputFlow.ackedBytes = bytes;
-          // Only a reopened window bypasses the existing fixed coalesce timer.
-          if (wasBlocked) outputFlow.flushPending?.();
-          return;
-        }
-        // Credit is protocol progress, not resize/layout traffic. Admission
-        // requires a strictly increasing safe counter within bytes sent, so
-        // duplicates cannot amplify output or exhaust normal control tokens.
-        if (entry.exitDraining || !rl.allow()) return;
-        // Application-level probe: keep normal frame/rate limits, but never
-        // forward this control message into the PTY or change attach state.
-        if (msg.type === PTY_LIVENESS_MESSAGE.PING) {
-          safeViewerSend(entry, session, JSON.stringify({ type: PTY_LIVENESS_MESSAGE.PONG }));
-          return;
-        }
-        if (
-          msg.type === "attach" &&
-          typeof msg.cols === "number" &&
-          typeof msg.rows === "number"
-        ) {
-          requestedSize.current = { cols: clampCols(msg.cols), rows: clampRows(msg.rows) };
-          const isAttached = !!entry.unsubscribe || attachFinalizing;
-          if (!isAttached && !spawning) {
-            outputFlow.enabled = Array.isArray(msg.capabilities)
-              && msg.capabilities.includes(PTY_ATTACH_CAPABILITY.OUTPUT_ACK);
-          }
-          let prefillMode: PrefillMode = TERMINAL_PREFILL_MODE.FULL;
-          if (typeof msg.prefillMode === "string" && isTerminalPrefillMode(msg.prefillMode)) {
-            prefillMode = msg.prefillMode;
-          } else if (msg.skipPrefill === true) {
-            prefillMode = TERMINAL_PREFILL_MODE.NONE;
-          }
-          if (timing) {
-            timing.mode = terminalLoadModeFromPrefill(prefillMode);
-            timing.mark("attach.parsed", {
-              cols: requestedSize.current.cols,
-              rows: requestedSize.current.rows,
-              prefillMode,
-            });
-          }
-          if (entry.viewer && entry.viewer.readyState === 1) {
-            sendAttachAck(entry, session);
-          }
-          if (!isAttached) {
-            inputGateActive = true;
-            startPtyAttach(requestedSize.current.cols, requestedSize.current.rows, {
-              prefillMode,
-            });
-          } else if (!attachFinalizing) {
-            sendPtyReady(entry, session);
-            if (prefillMode !== TERMINAL_PREFILL_MODE.NONE) sendPrefillDone(entry, session);
-          }
-        } else if (msg.type === "layout_stable" && typeof msg.cols === "number" && typeof msg.rows === "number") {
-          layoutStable.current = { cols: clampCols(msg.cols), rows: clampRows(msg.rows) };
-          timing?.mark("layout_stable", {
-            cols: layoutStable.current.cols,
-            rows: layoutStable.current.rows,
-            reason: typeof msg.reason === "string" ? msg.reason : undefined,
-          });
-        } else if (msg.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number") {
-          const cols = clampCols(msg.cols);
-          const rows = clampRows(msg.rows);
-          const resizeId = typeof msg.resizeId === "number" && Number.isSafeInteger(msg.resizeId) && msg.resizeId > 0
-            ? msg.resizeId
-            : undefined;
-          requestedSize.current = { cols, rows };
-          if (attachFinalizing) {
-            attachFinalizationRequest = { resizeId, cols, rows };
-            return;
-          }
-          const isAttached = !!entry.unsubscribe;
-          if (!isAttached) {
-            if (resizeId !== undefined) pendingAttachResizeAck = { resizeId, cols, rows };
-            startPtyAttach(cols, rows);
-          } else {
-            if (resizeTimer) clearTimeout(resizeTimer);
-            resizeTimer = setTimeout(() => {
-              resizeTimer = null;
-              if (entry.exitDraining || !entryStillCurrent(entry, session, ws)) return;
-              viewerRedraw.begin(session);
-              // Send in debounce order, never behind optional attribution reads.
-              streamingBackend.resize(session, cols, rows).then(() => {
-                if (entry.exitDraining || !entryStillCurrent(entry, session, ws)) return;
-                if (resizeId !== undefined) {
-                  safeViewerSend(entry, session, JSON.stringify({ type: "resize_ack", resizeId, cols, rows }));
-                }
-              }).catch((e: unknown) => {
-                if (entry.exitDraining || !entryStillCurrent(entry, session, ws)) return;
-                log.warn("streaming backend resize failed — reconnecting viewer", { session, error: errMsg(e) });
-                tryWsClose(ws, CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.RESIZE_FAILED, "resize failure viewer close failed", session);
-              });
-            }, RESIZE_DEBOUNCE_MS);
-          }
-        }
-      } else {
-        if (entry.exitDraining) return;
-        // Binary data — write to terminal via the streaming backend.
-        if (Buffer.isBuffer(raw) && raw.length > PTY_BINARY_FRAME_MAX_BYTES) return;
-        if (inputGateActive && pendingInputBytes + raw.length > MAX_PENDING_INPUT_BYTES) {
-          discardPendingInput();
-          tryWsClose(ws, CLOSE_CODE_POLICY_VIOLATION, WS_CLOSE_REASONS.PENDING_INPUT_LIMITED, "pending input limit viewer close failed", session);
-          return;
-        }
-        if (!binaryInputLimiter.allow(raw.length)) {
-          tryWsClose(ws, CLOSE_CODE_POLICY_VIOLATION, WS_CLOSE_REASONS.INPUT_RATE_LIMITED, "input rate limit viewer close failed", session);
-          return;
-        }
+      inputGateActive = false;
+      const queuedInput = pendingInput.splice(0);
+      pendingInputBytes = 0;
+      for (const data of queuedInput) {
         viewerRedraw.input(session);
-        if (inputGateActive) {
-          pendingInput.push(Buffer.from(raw));
-          pendingInputBytes += raw.length;
-        } else if (!streamingBackend.writeToTerminal(session, raw as Buffer)) {
+        if (!backend.writeToTerminal(session, data)) {
           log.warn("terminal input write failed", { session });
-          ws.close(CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.WRITE_FAILED);
-        } else {
-          // Presence only (one row per session per bucket); the bytes never leave this branch.
-          serverContext.activityRecorder.notePresence(session, INPUT_SOURCE.BROWSER);
+          tryWsClose(ws, CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.WRITE_FAILED, "buffered input write close failed", session);
+          return false;
         }
       }
-    } catch (e: unknown) {
-      if (e instanceof SyntaxError) return;
-      log.warn("PTY WS error", { session, error: errMsg(e) });
+      if (queuedInput.length) serverContext.activityRecorder.notePresence(session, INPUT_SOURCE.BROWSER);
+      return true;
     }
-  });
 
-  const stopHeartbeat = startViewerHeartbeat(ws, session, "active");
-
-  function detach() {
-    stopHeartbeat();
-    discardPendingInput();
-    if (entryStillCurrent(entry, session, ws)) {
-      entry.viewer = null;
-      teardownPty(session);
-    }
-  }
-  ws.on("close", detach);
-  ws.on("error", detach);
-
-  // If initial dims were captured (e.g. from a pending viewer's attach before
-  // take_control), spawn PTY immediately — saves a full round trip.
-  if (initialDims && typeof initialDims.cols === "number" && typeof initialDims.rows === "number") {
-    let prefillMode: PrefillMode = TERMINAL_PREFILL_MODE.FULL;
-    if (typeof initialDims.prefillMode === "string" && isTerminalPrefillMode(initialDims.prefillMode)) {
-      prefillMode = initialDims.prefillMode;
-    }
-    requestedSize.current = { cols: clampCols(initialDims.cols), rows: clampRows(initialDims.rows) };
-    if (timing) {
-      timing.mode = terminalLoadModeFromPrefill(prefillMode);
-      timing.mark("attach.parsed", {
-        cols: requestedSize.current.cols,
-        rows: requestedSize.current.rows,
-        prefillMode,
+    // Backend-uniform spawn — both PTY and broker use attachStreamingBackend.
+    const spawnPty = (cols: number, rows: number, options?: { prefillMode?: PrefillMode; skipPrefill?: boolean }): Promise<void> => {
+      let prefillMode: PrefillMode | undefined = options?.prefillMode;
+      if (!prefillMode && options?.skipPrefill === true) prefillMode = TERMINAL_PREFILL_MODE.NONE;
+      return attachStreamingBackend(streamingBackend, cols, rows, prefillMode ? { prefillMode } : undefined);
+    };
+    const startPtyAttach = (
+      cols: number,
+      rows: number,
+      options?: { prefillMode?: PrefillMode; skipPrefill?: boolean },
+    ): void => {
+      void spawnPty(cols, rows, options).catch((error: unknown) => {
+        if (!entryStillCurrent(entry, session, ws)) return;
+        log.warn("terminal attach failed", { session, error: errMsg(error) });
+        tryWsClose(
+          ws,
+          CLOSE_CODE_SERVER_ERROR,
+          WS_CLOSE_REASONS.ATTACH_FAILED,
+          "attach failure viewer close failed",
+          session,
+        );
       });
+    };
+
+    const rl = createRateLimiter(RATE_LIMIT_PER_SEC);
+    const binaryInputLimiter = createRateLimiter(PTY_BINARY_BYTES_PER_SEC);
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+
+    ws.on("message", (raw: Buffer | string, isBinary: boolean) => {
+      if (!entry.alive) return;
+      try {
+        if (!isBinary) {
+          if (raw.length > MAX_WS_MESSAGE_BYTES) return; // reject oversized JSON frames
+          const parsed: unknown = JSON.parse(String(raw));
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+          const msg = parsed as Readonly<Record<string, unknown>>;
+          if (msg.type === "ack") {
+            const bytes = msg.bytes;
+            if (!outputFlow.enabled || typeof bytes !== "number" || !Number.isSafeInteger(bytes)
+              || bytes <= outputFlow.ackedBytes || bytes > outputFlow.sentBytes) return;
+            const wasBlocked = outputFlow.sentBytes - outputFlow.ackedBytes === VIEWER_WINDOW_BYTES;
+            outputFlow.ackedBytes = bytes;
+            // Only a reopened window bypasses the existing fixed coalesce timer.
+            if (wasBlocked) outputFlow.flushPending?.();
+            return;
+          }
+          // Credit is protocol progress, not resize/layout traffic. Admission
+          // requires a strictly increasing safe counter within bytes sent, so
+          // duplicates cannot amplify output or exhaust normal control tokens.
+          if (entry.exitDraining || !rl.allow()) return;
+          // Application-level probe: keep normal frame/rate limits, but never
+          // forward this control message into the PTY or change attach state.
+          if (msg.type === PTY_LIVENESS_MESSAGE.PING) {
+            safeViewerSend(entry, session, JSON.stringify({ type: PTY_LIVENESS_MESSAGE.PONG }));
+            return;
+          }
+          if (
+            msg.type === "attach" &&
+            typeof msg.cols === "number" &&
+            typeof msg.rows === "number"
+          ) {
+            requestedSize.current = { cols: clampCols(msg.cols), rows: clampRows(msg.rows) };
+            const isAttached = !!entry.unsubscribe || attachFinalizing;
+            if (!isAttached && !spawning) {
+              outputFlow.enabled = Array.isArray(msg.capabilities)
+                && msg.capabilities.includes(PTY_ATTACH_CAPABILITY.OUTPUT_ACK);
+            }
+            let prefillMode: PrefillMode = TERMINAL_PREFILL_MODE.FULL;
+            if (typeof msg.prefillMode === "string" && isTerminalPrefillMode(msg.prefillMode)) {
+              prefillMode = msg.prefillMode;
+            } else if (msg.skipPrefill === true) {
+              prefillMode = TERMINAL_PREFILL_MODE.NONE;
+            }
+            if (timing) {
+              timing.mode = terminalLoadModeFromPrefill(prefillMode);
+              timing.mark("attach.parsed", {
+                cols: requestedSize.current.cols,
+                rows: requestedSize.current.rows,
+                prefillMode,
+              });
+            }
+            if (entry.viewer && entry.viewer.readyState === 1) {
+              sendAttachAck(entry, session);
+            }
+            if (!isAttached) {
+              inputGateActive = true;
+              startPtyAttach(requestedSize.current.cols, requestedSize.current.rows, {
+                prefillMode,
+              });
+            } else if (!attachFinalizing) {
+              sendPtyReady(entry, session);
+              if (prefillMode !== TERMINAL_PREFILL_MODE.NONE) sendPrefillDone(entry, session);
+            }
+          } else if (msg.type === "layout_stable" && typeof msg.cols === "number" && typeof msg.rows === "number") {
+            layoutStable.current = { cols: clampCols(msg.cols), rows: clampRows(msg.rows) };
+            timing?.mark("layout_stable", {
+              cols: layoutStable.current.cols,
+              rows: layoutStable.current.rows,
+              reason: typeof msg.reason === "string" ? msg.reason : undefined,
+            });
+          } else if (msg.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number") {
+            const cols = clampCols(msg.cols);
+            const rows = clampRows(msg.rows);
+            const resizeId = typeof msg.resizeId === "number" && Number.isSafeInteger(msg.resizeId) && msg.resizeId > 0
+              ? msg.resizeId
+              : undefined;
+            requestedSize.current = { cols, rows };
+            if (attachFinalizing) {
+              attachFinalizationRequest = { resizeId, cols, rows };
+              return;
+            }
+            const isAttached = !!entry.unsubscribe;
+            if (!isAttached) {
+              if (resizeId !== undefined) pendingAttachResizeAck = { resizeId, cols, rows };
+              startPtyAttach(cols, rows);
+            } else {
+              if (resizeTimer) clearTimeout(resizeTimer);
+              resizeTimer = setTimeout(() => {
+                resizeTimer = null;
+                if (entry.exitDraining || !entryStillCurrent(entry, session, ws)) return;
+                viewerRedraw.begin(session);
+                // Send in debounce order, never behind optional attribution reads.
+                streamingBackend.resize(session, cols, rows).then(() => {
+                  if (entry.exitDraining || !entryStillCurrent(entry, session, ws)) return;
+                  if (resizeId !== undefined) {
+                    safeViewerSend(entry, session, JSON.stringify({ type: "resize_ack", resizeId, cols, rows }));
+                  }
+                }).catch((e: unknown) => {
+                  if (entry.exitDraining || !entryStillCurrent(entry, session, ws)) return;
+                  log.warn("streaming backend resize failed — reconnecting viewer", { session, error: errMsg(e) });
+                  tryWsClose(ws, CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.RESIZE_FAILED, "resize failure viewer close failed", session);
+                });
+              }, RESIZE_DEBOUNCE_MS);
+            }
+          }
+        } else {
+          if (entry.exitDraining) return;
+          // Binary data — write to terminal via the streaming backend.
+          if (Buffer.isBuffer(raw) && raw.length > PTY_BINARY_FRAME_MAX_BYTES) return;
+          if (inputGateActive && pendingInputBytes + raw.length > MAX_PENDING_INPUT_BYTES) {
+            discardPendingInput();
+            tryWsClose(ws, CLOSE_CODE_POLICY_VIOLATION, WS_CLOSE_REASONS.PENDING_INPUT_LIMITED, "pending input limit viewer close failed", session);
+            return;
+          }
+          if (!binaryInputLimiter.allow(raw.length)) {
+            tryWsClose(ws, CLOSE_CODE_POLICY_VIOLATION, WS_CLOSE_REASONS.INPUT_RATE_LIMITED, "input rate limit viewer close failed", session);
+            return;
+          }
+          viewerRedraw.input(session);
+          if (inputGateActive) {
+            pendingInput.push(Buffer.from(raw));
+            pendingInputBytes += raw.length;
+          } else if (!streamingBackend.writeToTerminal(session, raw as Buffer)) {
+            log.warn("terminal input write failed", { session });
+            ws.close(CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.WRITE_FAILED);
+          } else {
+            // Presence only (one row per session per bucket); the bytes never leave this branch.
+            serverContext.activityRecorder.notePresence(session, INPUT_SOURCE.BROWSER);
+          }
+        }
+      } catch (e: unknown) {
+        if (e instanceof SyntaxError) return;
+        log.warn("PTY WS error", { session, error: errMsg(e) });
+      }
+    });
+
+    const stopHeartbeat = startViewerHeartbeat(ws, session, "active");
+
+    function detach() {
+      stopHeartbeat();
+      discardPendingInput();
+      if (entryStillCurrent(entry, session, ws)) {
+        entry.viewer = null;
+        teardownPty(session);
+      }
     }
-    inputGateActive = true;
-    // Negotiation must precede activation: none-mode subscriptions can
-    // synchronously forward replay before startPtyAttach returns.
-    sendAttachAck(entry, session);
-    startPtyAttach(requestedSize.current.cols, requestedSize.current.rows, { prefillMode });
+    ws.on("close", detach);
+    ws.on("error", detach);
+
+    // If initial dims were captured (e.g. from a pending viewer's attach before
+    // take_control), spawn PTY immediately — saves a full round trip.
+    if (initialDims && typeof initialDims.cols === "number" && typeof initialDims.rows === "number") {
+      let prefillMode: PrefillMode = TERMINAL_PREFILL_MODE.FULL;
+      if (typeof initialDims.prefillMode === "string" && isTerminalPrefillMode(initialDims.prefillMode)) {
+        prefillMode = initialDims.prefillMode;
+      }
+      requestedSize.current = { cols: clampCols(initialDims.cols), rows: clampRows(initialDims.rows) };
+      if (timing) {
+        timing.mode = terminalLoadModeFromPrefill(prefillMode);
+        timing.mark("attach.parsed", {
+          cols: requestedSize.current.cols,
+          rows: requestedSize.current.rows,
+          prefillMode,
+        });
+      }
+      inputGateActive = true;
+      // Negotiation must precede activation: none-mode subscriptions can
+      // synchronously forward replay before startPtyAttach returns.
+      sendAttachAck(entry, session);
+      startPtyAttach(requestedSize.current.cols, requestedSize.current.rows, { prefillMode });
+    }
   }
+
+  return {
+    activePtySessions, handlePtyWs, teardownPty, notifySubSessionOpened,
+    dispose() { for (const session of activePtySessions.keys()) teardownPty(session); },
+  };
 }

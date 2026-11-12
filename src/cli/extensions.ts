@@ -1,6 +1,7 @@
 import { AGENT_KIND } from "../agent-kind.ts";
 import { getExtensionRuntime } from "../extensions/runtime.ts";
-import { print, printError, printJson } from "./formatting.ts";
+import { print, printError } from "../terminal-output.ts";
+import { printJson } from "./formatting.ts";
 
 export function extensionsUsage(): string { return `Usage: wolfpack extensions install <absolute-directory|npm:name@version> --trust-browser-code [--skills ${AGENT_KIND.PI.id}]\n       wolfpack extensions update <absolute-directory|npm:name@version> --trust-browser-code [--skills ${AGENT_KIND.PI.id}]\n       wolfpack extensions list [--json]\n       wolfpack extensions enable|disable|rollback <extension-id>\n       wolfpack extensions remove <extension-id> [--skills-root <path>]\n       wolfpack extensions purge <extension-id>`; }
 function validId(value: string | undefined): value is string { return !!value && /^[a-z][a-z0-9-]{0,63}$/.test(value); }

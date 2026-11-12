@@ -2,7 +2,7 @@
 import { existsSync } from "node:fs";
 import { createLogger, errMsg } from "../log.js";
 import { defaultEventBus, type EventBus } from "../event-bus.js";
-import { BrokerClient, defaultBrokerSocketPath, type BrokerConnectionRequest } from "../broker/client.js";
+import { BrokerClient, defaultBrokerSocketPath, type BrokerConnectionRequest, type BrokerClientOptions } from "../broker/client.js";
 import type { EventBody } from "../broker/codec.js";
 import {
   BROKER_HELLO_METHOD,
@@ -10,8 +10,12 @@ import {
   classifyBrokerHello,
   type BrokerVersionInfo,
 } from "../broker/hello.js";
-import { createBrokerBackend, type BrokerBackend, type BrokerClientApi } from "./broker-backend.js";
-import type { SessionBackend } from "./backend-contract.js";
+import { createBrokerBackend, type BrokerBackend, type BrokerBackendOptions, type BrokerClientApi } from "./broker-backend.js";
+import { SessionIdentityStore } from "./session-identity.js";
+import { createChildEvents } from "./child-events.js";
+import { createSessionDeath } from "./session-death.js";
+import { createViewerInput } from "./viewer-input.js";
+import type { SessionBackend, PtyBackendMethods, SessionPromptBackendMethods } from "./backend-contract.js";
 
 const log = createLogger("backend");
 
@@ -33,13 +37,29 @@ export function checkBrokerSocketExists(socketPath: string = defaultBrokerSocket
   }
 }
 
+type SupervisedBroker = SessionBackend & PtyBackendMethods & SessionPromptBackendMethods & Pick<BrokerBackend,
+  "ingestEvent" | "handleBrokerConnected" | "handleBrokerDisconnected" | "handleReplayTruncated" | "handleResubscribeError">;
+type SupervisorClient = BrokerClientApi & Pick<BrokerClient, "close" | "isConnected" | "start">;
+
+export interface BrokerSupervisorOptions extends Pick<BrokerBackendOptions, "childEvents" | "sessionDeath" | "viewerInput" | "claudeManagedSettingsDropIn"> {
+  readonly start?: boolean;
+  readonly events?: EventBus;
+  readonly sessionIdentityStore?: () => SessionIdentityStore;
+  readonly socketPath?: string;
+  readonly createClient?: (options: BrokerClientOptions) => SupervisorClient;
+  readonly createBackend?: (...args: Parameters<typeof createBrokerBackend>) => SupervisedBroker;
+  readonly now?: () => number;
+  readonly sleep?: (ms: number) => Promise<void>;
+  readonly scheduleWatchdog?: (tick: () => Promise<void>, intervalMs: number) => () => void;
+}
+
 export class BrokerSupervisor {
-  private broker: BrokerBackend | null;
+  private broker: SupervisedBroker | null;
   private brokerClient: (Pick<BrokerClient, "close" | "isConnected" | "start"> & Pick<BrokerClientApi, "request">) | null;
   private brokerSocketPath: string;
   private _brokerAvailable: boolean;
   /** Recovery-watchdog timer handle; null when not running. */
-  private watchdogTimer: ReturnType<typeof setInterval> | null = null;
+  private stopWatchdog: (() => void) | null = null;
   /** Re-entrancy guard — a slow handshake must not stack on top of itself. */
   private watchdogInFlight = false;
   /** From the last successful `hello`; null for a pre-hello broker or no broker. */
@@ -48,8 +68,17 @@ export class BrokerSupervisor {
   private readonly readyListeners = new Set<() => void>();
   onReady(listener: () => void): () => void { this.readyListeners.add(listener); return () => { this.readyListeners.delete(listener); }; }
 
-  constructor(private readonly options: { start?: boolean; events?: EventBus } = {}) {
-    this.brokerSocketPath = defaultBrokerSocketPath();
+  private identityStore?: SessionIdentityStore;
+  private closed = false;
+  readonly childEvents: ReturnType<typeof createChildEvents>;
+  readonly sessionDeath: ReturnType<typeof createSessionDeath>;
+  readonly viewerInput: ReturnType<typeof createViewerInput>;
+
+  constructor(private readonly options: BrokerSupervisorOptions = {}) {
+    this.childEvents = options.childEvents ?? createChildEvents();
+    this.sessionDeath = options.sessionDeath ?? createSessionDeath();
+    this.viewerInput = options.viewerInput ?? createViewerInput();
+    this.brokerSocketPath = options.socketPath ?? defaultBrokerSocketPath();
     this.broker = null;
     this.brokerClient = null;
     this._brokerAvailable = false;
@@ -69,9 +98,9 @@ export class BrokerSupervisor {
   private startBrokerClient(): void {
     // Bound to this client's backend, not `this.broker`: a watchdog teardown
     // nulls `this.broker` before the old socket's disconnect callback fires.
-    let backend: BrokerBackend | null = null;
+    let backend: SupervisedBroker | null = null;
     let negotiatedVersion: BrokerVersionInfo | null = null;
-    const client = new BrokerClient({
+    const client = (this.options.createClient ?? (options => new BrokerClient(options)))({
       socketPath: this.brokerSocketPath,
       verifyConnection: async (request) => {
         const generation = ++this.connectionGeneration;
@@ -125,7 +154,13 @@ export class BrokerSupervisor {
       },
     });
     const events = this.options.events ?? defaultEventBus;
-    backend = createBrokerBackend(client, events.publishEvent.bind(events));
+    backend = (this.options.createBackend ?? createBrokerBackend)(client, events.publishEvent.bind(events), {
+      childEvents: this.childEvents,
+      claudeManagedSettingsDropIn: this.options.claudeManagedSettingsDropIn,
+      sessionDeath: this.sessionDeath,
+      viewerInput: this.viewerInput,
+      sessionIdentityStore: this.options.sessionIdentityStore ?? (() => this.identityStore ??= new SessionIdentityStore()),
+    });
     client.start();
     this.brokerClient = client;
     this.broker = backend;
@@ -139,32 +174,29 @@ export class BrokerSupervisor {
    * until the next manual restart — the 8-hour zombie state observed
    * 2026-05-11. See issue #141 for the wedge-itself investigation.
    */
-  private startWatchdog(intervalMs: number = BROKER_WATCHDOG_INTERVAL_MS): void {
-    if (this.watchdogTimer) return;
-    this.watchdogTimer = setInterval(() => {
-      this.watchdogTick().catch((e: unknown) => {
-        log.debug("broker watchdog tick failed", { error: errMsg(e) });
-      });
-    }, intervalMs);
-    // Don't keep the event loop alive just for the watchdog; the server's
-    // listener is the canonical liveness anchor.
-    if (typeof this.watchdogTimer.unref === "function") this.watchdogTimer.unref();
+  private startWatchdog(): void {
+    if (this.stopWatchdog) return;
+    const tick = () => this.watchdogTick().catch((e: unknown) => {
+      log.debug("broker watchdog tick failed", { error: errMsg(e) });
+    });
+    if (this.options.scheduleWatchdog) {
+      this.stopWatchdog = this.options.scheduleWatchdog(tick, BROKER_WATCHDOG_INTERVAL_MS);
+    } else {
+      const timer = setInterval(() => { void tick(); }, BROKER_WATCHDOG_INTERVAL_MS);
+      timer.unref?.();
+      this.stopWatchdog = () => clearInterval(timer);
+    }
   }
 
-  /** Test-only: drive a single watchdog cycle without waiting for the timer. */
-  async _watchdogTickForTest(): Promise<void> {
-    if (!process.env.WOLFPACK_TEST) throw new Error("_watchdogTickForTest is test-only");
-    await this.watchdogTick();
-  }
-
-  /** Test-only: install the watchdog (with optional fast interval). */
-  _startWatchdogForTest(intervalMs: number = BROKER_WATCHDOG_INTERVAL_MS): void {
-    if (!process.env.WOLFPACK_TEST) throw new Error("_startWatchdogForTest is test-only");
-    this.startWatchdog(intervalMs);
+  close(): void {
+    this.closed = true;
+    this.stopWatchdog?.();
+    this.stopWatchdog = null;
+    this.teardownBrokerClient();
   }
 
   private async watchdogTick(): Promise<void> {
-    if (this._brokerAvailable) return;
+    if (this.closed || this._brokerAvailable) return;
     if (this.watchdogInFlight) return;
     if (!checkBrokerSocketExists(this.brokerSocketPath)) return;
     this.watchdogInFlight = true;
@@ -207,7 +239,7 @@ export class BrokerSupervisor {
   }
 
   /** Current broker instance; consumers pin it for the lifetime of an attach. */
-  backend(): BrokerBackend | null { return this.broker; }
+  backend(): SupervisedBroker | null { return this.broker; }
 
   isBrokerAvailable(): boolean { return this._brokerAvailable; }
   isBrokerReady(): boolean {
@@ -220,6 +252,7 @@ export class BrokerSupervisor {
    *  Disappearance is a fatal condition for the broker session pool —
    *  next operation will surface a 4001 to the client. */
   recheckBroker(): boolean {
+    if (this.closed) return false;
     const exists = checkBrokerSocketExists(this.brokerSocketPath);
     if (exists && !this.broker) {
       try {
@@ -249,9 +282,10 @@ export class BrokerSupervisor {
 
     // Wait for socket connect or short timeout. BrokerClient.start() returns
     // immediately; the connect event fires asynchronously.
-    const connectDeadline = Date.now() + BROKER_CONNECT_TIMEOUT_MS;
-    while (!client.isConnected() && Date.now() < connectDeadline) {
-      await new Promise((r) => setTimeout(r, 25));
+    const now = this.options.now ?? Date.now;
+    const connectDeadline = now() + BROKER_CONNECT_TIMEOUT_MS;
+    while (!client.isConnected() && now() < connectDeadline) {
+      await (this.options.sleep?.(25) ?? new Promise((r) => setTimeout(r, 25)));
     }
     if (!client.isConnected()) {
       if (this.brokerClient === client) {
@@ -331,22 +365,4 @@ export class BrokerSupervisor {
     return { broker: sessions.length };
   }
 
-  /** Test-only: inject a backend in place of the broker so getRouter() works
-   *  for routes that drill into broker-specific surfaces. Gated on
-   *  WOLFPACK_TEST so production callers can't hot-swap the broker. */
-  __setBrokerForTest(backend: SessionBackend & Partial<{ ingestEvent: (e: unknown) => void; onSessionLifecycle: (n: string, cb: (e: unknown) => void) => (() => void) | null }>): void {
-    if (!process.env.WOLFPACK_TEST) throw new Error("__setBrokerForTest() is only available in test mode");
-    // Cast through unknown — the test backends (MockBackend) implement enough
-    // of the BrokerBackend surface for streaming-attach paths via duck typing.
-    this.broker = backend as unknown as BrokerBackend;
-    this.brokerClient = {
-      close() {},
-      isConnected: () => true,
-      request: async (method: string) => method === BROKER_HELLO_METHOD
-        ? { id: 0, status: "ok", payload: { kind: BROKER_HELLO_METHOD, protocol_version: BROKER_PROTOCOL_VERSION, broker_version: "test" } }
-        : { id: 0, status: "ok" },
-      start() {},
-    };
-    this._brokerAvailable = true;
-  }
 }

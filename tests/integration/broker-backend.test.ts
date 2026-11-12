@@ -9,7 +9,6 @@
  * Skips cleanly when the broker binary is not built. CI must run
  * `cargo build --manifest-path broker/Cargo.toml --bin wolfpack-broker` first.
  */
-process.env.WOLFPACK_TEST = "1";
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -18,7 +17,7 @@ import * as path from "node:path";
 
 import { BrokerClient } from "../../src/broker/client";
 import { BrokerBackend } from "../../src/server/broker-backend";
-import { subscribeEvents } from "../../src/server/event-bus";
+import { subscribeEvents } from "../../src/event-bus";
 import type { WolfpackEvent } from "../../src/events-contract";
 
 const REPO_ROOT = path.resolve(import.meta.dir, "..", "..");

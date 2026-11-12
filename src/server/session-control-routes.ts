@@ -1,5 +1,4 @@
 import { AGENT_KIND } from "../agent-kind.js";
-import { observedSessionLastLine, observedSessionSummary } from "./session-observation.js";
 import { getInstallationId } from "../tailnet-machine-installation.js";
 import { stoppedUnseen } from "../focus-ranking.js";
 import { createSessionOrganizationRoutes } from "./session-organization-routes.ts";
@@ -46,10 +45,8 @@ import {
   parseObjectBody,
 } from "./http.js";
 import { listParentNotifications, PARENT_INBOX_BOOT_ID } from "./parent-inbox.js";
-import { isChildSettled, noteChildInputDelivered } from "./child-events.js";
 import { ChildWaitBusyError, waitForChildren, type ChildWaitChild } from "./child-wait.js";
 import { CHILD_WAIT_LIMITS, CHILD_WAIT_MODES, type ChildEventPayload, type ChildWaitMode } from "../child-event-contract.js";
-import { getAgentRuntimeStateStore } from "./agent-status.js";
 import { AGENT_STATUS_STATE } from "../agent-status-contract.js";
 import { CHILD_CLEANUP, type ChildCleanupReport } from "../session-cascade-contract.js";
 import { resolveSessionSelector } from "./session-selector.js";
@@ -105,13 +102,12 @@ export async function resolveActiveSession(
 }
 
 export function createSessionControlRoutes(ctx: ServerContext): Record<string, RouteHandler> {
-const getBackend = () => ctx.backend;
 const streamingBackend = () => ctx.supervisor ? ctx.supervisor.backend() : ctx.backend;
 let sessionSnapshotService: SessionSnapshotService | null = null;
 
 function snapshots(): SessionSnapshotService {
   sessionSnapshotService ??= new SessionSnapshotService((sessionId) =>
-    getBackend().captureSessionSnapshotById(sessionId),
+    ctx.backend.captureSessionSnapshotById(sessionId),
   );
   return sessionSnapshotService;
 }
@@ -235,7 +231,7 @@ function inspectedSessionStatusPayload(selector: string, inspection: SuccessfulS
     status: inspection.alive ? SESSION_TERMINAL_STATUS.READY : SESSION_TERMINAL_STATUS.DEAD,
   };
   // Read-only: the last state the session observer reduced; status never runs an observation itself.
-  const runtimeState = getAgentRuntimeStateStore().get(inspection.sessionId);
+  const runtimeState = ctx.agentRuntimeStateStore.get(inspection.sessionId);
   return {
     ok: true as const,
     selector,
@@ -273,7 +269,7 @@ function sessionStatusFailure(
 async function waitForSessionText(session: string, text: string, timeoutMs: number): Promise<"matched" | "timeout" | "unavailable"> {
   const streaming = streamingBackend();
   if (!streaming) {
-    const existing = await getBackend().capturePane(session);
+    const existing = await ctx.backend.capturePane(session);
     return existing.includes(text) ? "matched" : "unavailable";
   }
 
@@ -315,7 +311,7 @@ async function waitForSessionText(session: string, text: string, timeoutMs: numb
  * A backend error propagates to the caller.
  */
 async function inspectLiveSession(res: ServerResponse, selector: string): Promise<SuccessfulSessionInspection | null> {
-  const backend = getBackend();
+  const backend = ctx.backend;
   const inspect = backend.inspectSession;
   if (!inspect) {
     json(
@@ -361,7 +357,7 @@ async function inspectLiveSession(res: ServerResponse, selector: string): Promis
 
 /** The live children of a parent, sorted by name. Exited children are not listed. */
 async function liveChildren(parentSessionId: string): Promise<Array<ChildWaitChild & { readonly cleanup: ChildCleanupReport }>> {
-  const backend = getBackend();
+  const backend = ctx.backend;
   const names = await backend.list();
   const identities = await backend.listIdentities?.();
   if (!identities) throw new Error("session identity unavailable");
@@ -371,7 +367,7 @@ async function liveChildren(parentSessionId: string): Promise<Array<ChildWaitChi
     return [{
       session: name,
       sessionId: identity.wolfpackSessionId,
-      settled: isChildSettled(identity.wolfpackSessionId),
+      settled: ctx.childEvents.isChildSettled(identity.wolfpackSessionId),
       cleanup: identity.parentSession.cleanup ?? CHILD_CLEANUP.NONE,
     }];
   }).sort((left, right) => left.session.localeCompare(right.session));
@@ -437,7 +433,7 @@ return {
   "GET /api/session-control/list": async (_req, res) => {
     res.setHeader("Cache-Control", "no-store");
     try {
-      const backend = getBackend();
+      const backend = ctx.backend;
       const names = await backend.list();
       const identities = await backend.listIdentities?.();
       if (!identities || names.some(name => !identities[name])) {
@@ -447,11 +443,11 @@ return {
       const relay = await sessionRegistrations(names.map(name => identities[name]!.wolfpackSessionId));
       const sessions = names.map((name) => {
         const identity = identities[name]!;
-        const runtime = getAgentRuntimeStateStore().get(identity.wolfpackSessionId);
+        const runtime = ctx.agentRuntimeStateStore.get(identity.wolfpackSessionId);
         const pinned = ctx.assistantService.pins.some(pin => pin.name === name);
-        const summary = observedSessionSummary(identity.wolfpackSessionId);
+        const summary = ctx.sessionObservation.observedSessionSummary(identity.wolfpackSessionId);
         const lastLine = identity.agentKind === AGENT_KIND.PI.id || identity.agentKind === AGENT_KIND.CLAUDE.id
-          ? summary.at(-1) ?? "" : observedSessionLastLine(identity.wolfpackSessionId);
+          ? summary.at(-1) ?? "" : ctx.sessionObservation.observedSessionLastLine(identity.wolfpackSessionId);
         return { ...sessionStatusPayload(name, identity, relay.registrations.get(identity.wolfpackSessionId), relay.taskRelay),
           machine: getInstallationId(), lastLine, summary, lastLineTrust: "untrusted-data",
           runtime: { state: runtime?.state ?? "unknown", changedAt: runtime?.changedAt ?? null, ...(runtime?.inputKind && { inputKind: runtime.inputKind }),
@@ -476,7 +472,7 @@ return {
       const parent = await inspectLiveSession(res, selector);
       if (!parent) return;
       const lastEvents = lastChildEvents(parent.sessionId);
-      const store = getAgentRuntimeStateStore();
+      const store = ctx.agentRuntimeStateStore;
       const children = (await liveChildren(parent.sessionId)).map((child) => {
         const runtimeState = store.get(child.sessionId);
         const lastEvent = lastEvents.get(child.sessionId);
@@ -520,7 +516,7 @@ return {
         ...query,
         listChildren: () => liveChildren(parent.sessionId),
         signal: closed.signal,
-      });
+      }, ctx.childEvents);
       if (!result) return;
       return json(res, { ok: true, session: parent.session, sessionId: parent.sessionId, children: query.mode, ...result });
     } catch (error: unknown) {
@@ -567,7 +563,7 @@ return {
     const resolved = await resolveActiveSession(res, selector, ctx.backend);
     if (!resolved) return;
     try {
-      const output = await getBackend().capturePane(resolved.name);
+      const output = await ctx.backend.capturePane(resolved.name);
       json(res, {
         session: resolved.name,
         sessionId: resolved.identity.wolfpackSessionId,
@@ -600,12 +596,12 @@ return {
     const noEnter = body.noEnter === true;
     ctx.viewerRedraw.input(session);
     // A task written with Enter arms the child's heuristic `busy → idle` done event.
-    const armChild = () => noteChildInputDelivered(sessionId, session, resolved.identity.parentSession);
+    const armChild = () => ctx.childEvents.noteChildInputDelivered(sessionId, session, resolved.identity.parentSession);
     try {
       const streaming = streamingBackend();
       if (!streaming) {
         // Nothing to observe through: deliver as before and say so.
-        await getBackend().send(session, body.text, noEnter);
+        await ctx.backend.send(session, body.text, noEnter);
         ctx.activityRecorder.notePresence(session, INPUT_SOURCE.CLI);
         if (!noEnter) armChild();
         return json(res, {

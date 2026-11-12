@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { loadConfigFromText, parseConfig } from "../../src/cli/config.ts";
+import { loadConfigFromText, parseConfig } from "../../src/config.ts";
 
 describe("parseConfig", () => {
   test("keeps the Claude task integration opt-in only when it is true", () => {
@@ -67,6 +67,31 @@ describe("parseConfig", () => {
       expect(config).toMatchObject({ devDir: "/tmp/x", port: 8787 });
       expect(config?.displayName).toBeUndefined();
     }
+  });
+
+  test("normalizes extra allowed hosts and drops invalid entries", () => {
+    const base = { devDir: "/tmp/x", port: 18790 };
+    const config = parseConfig({ ...base, allowedHosts: [
+      "Proxy.Example.:443", "localhost:8080", "100.64.0.1", "[FD7A:115C:A1E0:0:0:0:0:1]:443",
+      "https://evil.example", "host/path", "host:99999", "*.example", "bad\nhost", "", 42, null,
+    ] });
+    expect(config?.allowedHosts).toEqual(["proxy.example", "localhost", "100.64.0.1", "fd7a:115c:a1e0::1"]);
+    expect(loadConfigFromText(JSON.stringify(config))).toEqual(config);
+  });
+
+  test("omits empty, invalid or non-array allowedHosts settings", () => {
+    const base = { devDir: "/tmp/x", port: 18790 };
+    for (const allowedHosts of [undefined, null, "proxy.example", {}, [], [42, "https://evil.example"]]) {
+      const config = parseConfig({ ...base, allowedHosts });
+      expect(config).toEqual(base);
+      expect(config).not.toHaveProperty("allowedHosts");
+    }
+  });
+
+  test("caps allowedHosts at 32 valid entries", () => {
+    const hosts = Array.from({ length: 40 }, (_, index) => `proxy-${index}.example`);
+    const config = parseConfig({ devDir: "/tmp/x", port: 18790, allowedHosts: [null, ...hosts] });
+    expect(config?.allowedHosts).toEqual(hosts.slice(0, 32));
   });
 
   test("rejects non-number and fractional ports", () => {

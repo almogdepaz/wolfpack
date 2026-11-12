@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { WOLFPACK_DIR } from "./config.js";
-import { print, printError, printJson, red } from "./formatting.js";
+import { WOLFPACK_DIR } from "../config.js";
+import { print, printError } from "../terminal-output.js";
+import { printJson, red } from "./formatting.js";
 
 export { LOG_RETENTION, LOG_ROTATE_BYTES, rotateLogFile } from "../log-rotation.js";
 

@@ -1,21 +1,17 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-process.env.WOLFPACK_TEST = "1";
 
 import { CHILD_WAIT_LIMITS } from "../../src/child-event-contract.ts";
 import { SESSION_EXIT_REASON } from "../../src/events-contract.ts";
-import {
-  __resetChildEventsForTests,
-  childMessageEvent,
-  childSessionExited,
-  noteChildCreated,
-} from "../../src/server/child-events.ts";
+import { createChildEvents } from "../../src/server/child-events.ts";
+let service = createChildEvents();
 import {
   ChildWaitBusyError,
   childEventsSince,
-  waitForChildren,
+  waitForChildren as waitWithEvents,
   type ChildWaitChild,
 } from "../../src/server/child-wait.ts";
+const waitForChildren = (request: Parameters<typeof waitWithEvents>[0]) => waitWithEvents(request, service);
 import { appendParentNotification, clearParentInbox, PARENT_INBOX_BOOT_ID } from "../../src/server/parent-inbox.ts";
 
 const PARENT = { wolfpackSessionId: "parent-id", wolfpackSessionName: "lead" };
@@ -27,19 +23,19 @@ function child(name: string, settled: boolean): ChildWaitChild {
 
 /** Emit one real child event through child-events (a `message` from a tracked child). */
 function emitMessage(name = "worker", text = "ready") {
-  noteChildCreated(`${name}-id`, name, PARENT);
-  return childMessageEvent(PARENT.wolfpackSessionId, name, text, publish);
+  service.noteChildCreated(`${name}-id`, name, PARENT);
+  return service.childMessageEvent(PARENT.wolfpackSessionId, name, text, publish);
 }
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
 beforeEach(() => {
-  __resetChildEventsForTests();
+  service = createChildEvents();
   clearParentInbox(PARENT.wolfpackSessionId);
 });
 
 afterEach(() => {
-  __resetChildEventsForTests();
+  service = createChildEvents();
   clearParentInbox(PARENT.wolfpackSessionId);
 });
 
@@ -79,12 +75,12 @@ describe("waitForChildren", () => {
   });
 
   test("any: wakes on a later child event, including an exit", async () => {
-    noteChildCreated("worker-id", "worker", PARENT);
+    service.noteChildCreated("worker-id", "worker", PARENT);
     const pending = waitForChildren({
       parentSessionId: PARENT.wolfpackSessionId, mode: "any", timeoutMs: 5_000, listChildren: async () => [child("worker", false)],
     });
     await tick();
-    childSessionExited("worker-id", { reason: SESSION_EXIT_REASON.EXIT, exitCode: 0 }, publish);
+    service.childSessionExited("worker-id", { reason: SESSION_EXIT_REASON.EXIT, exitCode: 0 }, publish);
     const result = await pending;
     expect(result?.outcome).toBe("events");
     expect(result?.events.map(event => event.event)).toEqual(["exited"]);
@@ -143,8 +139,8 @@ describe("waitForChildren", () => {
   });
 
   test("any: ignores events of another parent and other-boot cursors read the current boot", async () => {
-    noteChildCreated("other-id", "other", { wolfpackSessionId: "other-parent", wolfpackSessionName: "x" });
-    childMessageEvent("other-parent", "other", "hi", publish);
+    service.noteChildCreated("other-id", "other", { wolfpackSessionId: "other-parent", wolfpackSessionName: "x" });
+    service.childMessageEvent("other-parent", "other", "hi", publish);
     clearParentInbox("other-parent");
     const stale = await waitForChildren({
       parentSessionId: PARENT.wolfpackSessionId, mode: "any", timeoutMs: 30, since: 0, bootId: "old-boot",

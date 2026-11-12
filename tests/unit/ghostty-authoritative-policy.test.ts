@@ -47,10 +47,18 @@ describe("unconditional authoritative Ghostty broker policy", () => {
   });
 
   test("CI and release builds use the unconditional broker", () => {
+    const testWorkflow = source(".github", "workflows", "test.yml");
+    const gate = source("scripts", "ci-gate.sh");
     const workflows = [
-      source(".github", "workflows", "test.yml"),
+      testWorkflow,
       source(".github", "workflows", "release.yml"),
+      gate,
     ].join("\n");
+    const parsed = Bun.YAML.parse(testWorkflow) as {
+      jobs: { test: { steps: Array<{ run?: string }> } };
+    };
+    expect(parsed.jobs.test.steps.map(step => step.run)).toContain("scripts/ci-gate.sh broker-test");
+    expect(gate).toContain("stage_broker_test() { cargo test --locked --manifest-path broker/Cargo.toml --all; }");
 
     expect(workflows).not.toContain("--features ghostty-vt");
     expect(workflows).not.toContain("ghostty-vt-shadow");

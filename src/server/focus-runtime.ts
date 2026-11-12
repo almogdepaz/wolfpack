@@ -55,7 +55,7 @@ export class FocusRuntime {
       enabled: () => ctx.assistantService.enabled && this.homeIsLocal(),
       sources: async () => {
         const { discoverActivityPeers } = await import("./activity-peers.js");
-        const { peers, failures } = await discoverActivityPeers();
+        const { peers, failures } = await discoverActivityPeers(Date.now(), ctx.readTailscaleStatus);
         for (const failure of failures) log.debug("activity peer not reached", failure);
         return [localActivitySource(getInstallationId(), getMachineDisplayName(), ctx.activityJournal), ...peers.map(peerActivitySource)];
       },
@@ -81,10 +81,9 @@ export class FocusRuntime {
   }
   stop(): void { this.lifetime++; this.pins.stop(); this.routines.stop(); clearInterval(this.timer); this.timer = undefined; this.queue.clear("server stopped; queue discarded"); }
   async status() {
-    const { observeDashboardSessions } = await import("./session-observation.js");
     const service = this.ctx.assistantService;
     const enabled = service.enabled && this.homeIsLocal();
-    const session = (await observeDashboardSessions(this.ctx)).find(s => s.name === "assistant" && s.identity?.projectPath === service.folder);
+    const session = (await this.ctx.sessionObservation.observeDashboardSessions()).find(s => s.name === "assistant" && s.identity?.projectPath === service.folder);
     const id = session?.identity?.wolfpackSessionId;
     // Focus is a local document; optional live terminal enrichment must not
     // make its reads fail when the broker disconnects (including mid-sample).
@@ -135,9 +134,8 @@ export class FocusRuntime {
       if (!active() || !service.pins.some(pin => service.isManagedPin(pin)) || !this.homeIsLocal() || this.queue.busy || !service.conversationChanged()) return;
       // Share the routine lock, not its cached status: a pull might still be about to publish an inbox.
       await this.routines.withNoInbox(async () => {
-        const { activePtySessions } = await import("./websocket.js");
         const userActive = () => {
-          const attached = activePtySessions.get("assistant");
+          const attached = this.ctx.terminals.activePtySessions.get("assistant");
           return !!(attached?.viewer || attached?.pendingViewer) || this.ctx.activityRecorder.hasRecentInput("assistant");
         };
         if (userActive()) return;
@@ -166,10 +164,9 @@ export class FocusRuntime {
   }
   /** The assistant's current incarnation, whether its harness is resting, and whether it is waiting on the user. */
   private async sample(): Promise<{ id: string; idle: boolean; needsInput: boolean; token: string; programAt?: number; fallback?: { screen: string; quietMs: number; outputSequence?: string } } | undefined> {
-    const { observeDashboardSessions } = await import("./session-observation.js");
     const service = this.ctx.assistantService;
     if (!service.enabled || !this.homeIsLocal()) return undefined;
-    const session = (await observeDashboardSessions(this.ctx)).find(s => s.name === "assistant" && s.identity?.projectPath === service.folder);
+    const session = (await this.ctx.sessionObservation.observeDashboardSessions()).find(s => s.name === "assistant" && s.identity?.projectPath === service.folder);
     if (!session?.identity?.wolfpackSessionId) return undefined;
     const fact = (await this.ctx.backend.listSessionFacts()).find(f => f.alive && f.identity?.wolfpackSessionId === session.identity?.wolfpackSessionId);
     if (!fact) return undefined;

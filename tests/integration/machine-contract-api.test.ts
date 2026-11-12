@@ -7,16 +7,13 @@ import { tmpdir } from "node:os";
 import { getMachineDisplayName } from "../../src/machine-display-name.ts";
 
 const PRIOR_ENV = {
-  WOLFPACK_TEST: process.env.WOLFPACK_TEST,
   WOLFPACK_JWT_SECRET: process.env.WOLFPACK_JWT_SECRET,
   WOLFPACK_DEV_DIR: process.env.WOLFPACK_DEV_DIR,
   WOLFPACK_SETTINGS_PATH: process.env.WOLFPACK_SETTINGS_PATH,
   WOLFPACK_MACHINE_ID_PATH: process.env.WOLFPACK_MACHINE_ID_PATH,
   WOLFPACK_TAILSCALE_STATUS_JSON: process.env.WOLFPACK_TAILSCALE_STATUS_JSON,
 } as const;
-const { DEV_DIR: PRIOR_CACHED_DEV_DIR } = await import("../../src/server/dev-dir.ts");
 
-process.env.WOLFPACK_TEST = "1";
 delete process.env.WOLFPACK_JWT_SECRET;
 
 const rawTestRoot = mkdtempSync(join(tmpdir(), "wolfpack-machine-contract-"));
@@ -50,28 +47,22 @@ const defaultTailscaleStatus = JSON.stringify({
 });
 process.env.WOLFPACK_TAILSCALE_STATUS_JSON = defaultTailscaleStatus;
 
-const {
-  __resetBackend,
-  __resetJwtAuthConfig,
-  __setDevDir,
-  __setTestBackend,
-  MockBackend,
-} = await import("../../src/test-hooks.ts");
-__resetJwtAuthConfig();
-__setDevDir(testRoot);
-__setTestBackend(new MockBackend({ sessions: [] }));
+const { getJwtAuthConfig } = await import("../../src/auth.ts");
+const { MockBackend, } = await import("../../src/server/mock-backend.ts");
+
+
+const { createServerContext } = await import("../../src/server/context.ts");
+const context = createServerContext({ readTailscaleStatus: async () => JSON.parse(process.env.WOLFPACK_TAILSCALE_STATUS_JSON ?? "{}"), devDir: testRoot, jwtAuthConfig: getJwtAuthConfig(), backend: new MockBackend({ sessions: [] }) });
 
 const {
   createServerInstance,
-  __globalRateLimiter,
-  __pollRateLimiter,
 } = await import("../../src/server/index.ts");
-const { server } = createServerInstance();
+const { server, globalRateLimiter, pollRateLimiter } = createServerInstance(context, { allowLocalOrigins: true });
 let base = "";
 
 beforeAll(async () => {
-  __pollRateLimiter._map.clear();
-  __globalRateLimiter._map.clear();
+  pollRateLimiter._map.clear();
+  globalRateLimiter._map.clear();
   await new Promise<void>((resolve) => {
     (server as Server).listen(0, "127.0.0.1", () => {
       const port = ((server as Server).address() as AddressInfo).port;
@@ -83,19 +74,15 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await new Promise<void>((resolve, reject) => (server as Server).close(error => error ? reject(error) : resolve()));
-  __pollRateLimiter._map.clear();
-  __globalRateLimiter._map.clear();
+  pollRateLimiter._map.clear();
+  globalRateLimiter._map.clear();
   rmSync(testRoot, { recursive: true, force: true });
-  __resetBackend();
-  __setDevDir(PRIOR_CACHED_DEV_DIR);
+
   for (const [key, value] of Object.entries(PRIOR_ENV)) {
-    if (key === "WOLFPACK_TEST") continue;
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
-  __resetJwtAuthConfig();
-  if (PRIOR_ENV.WOLFPACK_TEST === undefined) delete process.env.WOLFPACK_TEST;
-  else process.env.WOLFPACK_TEST = PRIOR_ENV.WOLFPACK_TEST;
+
 });
 
 describe("direct machine contract routes", () => {
@@ -219,8 +206,8 @@ describe("direct machine contract routes", () => {
           expect(response.status).toBe(200);
           expect(await response.json()).toEqual(route.invalid);
         }
-        __pollRateLimiter._map.clear();
-        __globalRateLimiter._map.clear();
+        pollRateLimiter._map.clear();
+        globalRateLimiter._map.clear();
       }
 
       process.env.WOLFPACK_TAILSCALE_STATUS_JSON = JSON.stringify({ Self: validSelf, Peer: {} });

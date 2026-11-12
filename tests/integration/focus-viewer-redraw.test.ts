@@ -11,9 +11,8 @@ import { BrokerBackend } from "../../src/server/broker-backend";
 import { BrokerSupervisor } from "../../src/server/broker-supervisor";
 import type { SessionBackend } from "../../src/server/backend-contract";
 import { createServerContext } from "../../src/server/context";
-import { handlePtyWs, teardownPty } from "../../src/server/websocket";
-import { observeDashboardSessions, __resetSessionObservationForTests } from "../../src/server/session-observation";
-import { getAgentRuntimeStateStore } from "../../src/server/agent-status";
+import { spyOn } from "bun:test";
+import { tmpdir } from "node:os";
 import { stoppedUnseen } from "../../src/focus-ranking";
 
 const wait = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -34,13 +33,14 @@ class Viewer extends EventEmitter {
 
 const binary = process.env.WOLFPACK_BROKER_BIN;
 test.skipIf(!binary || !existsSync(binary))("production proxy shares PTY redraw attribution, input cancellation and ended-session pruning", async () => {
-  const root = mkdtempSync("/tmp/focus-redraw-");
+  const root = mkdtempSync(join(tmpdir(), "focus-redraw-"));
   const socketPath = join(root, "b.sock");
   const proc = spawn(binary!, [], { env: { ...process.env, WOLFPACK_BROKER_SOCKET: socketPath }, stdio: "ignore" });
   let backend: BrokerBackend | undefined;
   const client = new BrokerClient({ socketPath, requestTimeoutMs: 3000, onEvent: event => backend?.ingestEvent(event) });
   const session = "focus-redraw-it";
   const viewer = new Viewer();
+  let ctx: ReturnType<typeof createServerContext> | undefined;
   try {
     await until(() => existsSync(socketPath));
     client.start();
@@ -52,18 +52,19 @@ test.skipIf(!binary || !existsSync(binary))("production proxy shares PTY redraw 
     // Production observation/CLI retain the proxy; websocket pins the raw backend.
     const supervisor = new BrokerSupervisor({ start: false });
     const injected: SessionBackend = backend;
-    supervisor.__setBrokerForTest(injected);
-    const ctx = createServerContext({ supervisor, config: null, taskRelayRoot: join(root, "relay") });
+    spyOn(supervisor, "backend").mockImplementation(() => injected as ReturnType<BrokerSupervisor["backend"]>);
+    spyOn(supervisor, "isBrokerAvailable").mockReturnValue(true);
+    ctx = createServerContext({ supervisor, config: null, observationCacheTtlMs: 0, taskRelayRoot: join(root, "relay") });
     expect(ctx.backend).not.toBe(backend);
-    const observe = async () => (await observeDashboardSessions(ctx)).find(s => s.name === session)!.runtimeState;
+    const observe = async () => (await ctx!.sessionObservation.observeDashboardSessions()).find(s => s.name === session)!.runtimeState;
     await until(async () => (await backend!.capturePane(session)).includes("ready"));
     await observe(); // Baseline.
     writeFileSync(join(root, "work"), "");
     await until(async () => (await observe()).state === "output");
     await until(async () => stoppedUnseen(await observe()));
     const first = await observe();
-    getAgentRuntimeStateStore().acknowledge(identity.wolfpackSessionId, first.transitionSequence);
-    handlePtyWs(viewer as unknown as WebSocket, session, undefined, ctx);
+    ctx.agentRuntimeStateStore.acknowledge(identity.wolfpackSessionId, first.transitionSequence);
+    ctx.terminals.handlePtyWs(viewer as unknown as WebSocket, session);
     viewer.control({ type: "attach", cols: 71, rows: 21, prefillMode: "full" });
     await until(() => viewer.frames.some(f => JSON.parse(f).type === "pty_ready"));
     await until(async () => (await backend!.capturePane(session)).includes("viewer redraw"));
@@ -93,18 +94,18 @@ test.skipIf(!binary || !existsSync(binary))("production proxy shares PTY redraw 
     expect(ctx.viewerRedraw.includes(fact)).toBe(true);
     await backend.killSession(session);
     // Kill acknowledgement precedes the broker's asynchronous exit observation.
-    await until(async () => !(await ctx.backend.listSessionFacts()).some(f => f.alive && f.identity?.wolfpackSessionId === identity.wolfpackSessionId),
+    await until(async () => !(await ctx!.backend.listSessionFacts()).some(f => f.alive && f.identity?.wolfpackSessionId === identity.wolfpackSessionId),
       7000, "killed session remained alive in broker facts before pruning");
-    await observeDashboardSessions(ctx);
+    await ctx.sessionObservation.observeDashboardSessions();
     expect(ctx.viewerRedraw.includes(fact)).toBe(false); // Production observation prunes that same owner.
   } finally {
-    teardownPty(session);
+    ctx?.terminals.teardownPty(session);
     if (backend) await backend.killSession(session);
     client.close();
     const exit = new Promise<void>(resolve => proc.once("exit", () => resolve()));
     proc.kill("SIGTERM");
     await exit;
-    __resetSessionObservationForTests();
+    await ctx?.close();
     rmSync(root, { recursive: true, force: true });
   }
 }, 30_000);

@@ -3,6 +3,8 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { platform } from "node:os";
 import { isPinnedSessions, type PinnedSession } from "./pinned-sessions.js";
+import { isIPv6 } from "node:net";
+import { parseHostHeader } from "./server/host-policy.js";
 import { isValidPort } from "./validation.js";
 import { resolveWolfpackDir } from "./wolfpack-dir.js";
 import { canonicalTailnetOrigin, isMachineDisplayName } from "./tailnet-machine-contract.js";
@@ -10,6 +12,7 @@ import {
   activeClaudeManagedSettingsDropInDirectory,
   claudeTaskIntegrationGate,
   type ClaudeTaskIntegrationGate,
+  type ClaudeManagedSettingsDropIn,
 } from "./claude-integration.js";
 
 export const IS_MACOS = platform() === "darwin";
@@ -22,6 +25,8 @@ export interface Config {
   devDir: string;
   port: number;
   tailscaleHostname?: string;
+  /** Extra Host values the server accepts, for a custom proxy; restart required. */
+  allowedHosts?: string[];
   /** Host-owned machine display name; overrides the OS computer name in every handshake. */
   displayName?: string;
   /** Installation identity, not a display name or an arbitrary URL. */
@@ -52,6 +57,16 @@ export function parseConfig(raw: unknown): Config | null {
     focus = { home: value.home };
   }
   if (candidate.pinnedSessions !== undefined && !isPinnedSessions(candidate.pinnedSessions)) return null;
+  const allowedHosts: string[] = [];
+  if (Array.isArray(candidate.allowedHosts)) {
+    for (const value of candidate.allowedHosts) {
+      if (typeof value !== "string") continue;
+      // Saved config contains normalized IPv6 literals without HTTP brackets.
+      const host = parseHostHeader(isIPv6(value) ? `[${value}]` : value);
+      if (host) allowedHosts.push(host);
+      if (allowedHosts.length === 32) break;
+    }
+  }
   return {
     devDir,
     port,
@@ -59,6 +74,7 @@ export function parseConfig(raw: unknown): Config | null {
     ...(isMachineDisplayName(displayName) && { displayName }),
     ...(focus && { focus }),
     ...(candidate.pinnedSessions !== undefined && { pinnedSessions: candidate.pinnedSessions as PinnedSession[] }),
+    ...(allowedHosts.length > 0 && { allowedHosts }),
     ...(candidate.claudeTaskIntegration === true && { claudeTaskIntegration: true }),
     ...(candidate.childEventTypedNotes === false && { childEventTypedNotes: false as const }),
   };
@@ -94,8 +110,8 @@ export function childEventTypedNotesEnabled(): boolean {
  * The effective Claude task integration: the flag and the current managed drop-in, read on every
  * call (both are small files) so neither a setup run nor a removed drop-in needs a server restart.
  */
-export function claudeTaskIntegrationState(): ClaudeTaskIntegrationGate {
-  return claudeTaskIntegrationGate(claudeTaskIntegrationEnabled(), activeClaudeManagedSettingsDropInDirectory());
+export function claudeTaskIntegrationState(dropIn?: ClaudeManagedSettingsDropIn): ClaudeTaskIntegrationGate {
+  return claudeTaskIntegrationGate(claudeTaskIntegrationEnabled(), activeClaudeManagedSettingsDropInDirectory(dropIn));
 }
 
 export function saveConfig(c: Config) {

@@ -1,7 +1,8 @@
 import { ACTIVITY_KIND, ACTIVITY_PAGE_DEFAULT, ACTIVITY_PAGE_MAX, ACTIVITY_PATH, type ActivityPage, type ActivityRow } from "../activity-journal.js";
 import { call } from "./api.js";
 import type { VerifiedMachineTarget } from "./machine-target.js";
-import { print, printError, printJson } from "./formatting.js";
+import { print, printError } from "../terminal-output.js";
+import { printJson } from "./formatting.js";
 
 export const ACTIVITY_USAGE = `Usage: wolfpack [--machine <name>] activity [--since <seq>] [--limit <n>] [--json]
        wolfpack activity ack <inbox-file> [--json]

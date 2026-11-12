@@ -1,4 +1,3 @@
-process.env.WOLFPACK_TEST = "1";
 
 import { describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";

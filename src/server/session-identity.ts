@@ -1,5 +1,4 @@
 import {
-  existsSync,
   rmSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -10,7 +9,7 @@ import {
 import type { AgentKind } from "../agent-kind.js";
 export type { AgentKind } from "../agent-kind.js";
 import { DEV_DIR } from "./dev-dir.js";
-import { readValidatedJsonFile, writePrivateJsonFile } from "./persistence.js";
+import { readValidatedJsonFile, writePrivateJsonFile } from "../persistence.js";
 import { isChildCleanupPolicy, type ChildCleanupPolicy } from "../session-cascade-contract.js";
 
 export const SESSION_IDENTITY_SCHEMA_VERSION = 1;
@@ -88,9 +87,6 @@ interface IdentityStoreFile {
 export function sessionIdentityStorePath(devDir?: string): string {
   if (devDir !== undefined) return join(devDir, ".wolfpack", "session-identities.json");
   if (process.env.WOLFPACK_SESSION_IDENTITY_PATH) return process.env.WOLFPACK_SESSION_IDENTITY_PATH;
-  if (process.env.WOLFPACK_TEST) {
-    return join(process.cwd(), ".wolfpack", `session-identities-test-${process.pid}.json`);
-  }
   return join(DEV_DIR, ".wolfpack", "session-identities.json");
 }
 
@@ -351,21 +347,4 @@ function sameIdentityIgnoringTimestamps(a: SessionIdentity, b: SessionIdentity):
   const left = { ...a, restoredAt: undefined, updatedAt: undefined };
   const right = { ...b, restoredAt: undefined, updatedAt: undefined };
   return JSON.stringify(left) === JSON.stringify(right);
-}
-
-let singleton: SessionIdentityStore | null = null;
-
-export function getSessionIdentityStore(): SessionIdentityStore {
-  if (!singleton) singleton = new SessionIdentityStore();
-  return singleton;
-}
-
-export function __resetSessionIdentityStoreForTest(): void {
-  if (!process.env.WOLFPACK_TEST) throw new Error("__resetSessionIdentityStoreForTest() is test-only");
-  singleton = null;
-}
-
-export function __sessionIdentityStoreFileExistsForTest(devDir: string): boolean {
-  if (!process.env.WOLFPACK_TEST) throw new Error("__sessionIdentityStoreFileExistsForTest() is test-only");
-  return existsSync(sessionIdentityStorePath(devDir));
 }

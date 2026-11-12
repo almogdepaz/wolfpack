@@ -5,7 +5,8 @@ import { isQuietAlertFact } from "../quiet-alert-policy.ts";
 import { readPeerResponse, withPeerAbort } from "../task-relay/peer-response.ts";
 import type { RelayPeerTopology } from "../task-relay/peer-topology.ts";
 import { createLogger, errMsg } from "../log.ts";
-import { readRelayPeerTopology } from "./http.ts";
+import { readRelayPeerTopology } from "./tailscale-status.ts";
+import { readLocalTailscaleStatus } from "./tailscale-status.ts";
 import type { NotificationMachine } from "./push.ts";
 import type { QuietAlertFact } from "../quiet-alert-policy.ts";
 
@@ -30,10 +31,10 @@ const record = (value: unknown): value is Record<string, unknown> => value !== n
  * No policy reduction here: older peers work if they expose quietAlert facts.
  * Requests are anonymous: the local owner JWT is never sent to peers, so peers
  * that require authentication are skipped until a peer-specific credential exists. */
-export async function observePeerNotifications(options?: Options): Promise<readonly PeerObservation[]> {
+export async function observePeerNotifications(options?: Options, readStatus: typeof readLocalTailscaleStatus = readLocalTailscaleStatus): Promise<readonly PeerObservation[]> {
   const config = options ? null : loadConfig();
   const configuredOrigin = config ? remoteUrl(config) ?? undefined : undefined;
-  const topology = options?.topology ?? (() => readRelayPeerTopology(configuredOrigin));
+  const topology = options?.topology ?? (() => readRelayPeerTopology(configuredOrigin, readStatus));
   let own: RelayPeerTopology;
   try { own = await topology(); }
   catch (error: unknown) { log.debug("peer notification topology unavailable", { error: errMsg(error) }); return []; }

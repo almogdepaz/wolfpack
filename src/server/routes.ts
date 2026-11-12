@@ -4,14 +4,12 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { existsSync } from "node:fs";
 import { getMachineDisplayName } from "../machine-display-name.js";
-import { execFile } from "node:child_process";
+import { openProjectGit } from "./project-git.js";
 import { createLogger, errMsg } from "../log.js";
 import { clampCols, clampRows } from "../validation.js";
 
 import { assets } from "../public-assets.js";
-import { getAgentRuntimeStateStore } from "./agent-status.js";
 import pkg from "../../package.json";
-import { issueWebSocketTicket } from "./ws-ticket.js";
 import {
   boundedMetrics,
   classifyRequestClient,
@@ -30,24 +28,12 @@ import {
   getLocalMachineHandshake,
   validateProjectParam,
 } from "./http.js";
-import { activePtySessions } from "./websocket.js";
-import { observeDashboardSessions } from "./session-observation.js";
-import {
-  cascadeChildCleanup,
-  claimSessionCleanup,
-  killSessionWithTeardown,
-  releaseSessionCleanup,
-} from "./session-cascade.js";
 import type { CascadedChild } from "../session-cascade-contract.js";
-export {
-  __resetSessionObservationForTests,
-  __runSessionNotificationObservationForTests,
-} from "./session-observation.js";
 import { createTaskRoutes } from "./task-routes.ts";
 import { createVolatileRelayRoutes } from "./volatile-relay-routes.ts";
 import { createProjectSettingsRoutes } from "./project-settings-routes.js";
 import { resolveActiveSession, createSessionControlRoutes } from "./session-control-routes.js";
-import { createPushNotifyRoutes, pushSubscriptionRoutes } from "./push-routes.js";
+import { createPushNotifyRoutes, createPushSubscriptionRoutes } from "./push-routes.js";
 import { createFocusRoutes } from "./focus-routes.js";
 import { createActivityRoutes } from "./activity-routes.js";
 import { createEventRoutes } from "./event-routes.js";
@@ -55,6 +41,7 @@ import { createRemoteOpsRoutes } from "./remote-ops-routes.js";
 
 const log = createLogger("routes");
 const RESIZE_BODY_KEYS = new Set(["session", "cols", "rows"]);
+const GIT_STATUS_MAX_OUTPUT = 1024 * 1024;
 
 interface AgentRuntimeAckBody extends Record<string, unknown> {
   sessionId: string;
@@ -74,7 +61,6 @@ function isAgentRuntimeAckBody(body: Record<string, unknown>): body is AgentRunt
 const VERSION: string = pkg.version;
 type Routes = Record<string, (req: IncomingMessage, res: ServerResponse) => void | Promise<void>>;
 export function createRoutes(ctx: ServerContext): Routes {
-const getBackend = () => ctx.backend;
 return {
   "GET /": (req, res) => serveFile(res, "index.html", req),
   "GET /manifest.json": (req, res) => {
@@ -106,13 +92,13 @@ return {
 
   "GET /api/machine": async (_req, res) => {
     res.setHeader("Cache-Control", "no-store");
-    const handshake = await getLocalMachineHandshake(VERSION);
+    const handshake = await getLocalMachineHandshake(VERSION, ctx.readTailscaleStatus);
     if (!handshake) return json(res, { error: "tailnet machine identity unavailable" }, 503);
     json(res, handshake);
   },
 
   "GET /api/sessions": async (_req, res) => {
-    const sessions = await observeDashboardSessions(ctx);
+    const sessions = await ctx.sessionObservation.observeDashboardSessions();
     json(res, { sessions: sessions.map(session => ({ ...session, changedAt: session.runtimeState.changedAt,
       pinned: ctx.assistantService.pins.some(pin => pin.name === session.name),
       organization: session.identity ? ctx.sessionOrganization.project(session.identity.wolfpackSessionId) : { status: "unavailable" },
@@ -125,7 +111,7 @@ return {
     if (!isAgentRuntimeAckBody(body)) {
       return json(res, { error: "sessionId and positive integer transitionSequence required" }, 400);
     }
-    const runtimeState = getAgentRuntimeStateStore().acknowledge(body.sessionId, body.transitionSequence);
+    const runtimeState = ctx.agentRuntimeStateStore.acknowledge(body.sessionId, body.transitionSequence);
     if (!runtimeState) return json(res, { error: "runtime state not found" }, 404);
     json(res, { ok: true, runtimeState });
   },
@@ -173,22 +159,22 @@ return {
     }
     const sessionId = resolved.identity.wolfpackSessionId;
     // Claim before the kill: the parent's exit frame can arrive during it.
-    const claimed = claimSessionCleanup(sessionId);
+    const claimed = ctx.sessionCascade.claimSessionCleanup(sessionId);
     try {
       // Cleans up any associated desktop PTY session (wp_*) before killing.
-      await killSessionWithTeardown(getBackend(), resolved.name, sessionId);
+      await ctx.sessionCascade.killSessionWithTeardown(ctx.backend, resolved.name, sessionId);
     } catch (error: unknown) {
-      if (claimed) releaseSessionCleanup(sessionId);
+      if (claimed) ctx.sessionCascade.releaseSessionCleanup(sessionId);
       throw error;
     }
     let cascaded: CascadedChild[] = [];
     let cascadeError: string | undefined;
     if (claimed) {
       try {
-        cascaded = await cascadeChildCleanup(getBackend(), sessionId);
+        cascaded = await ctx.sessionCascade.cascadeChildCleanup(ctx.backend, sessionId);
       } catch (error: unknown) {
         // A later death notification can still cascade this parent.
-        releaseSessionCleanup(sessionId);
+        ctx.sessionCascade.releaseSessionCleanup(sessionId);
         cascadeError = errMsg(error);
         log.warn("kill cascade failed: session table unavailable", { sessionId, error: cascadeError });
       }
@@ -217,9 +203,9 @@ return {
     ) return json(res, { error: "missing params" }, 400);
     if (!(await isAllowedSession(session, ctx.backend)))
       return json(res, { error: "session not found" }, 404);
-    if (!activePtySessions.has(session)) {
+    if (!ctx.terminals.activePtySessions.has(session)) {
       try {
-        await getBackend().resize(session, clampCols(cols), clampRows(rows));
+        await ctx.backend.resize(session, clampCols(cols), clampRows(rows));
       } catch (e: unknown) {
         log.warn("resize failed", { session, error: errMsg(e) });
         return json(res, { error: "backend unavailable" }, 503);
@@ -229,11 +215,11 @@ return {
   },
 
   "GET /api/tailnet/v1/candidates": async (_req, res) => {
-    json(res, await enumerateLocalTailnetCandidates());
+    json(res, await enumerateLocalTailnetCandidates(ctx.readTailscaleStatus));
   },
 
   "GET /api/discover": async (_req, res) => {
-    const discovery = await enumerateLocalTailnetCandidates();
+    const discovery = await enumerateLocalTailnetCandidates(ctx.readTailscaleStatus);
     res.setHeader("Deprecation", "true");
     res.setHeader("Link", '</api/tailnet/v1/candidates>; rel="successor-version"');
     json(res, {
@@ -254,7 +240,7 @@ return {
     if (!session) return json(res, { error: "missing session param" }, 400);
     if (!(await isAllowedSession(session, ctx.backend)))
       return json(res, { error: "session not found" }, 404);
-    const pane = await getBackend().capturePane(session);
+    const pane = await ctx.backend.capturePane(session);
     json(res, { pane });
   },
 
@@ -264,7 +250,7 @@ return {
     if (!session) return json(res, { error: "missing session param" }, 400);
     if (!(await isAllowedSession(session, ctx.backend)))
       return json(res, { error: "session not found" }, 404);
-    const text = await getBackend().capturePane(session);
+    const text = await ctx.backend.capturePane(session);
     res.writeHead(200, {
       "Content-Type": "text/plain; charset=utf-8",
       "Cache-Control": "no-store",
@@ -278,17 +264,14 @@ return {
     if (!validateProjectParam(res, session)) return;
     if (!(await isAllowedSession(session, ctx.backend)))
       return json(res, { error: "session not found" }, 404);
-    const projectDir = getBackend().sessionDir(session);
+    const projectDir = ctx.backend.sessionDir(session);
     if (!projectDir || !existsSync(projectDir))
       return json(res, { error: "project directory not found" }, 404);
     try {
-      const output = await new Promise<string>((resolve, reject) => {
-        execFile("git", ["status", "--short", "--branch"], { cwd: projectDir }, (err, stdout, stderr) => {
-          if (err) return reject(new Error(stderr || err.message));
-          resolve(stdout);
-        });
-      });
-      json(res, { status: output });
+      const run = await openProjectGit(projectDir, { label: "Git status", maxOutput: GIT_STATUS_MAX_OUTPUT });
+      const result = await run(["status", "--short", "--branch"]);
+      if (result.code !== 0) return json(res, { error: result.stderr.trim() || "git status failed" }, 500);
+      json(res, { status: result.stdout });
     } catch (e: unknown) {
       json(res, { error: errMsg(e) || "git status failed" }, 500);
     }
@@ -315,12 +298,12 @@ return {
       remoteAddress: req.socket.remoteAddress,
       tailscaleUserLogin: req.headers["tailscale-user-login"],
     });
-    json(res, issueWebSocketTicket(client.clientKey));
+    json(res, ctx.webSocketTickets.issueWebSocketTicket(client.clientKey));
   },
 
   // ── Push notifications ──
 
-  ...pushSubscriptionRoutes,
+  ...createPushSubscriptionRoutes(ctx),
 
   // ── Agent-triggered notifications ──
 

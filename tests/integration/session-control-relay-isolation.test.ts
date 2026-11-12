@@ -1,4 +1,4 @@
-import { afterAll, expect, spyOn, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -11,17 +11,13 @@ import { emptyFocus } from "../../src/focus-contract.ts";
 import { validateControlApiSchemaValue as validate } from "../control-api-schema-validator.ts";
 
 // Isolate production singleton imports before loading the route factory.
-const priorTest = process.env.WOLFPACK_TEST;
-process.env.WOLFPACK_TEST = "1";
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
 const { createServerContext } = await import("../../src/server/context.ts");
 const { createSessionControlRoutes } = await import("../../src/server/session-control-routes.ts");
 const { AssistantService } = await import("../../src/server/assistant-service.ts");
 const { createVolatileRelayRoutes } = await import("../../src/server/volatile-relay-routes.ts");
-afterAll(() => {
-  if (priorTest === undefined) delete process.env.WOLFPACK_TEST;
-  else process.env.WOLFPACK_TEST = priorTest;
-});
+
+const observeDashboardSessions = (ctx: ReturnType<typeof createServerContext>) => ctx.sessionObservation.observeDashboardSessions();
 
 const LIVE_ID = "11111111-1111-4111-8111-111111111111";
 const DEAD_ID = "22222222-2222-4222-8222-222222222222";
@@ -61,7 +57,7 @@ async function fixture(pinned = false, liveId = LIVE_ID) {
     return backend.inspectSession(selector);
   } });
   const config = pinned ? { devDir: "/tmp", port: 19846, pinnedSessions: [{ name: "live", cwd: "/fixture", command: ["pi"], harness: "pi" }] } : null;
-  const ctx = createServerContext({ backend, taskRelayGateway: gateway, config,
+  const ctx = createServerContext({ backend, taskRelayGateway: gateway, config, observationCacheTtlMs: 0,
     assistantService: new AssistantService({ root, readConfig: () => config }) });
   const routes = { ...createSessionControlRoutes(ctx), ...createVolatileRelayRoutes(ctx) };
   const server = createServer((req, res) => {
@@ -85,7 +81,7 @@ async function fixture(pinned = false, liveId = LIVE_ID) {
     release,
     close: async () => {
       release();
-      await gateway.close();
+      await ctx.close();
       await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });
       rmSync(root, { recursive: true, force: true });
     },
@@ -122,13 +118,12 @@ function assertDegraded(body: any) {
 }
 
 test("list adds runtime stop facts without changing terminal or identity fields", async () => {
-  const { getAgentRuntimeStateStore } = await import("../../src/server/agent-status.ts");
-  const store = getAgentRuntimeStateStore();
+  const f = await fixture();
+  const store = f.ctx.agentRuntimeStateStore;
   const at = "2026-11-01T10:00:00.000Z";
   const input = { sessionKey: LIVE_ID, broker: { state: "alive" as const, observedAt: at }, sources: [], fallback: { rawOutputChanged: true, observedAt: at } };
   store.reduce(input);
   const stopped = store.reduce({ ...input, fallback: { ...input.fallback, rawOutputChanged: false } });
-  const f = await fixture();
   try {
     const list = await f.read("list");
     expect(list.status).toBe(200);
@@ -144,10 +139,8 @@ test("list adds runtime stop facts without changing terminal or identity fields"
 });
 
 test("list exposes an incarnation-pinned bounded untrusted last line without reading screens", async () => {
-  const { observeDashboardSessions, __resetSessionObservationForTests } = await import("../../src/server/session-observation.ts");
   const { getInstallationId } = await import("../../src/tailnet-machine-installation.ts");
   const f = await fixture();
-  __resetSessionObservationForTests();
   try {
     f.backend.setCapturePane(async () => `untrusted \u202e\u2066\u200b\ufeff${"x".repeat(600)}\n`);
     await observeDashboardSessions(f.ctx);
@@ -171,14 +164,12 @@ test("list exposes an incarnation-pinned bounded untrusted last line without rea
     expect(replacement.lastLine).toBe("");
     expect(replacement.summary).toEqual([]);
     identitySpy.mockRestore();
-  } finally { __resetSessionObservationForTests(); await f.close(); }
+  } finally { await f.close(); }
 });
 
 test("list returns meaningful pi/claude rows without changing other harness previews", async () => {
-  const { observeDashboardSessions, __resetSessionObservationForTests } = await import("../../src/server/session-observation.ts");
   for (const harness of ["pi", "claude", "shell", "custom", "codex", "gemini", "cursor"]) {
     const f = await fixture();
-    __resetSessionObservationForTests();
     try {
       f.backend.agentKind = harness;
       const message = ["The approved plan is ready.", "The local checks passed.", "Shall I go ahead?"];
@@ -203,12 +194,11 @@ test("list returns meaningful pi/claude rows without changing other harness prev
         expect(empty.summary).toEqual([]);
         expect(empty.lastLine).toBe("");
       }
-    } finally { __resetSessionObservationForTests(); await f.close(); }
+    } finally { await f.close(); }
   }
 });
 
 test("list preserves stopped pi cost questions and claude command examples or drafts", async () => {
-  const { observeDashboardSessions, __resetSessionObservationForTests } = await import("../../src/server/session-observation.ts");
   const cases = [
     { harness: "pi", body: ["The approved plan is ready.", "$5 per day is the limit; may I proceed?"],
       rows: ["The approved plan is ready.", "$5 per day is the limit; may I proceed?", "──────────────────", "❯", "──────────────────", "~/dev/app (main)", "↑114k ↓21k 54%/200k  gpt-6.1-sol • high"] },
@@ -219,7 +209,6 @@ test("list preserves stopped pi cost questions and claude command examples or dr
   ];
   for (const scenario of cases) {
     const f = await fixture();
-    __resetSessionObservationForTests();
     try {
       f.backend.agentKind = scenario.harness;
       f.backend.setCapturePane(async () => "Preparing the approved plan.\n❯");
@@ -240,27 +229,24 @@ test("list preserves stopped pi cost questions and claude command examples or dr
         expect(live.runtime).toMatchObject({ state: "done", stopped: true, stoppedAt: expect.any(String) });
         expect(capture).not.toHaveBeenCalled();
       } finally { capture.mockRestore(); }
-    } finally { __resetSessionObservationForTests(); await f.close(); }
+    } finally { await f.close(); }
   }
 });
 
 test("list runtime facts exclude server-owned pinned stops", async () => {
-  const { getAgentRuntimeStateStore } = await import("../../src/server/agent-status.ts");
-  const store = getAgentRuntimeStateStore();
+  const f = await fixture(true);
+  const store = f.ctx.agentRuntimeStateStore;
   const input = { sessionKey: LIVE_ID, broker: { state: "alive" as const, observedAt: "2026-11-08T10:00:00Z" }, sources: [], fallback: { rawOutputChanged: true, observedAt: "2026-11-08T10:00:00Z" } };
   store.reduce(input);
   store.reduce({ ...input, fallback: { ...input.fallback, rawOutputChanged: false } });
-  const f = await fixture(true);
   try {
     expect((await f.read("list")).body.sessions.find((s: any) => s.sessionId === LIVE_ID).runtime).toMatchObject({ pinned: true, unseen: true, stopped: false });
   } finally { await f.close(); }
 });
 
 test("observer identity gives focus ranking and CLI the same shell fallback eligibility", async () => {
-  const { observeDashboardSessions, __resetSessionObservationForTests } = await import("../../src/server/session-observation.ts");
   for (const [agentKind, liveId] of [["shell", "33333333-3333-4333-8333-333333333333"], ["codex", "44444444-4444-4444-8444-444444444444"], ["custom", "55555555-5555-4555-8555-555555555555"]]) {
     const f = await fixture(false, liveId);
-    __resetSessionObservationForTests();
     try {
       f.backend.agentKind = agentKind;
       f.backend.setCapturePane(async () => "baseline\n");
@@ -275,7 +261,7 @@ test("observer identity gives focus ranking and CLI the same shell fallback elig
       expect(idle.identity?.agentKind).toBe(agentKind);
       expect(rankFocus(emptyFocus(), [{ ...idle.runtimeState, id: liveId, name: "live" }])).toHaveLength(agentKind === "shell" ? 0 : 1);
       expect((await f.read("list")).body.sessions.find((s: any) => s.sessionId === liveId).runtime.stopped).toBe(agentKind !== "shell");
-    } finally { __resetSessionObservationForTests(); await f.close(); }
+    } finally { await f.close(); }
   }
 });
 

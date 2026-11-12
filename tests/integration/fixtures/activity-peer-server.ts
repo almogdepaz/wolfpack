@@ -13,7 +13,7 @@ const [root, nonce] = process.argv.slice(2);
 if (!root || !nonce || process.env.WOLFPACK_TEST !== "1" || process.env.HOME !== root) throw new Error("private fixture required");
 const journal = new ActivityJournal({ dir: join(root, ".wolfpack", "activity") });
 for (const id of ["a", "b", "c"]) journal.append({ kind: ACTIVITY_KIND.TASK_UPDATED, taskId: id, eventType: "task.completed" });
-const ctx = createServerContext({ backend: new MockBackend(), config: loadConfig(), activityJournal: journal, taskRelayRoot: join(root, "relay") });
+const ctx = createServerContext({ backend: new MockBackend(), readTailscaleStatus: async () => JSON.parse(process.env.WOLFPACK_TAILSCALE_STATUS_JSON!), config: loadConfig(), activityJournal: journal, taskRelayRoot: join(root, "relay") });
 const { server, wss } = createServerInstance(ctx);
 process.on("SIGTERM", () => {
   const closed = new Promise<void>(resolve => server.close(() => resolve()));

@@ -54,12 +54,11 @@ test("focus HTTP CAS, first write, invalid ops and corrupt-file protection", asy
 test("peer clients use normal owner auth for focus reads and CAS writes; non-home refuses local writes", async () => {
   const root = mkdtempSync(join(tmpdir(), "focus-peer-auth-"));
   const prior = process.env.WOLFPACK_JWT_SECRET;
-  const { __resetJwtAuthConfig } = await import("../../src/test-hooks.ts");
+  const { getJwtAuthConfig } = await import("../../src/auth.ts");
   const { issueJwt } = await import("../../src/jwt-issue.ts");
   process.env.WOLFPACK_JWT_SECRET = "focus-peer-test-secret-012345678901234567890";
-  __resetJwtAuthConfig();
   const { createServerInstance } = await import("../../src/server/index.ts");
-  const ctx = createServerContext({ backend: new MockBackend(), config: null, focusStore: new FocusStore(join(root, "focus.json")) });
+  const ctx = createServerContext({ backend: new MockBackend(), config: null, jwtAuthConfig: getJwtAuthConfig(), focusStore: new FocusStore(join(root, "focus.json")) });
   const { server, wss } = createServerInstance(ctx);
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -94,7 +93,6 @@ test("peer clients use normal owner auth for focus reads and CAS writes; non-hom
     wss.close();
     await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });
     if (prior === undefined) delete process.env.WOLFPACK_JWT_SECRET; else process.env.WOLFPACK_JWT_SECRET = prior;
-    __resetJwtAuthConfig();
     rmSync(root, { recursive: true, force: true });
   }
 });
@@ -102,7 +100,6 @@ test("peer clients use normal owner auth for focus reads and CAS writes; non-hom
 test("local focus stays readable and writable when the assistant's broker disconnects", async () => {
   const root = mkdtempSync(join(tmpdir(), "focus-broker-down-"));
   const { AssistantService } = await import("../../src/server/assistant-service.ts");
-  const { __resetSessionObservationForTests } = await import("../../src/server/session-observation.ts");
   const assistantService = new AssistantService({ root, readConfig: () => null });
   Object.defineProperty(assistantService, "enabled", { get: () => true });
   const backend = new MockBackend({ sessions: ["assistant"] });
@@ -111,13 +108,12 @@ test("local focus stays readable and writable when the assistant's broker discon
   const live = { ...initial, identity: { ...initial.identity!, projectPath: assistantService.folder } };
   let down = false;
   backend.listSessionFacts = async () => { if (down) throw new Error("broker not connected"); return [live]; };
-  const ctx = createServerContext({ backend, config: null, assistantService, focusStore: new FocusStore(join(root, "focus.json")), taskRelayRoot: join(root, "relay") });
+  const ctx = createServerContext({ backend, config: null, assistantService, observationCacheTtlMs: 0, focusStore: new FocusStore(join(root, "focus.json")), taskRelayRoot: join(root, "relay") });
   const routes = createRoutes(ctx);
   const server = createServer((req, res) => { void routes[`${req.method} ${new URL(req.url!, "http://localhost").pathname}`]!(req, res); });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   try {
-    __resetSessionObservationForTests();
     expect((await fetch(`${base}/api/focus`)).status).toBe(200);
     down = true;
     await Bun.sleep(5_050); // Expire the harness sample so this traverses the formerly throwing live path.
@@ -134,7 +130,7 @@ test("local focus stays readable and writable when the assistant's broker discon
   } finally {
     ctx.focusRuntime.stop();
     await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });
-    __resetSessionObservationForTests();
+    await ctx.close();
     rmSync(root, { recursive: true, force: true });
   }
 }, 15_000);

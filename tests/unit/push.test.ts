@@ -1,22 +1,62 @@
-import { describe, expect, test, beforeEach } from "bun:test";
+import { describe, expect, test, beforeEach, afterAll } from "bun:test";
 import { createECDH, createVerify, createPublicKey, randomBytes } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-process.env.WOLFPACK_TEST = "1";
+import { createServerContext } from "../../src/server/context.ts";
+import { MockBackend } from "../../src/server/mock-backend.ts";
+import { createPushFixture } from "./fixtures/push-service-fixture.ts";
+import * as pushCrypto from "../../src/server/push.ts";
+const pushFixture = createPushFixture();
+beforeEach(() => pushFixture.reset());
+afterAll(() => pushFixture.close());
 
-const { recordQuietAlertEmission } = await import("../../src/server/push.ts");
 
-// We need to mock the WOLFPACK_DIR before importing push module.
-// Instead, test the crypto helpers and subscription logic via the exports.
+
+// Exercise real crypto and storage with an independently owned push service.
+
+test("push services isolate storage, rate limits and delivery; closing one preserves the other", async () => {
+  const first = createPushFixture(), second = createPushFixture();
+  const a = createServerContext({ backend: new MockBackend(), push: first.service });
+  const b = createServerContext({ backend: new MockBackend(), push: second.service });
+  let now = 1_000_000;
+  first.dependencies.now = second.dependencies.now = () => now;
+  const sends: string[] = [];
+  first.dependencies.sender = async () => { sends.push("first"); return { sent: 1, failed: 0, pruned: 0 }; };
+  second.dependencies.sender = async () => { sends.push("second"); return { sent: 1, failed: 0, pruned: 0 }; };
+  const endpoint = "https://fcm.googleapis.com/owned-service";
+  const fact = { name: "agent", identity: { wolfpackSessionId: "same-id" },
+    quietAlert: { kind: "quiet" as const, sessionId: "same-id", episodeId: "same-episode", eligibleAtMs: now, observedAtMs: now } };
+  try {
+    a.push.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    expect(a.push.getSubscriptionCount()).toBe(1);
+    expect(b.push.getSubscriptionCount()).toBe(0);
+    expect(a.push.getVapidPublicKey()).not.toBe(b.push.getVapidPublicKey());
+    for (let i = 0; i < 10; i++) expect(a.push.checkNotifyRateLimit()).toBeNull();
+    expect(a.push.checkNotifyRateLimit()).toBe("rate limit exceeded (10/min)");
+    expect(b.push.checkNotifyRateLimit()).toBeNull();
+    now += 60_000;
+    expect(a.push.checkNotifyRateLimit()).toBeNull();
+    a.push.recordQuietAlertEmission("same-id", "same-episode");
+    await a.push.checkSessionTransitions([fact]);
+    await a.push.checkSessionTransitions([fact]);
+    expect(sends).toEqual(["first"]);
+    await a.close();
+    b.push.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    b.push.recordQuietAlertEmission("same-id", "same-episode");
+    await b.push.checkSessionTransitions([fact]);
+    expect(sends).toEqual(["first", "second"]);
+    expect(b.push.getSubscriptionCount()).toBe(1);
+  } finally { await a.close(); await b.close(); first.close(); second.close(); }
+});
 
 describe("push: VAPID key generation", () => {
   test("getVapidKeys returns consistent keys across calls", async () => {
     // Import dynamically to avoid module caching issues
-    const { getVapidKeys } = await import("../../src/server/push.ts");
-    const keys1 = getVapidKeys();
-    const keys2 = getVapidKeys();
+
+    const keys1 = pushFixture.service.getVapidKeys();
+    const keys2 = pushFixture.service.getVapidKeys();
     expect(keys1.publicKey).toBe(keys2.publicKey);
     expect(keys1.privateKey).toBe(keys2.privateKey);
     expect(keys1.publicKey.length).toBeGreaterThan(40); // base64url-encoded 65-byte key
@@ -24,8 +64,8 @@ describe("push: VAPID key generation", () => {
   });
 
   test("VAPID public key is valid base64url", async () => {
-    const { getVapidPublicKey } = await import("../../src/server/push.ts");
-    const key = getVapidPublicKey();
+
+    const key = pushFixture.service.getVapidPublicKey();
     // base64url: no +, /, or =
     expect(key).not.toMatch(/[+/=]/);
     expect(key.length).toBeGreaterThan(0);
@@ -34,23 +74,23 @@ describe("push: VAPID key generation", () => {
 
 describe("push: subscription management", () => {
   test("addSubscription and removeSubscription work", async () => {
-    const { addSubscription, removeSubscription, getSubscriptionCount } = await import("../../src/server/push.ts");
-    const initial = getSubscriptionCount();
+
+    const initial = pushFixture.service.getSubscriptionCount();
 
     const sub = {
       endpoint: `https://fcm.googleapis.com/fcm/send/test-${Date.now()}`,
       keys: { p256dh: "test-key", auth: "test-auth" },
     };
 
-    addSubscription(sub);
-    expect(getSubscriptionCount()).toBe(initial + 1);
+    pushFixture.service.addSubscription(sub);
+    expect(pushFixture.service.getSubscriptionCount()).toBe(initial + 1);
 
     // Adding same endpoint again should dedupe
-    addSubscription(sub);
-    expect(getSubscriptionCount()).toBe(initial + 1);
+    pushFixture.service.addSubscription(sub);
+    expect(pushFixture.service.getSubscriptionCount()).toBe(initial + 1);
 
-    removeSubscription(sub.endpoint);
-    expect(getSubscriptionCount()).toBe(initial);
+    pushFixture.service.removeSubscription(sub.endpoint);
+    expect(pushFixture.service.getSubscriptionCount()).toBe(initial);
   });
 });
 
@@ -60,8 +100,8 @@ describe("push: subscription persistence initialization", () => {
     const script = `
       const { readFileSync } = await import("node:fs");
       const { join } = await import("node:path");
-      const { addSubscription } = await import("./src/server/push.ts");
-      addSubscription({ endpoint: "https://fcm.googleapis.com/first-subscription", keys: { p256dh: "key", auth: "auth" } });
+      const pushFixture = { service: (await import("./src/server/push.ts")).createPushService() };
+      pushFixture.service.addSubscription({ endpoint: "https://fcm.googleapis.com/first-subscription", keys: { p256dh: "key", auth: "auth" } });
       console.log(readFileSync(join(process.env.HOME, ".wolfpack", "push-subscriptions.json"), "utf-8"));
     `;
     const child = Bun.spawnSync([process.execPath, "-e", script], {
@@ -85,9 +125,9 @@ describe("push: corrupt subscription persistence", () => {
       const path = join(process.env.HOME, ".wolfpack", "push-subscriptions.json");
       mkdirSync(join(process.env.HOME, ".wolfpack"), { recursive: true });
       writeFileSync(path, "{not-json");
-      const { addSubscription } = await import("./src/server/push.ts");
+      const pushFixture = { service: (await import("./src/server/push.ts")).createPushService() };
       try {
-        addSubscription({ endpoint: "https://fcm.googleapis.com/corrupt-test", keys: { p256dh: "key", auth: "auth" } });
+        pushFixture.service.addSubscription({ endpoint: "https://fcm.googleapis.com/corrupt-test", keys: { p256dh: "key", auth: "auth" } });
         console.log("unexpected-success");
       } catch (error) {
         console.log(String(error));
@@ -126,8 +166,8 @@ describe("push: notification payload routing", () => {
 
 describe("push: sendPush with no subscriptions", () => {
   test("returns zeros when no subscriptions", async () => {
-    const { sendPush } = await import("../../src/server/push.ts");
-    const result = await sendPush({ title: "Test", body: "test body" });
+
+    const result = await pushFixture.service.sendPush({ title: "Test", body: "test body" });
     expect(result).toHaveProperty("sent");
     expect(result).toHaveProperty("failed");
     expect(result).toHaveProperty("pruned");
@@ -136,16 +176,16 @@ describe("push: sendPush with no subscriptions", () => {
 
 describe("push: crypto round-trip", () => {
   test("VAPID JWT has valid ES256 signature", async () => {
-    const { getVapidKeys, _testing } = await import("../../src/server/push.ts");
-    const vapid = getVapidKeys();
-    const jwt = _testing.createVapidJwt("https://fcm.googleapis.com", "mailto:test@localhost", vapid);
+
+    const vapid = pushFixture.service.getVapidKeys();
+    const jwt = pushCrypto.createVapidJwt("https://fcm.googleapis.com", "mailto:test@localhost", vapid);
 
     const parts = jwt.split(".");
     expect(parts.length).toBe(3);
 
     // Verify the signature with the public key
     const unsigned = `${parts[0]}.${parts[1]}`;
-    const sigBuf = _testing.b64urlDecode(parts[2]);
+    const sigBuf = pushCrypto.b64urlDecode(parts[2]);
     expect(sigBuf.length).toBe(64); // raw r||s
 
     // Convert raw r||s back to DER for verification
@@ -165,14 +205,14 @@ describe("push: crypto round-trip", () => {
     const derSig = Buffer.concat([Buffer.from([0x30, derInner.length]), derInner]);
 
     // Build JWK public key for verification
-    const pubBuf = _testing.b64urlDecode(vapid.publicKey);
+    const pubBuf = pushCrypto.b64urlDecode(vapid.publicKey);
     expect(pubBuf.length).toBe(65); // uncompressed P-256
     const pubKey = createPublicKey({
       key: {
         kty: "EC",
         crv: "P-256",
-        x: _testing.b64urlEncode(pubBuf.subarray(1, 33)),
-        y: _testing.b64urlEncode(pubBuf.subarray(33, 65)),
+        x: pushCrypto.b64urlEncode(pubBuf.subarray(1, 33)),
+        y: pushCrypto.b64urlEncode(pubBuf.subarray(33, 65)),
       },
       format: "jwk",
     });
@@ -183,21 +223,21 @@ describe("push: crypto round-trip", () => {
     expect(valid).toBe(true);
 
     // Verify JWT payload
-    const payload = JSON.parse(_testing.b64urlDecode(parts[1]).toString());
+    const payload = JSON.parse(pushCrypto.b64urlDecode(parts[1]).toString());
     expect(payload.aud).toBe("https://fcm.googleapis.com");
     expect(payload.sub).toBe("mailto:test@localhost");
     expect(payload.exp).toBeGreaterThan(Math.floor(Date.now() / 1000));
   });
 
   test("encryptPayload produces valid aes128gcm structure", async () => {
-    const { _testing } = await import("../../src/server/push.ts");
+
 
     // Create a fake client subscription with real ECDH keys
     const clientEcdh = createECDH("prime256v1");
     clientEcdh.generateKeys();
-    const clientPub = _testing.b64urlEncode(clientEcdh.getPublicKey() as Buffer);
+    const clientPub = pushCrypto.b64urlEncode(clientEcdh.getPublicKey() as Buffer);
     const { randomBytes } = await import("node:crypto");
-    const clientAuth = _testing.b64urlEncode(randomBytes(16));
+    const clientAuth = pushCrypto.b64urlEncode(randomBytes(16));
 
     const sub = {
       endpoint: "https://fcm.googleapis.com/fcm/send/test",
@@ -205,7 +245,7 @@ describe("push: crypto round-trip", () => {
     };
 
     const payload = Buffer.from(JSON.stringify({ title: "Test", body: "hello" }));
-    const { body, salt, serverPub } = _testing.encryptPayload(payload, sub);
+    const { body, salt, serverPub } = pushCrypto.encryptPayload(payload, sub);
 
     // Verify aes128gcm header structure: salt(16) + rs(4) + idlen(1) + keyid(65)
     expect(salt.length).toBe(16);
@@ -230,11 +270,11 @@ describe("push: crypto round-trip", () => {
   });
 
   test("encryptPayload reproduces the RFC 8291 Appendix A example body", async () => {
-    const { _testing } = await import("../../src/server/push.ts");
+
     // RFC 8291 section 5 and Appendix A (rfc-editor.org/rfc/rfc8291).
     const serverEcdh = createECDH("prime256v1");
-    serverEcdh.setPrivateKey(_testing.b64urlDecode("yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw"));
-    expect(_testing.b64urlEncode(serverEcdh.getPublicKey() as Buffer))
+    serverEcdh.setPrivateKey(pushCrypto.b64urlDecode("yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw"));
+    expect(pushCrypto.b64urlEncode(serverEcdh.getPublicKey() as Buffer))
       .toBe("BP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A8");
     const sub = {
       endpoint: "https://push.example.net/push/JzLQ3raZJfFBR0aqvOMsLrt54w4rJUsV",
@@ -244,15 +284,15 @@ describe("push: crypto round-trip", () => {
       },
     };
 
-    const { body } = _testing.encryptPayload(Buffer.from("When I grow up, I want to be a watermelon"), sub, {
+    const { body } = pushCrypto.encryptPayload(Buffer.from("When I grow up, I want to be a watermelon"), sub, {
       serverEcdh,
-      salt: _testing.b64urlDecode("DGv6ra1nlYgDCS1FRnbzlw"),
+      salt: pushCrypto.b64urlDecode("DGv6ra1nlYgDCS1FRnbzlw"),
     });
 
     // 86-byte header + 42-byte padded plaintext + 16-byte tag. (The example's
     // Content-Length header says 145; its base64url body decodes to 144.)
     expect(body.length).toBe(144);
-    expect(_testing.b64urlEncode(body)).toBe(
+    expect(pushCrypto.b64urlEncode(body)).toBe(
       "DGv6ra1nlYgDCS1FRnbzlwAAEABBBP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27ml"
       + "mlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A_yl95bQpu6cVPT"
       + "pK4Mqgkf1CXztLVBSt2Ks3oZwbuwXPXLWyouBWLVWGNWQexSgSxsj_Qulcy4a-fN",
@@ -337,37 +377,37 @@ describe("push: validateSubscription", () => {
 
 describe("push: subscription cap", () => {
   test("rejects new subscriptions beyond MAX_SUBSCRIPTIONS (20)", async () => {
-    const { addSubscription, removeSubscription, getSubscriptionCount } = await import("../../src/server/push.ts");
-    const initial = getSubscriptionCount();
+
+    const initial = pushFixture.service.getSubscriptionCount();
     const added: string[] = [];
 
     try {
       // Fill up to 20
       for (let i = initial; i < 20; i++) {
         const ep = `https://fcm.googleapis.com/cap-test-${i}-${Date.now()}`;
-        const result = addSubscription({ endpoint: ep, keys: { p256dh: "k", auth: "a" } });
+        const result = pushFixture.service.addSubscription({ endpoint: ep, keys: { p256dh: "k", auth: "a" } });
         expect(result.ok).toBe(true);
         added.push(ep);
       }
-      expect(getSubscriptionCount()).toBe(20);
+      expect(pushFixture.service.getSubscriptionCount()).toBe(20);
 
       // 21st should fail
-      const result = addSubscription({
+      const result = pushFixture.service.addSubscription({
         endpoint: `https://fcm.googleapis.com/cap-test-overflow-${Date.now()}`,
         keys: { p256dh: "k", auth: "a" },
       });
       expect(result.ok).toBe(false);
       expect(result.error).toContain("limit");
-      expect(getSubscriptionCount()).toBe(20);
+      expect(pushFixture.service.getSubscriptionCount()).toBe(20);
 
       // Updating existing endpoint should still work (dedupe path)
-      const updateResult = addSubscription({ endpoint: added[0], keys: { p256dh: "updated", auth: "a" } });
+      const updateResult = pushFixture.service.addSubscription({ endpoint: added[0], keys: { p256dh: "updated", auth: "a" } });
       expect(updateResult.ok).toBe(true);
-      expect(getSubscriptionCount()).toBe(20);
+      expect(pushFixture.service.getSubscriptionCount()).toBe(20);
     } finally {
       // Always clean up persisted entries — otherwise a mid-test assertion
       // failure leaves garbage in ~/.wolfpack/push-subscriptions.json.
-      for (const ep of added) removeSubscription(ep);
+      for (const ep of added) pushFixture.service.removeSubscription(ep);
     }
   });
 });
@@ -376,23 +416,26 @@ describe("push: subscription cap", () => {
 
 describe("push: checkNotifyRateLimit", () => {
   beforeEach(async () => {
-    const { _testing } = await import("../../src/server/push.ts");
-    _testing.notifyTimestamps = [];
+
+    pushFixture.reset();
   });
 
   test("allows 10 calls then rejects", async () => {
-    const { checkNotifyRateLimit } = await import("../../src/server/push.ts");
+
     for (let i = 0; i < 10; i++) {
-      expect(checkNotifyRateLimit()).toBeNull();
+      expect(pushFixture.service.checkNotifyRateLimit()).toBeNull();
     }
-    expect(checkNotifyRateLimit()).toBe("rate limit exceeded (10/min)");
+    expect(pushFixture.service.checkNotifyRateLimit()).toBe("rate limit exceeded (10/min)");
   });
 
   test("resets after timestamps expire", async () => {
-    const { checkNotifyRateLimit, _testing } = await import("../../src/server/push.ts");
+
     // Fill with timestamps from 61s ago (expired)
-    _testing.notifyTimestamps = Array(10).fill(Date.now() - 61_000);
-    expect(checkNotifyRateLimit()).toBeNull();
+    const now = Date.now();
+    pushFixture.dependencies.now = () => now - 61_000;
+    for (let i = 0; i < 10; i++) expect(pushFixture.service.checkNotifyRateLimit()).toBeNull();
+    pushFixture.dependencies.now = () => now;
+    expect(pushFixture.service.checkNotifyRateLimit()).toBeNull();
   });
 });
 
@@ -400,7 +443,7 @@ describe("push: checkNotifyRateLimit", () => {
 
 describe("push: delivery deadline", () => {
   test("retries a transient delivery failure without redelivering after success", async () => {
-    const { _testing } = await import("../../src/server/push.ts");
+
     const statuses = [503, 201];
     const client = createECDH("prime256v1");
     client.generateKeys();
@@ -410,16 +453,16 @@ describe("push: delivery deadline", () => {
       return new Response(null, { status: statuses.shift() ?? 500 });
     };
 
-    const status = await _testing.sendSubscriptionWithRetry(
+    const status = await pushCrypto.sendSubscriptionWithRetry(
       {
         endpoint: "https://fcm.googleapis.com/retry-test",
         keys: {
-          p256dh: _testing.b64urlEncode(client.getPublicKey() as Buffer),
-          auth: _testing.b64urlEncode(Buffer.alloc(16, 2)),
+          p256dh: pushCrypto.b64urlEncode(client.getPublicKey() as Buffer),
+          auth: pushCrypto.b64urlEncode(Buffer.alloc(16, 2)),
         },
       },
       Buffer.from("payload"),
-      (await import("../../src/server/push.ts")).getVapidKeys(),
+      pushFixture.service.getVapidKeys(),
       fetcher,
       async () => {},
     );
@@ -429,11 +472,11 @@ describe("push: delivery deadline", () => {
   });
 
   test("a never-resolving fetch is rejected within the configured deadline", async () => {
-    const { _testing } = await import("../../src/server/push.ts");
+
     const started = Date.now();
     const stalledFetch = async (): Promise<Response> => new Promise(() => {});
 
-    await expect(_testing.fetchWithDeadline(
+    await expect(pushCrypto.fetchWithDeadline(
       "https://fcm.googleapis.com/stalled",
       {},
       10,
@@ -443,9 +486,9 @@ describe("push: delivery deadline", () => {
   });
 
   test("the production push deadline is positive and bounded", async () => {
-    const { _testing } = await import("../../src/server/push.ts");
-    expect(_testing.PUSH_FETCH_TIMEOUT_MS).toBeGreaterThan(0);
-    expect(_testing.PUSH_FETCH_TIMEOUT_MS).toBeLessThanOrEqual(30_000);
+
+    expect(pushCrypto.PUSH_FETCH_TIMEOUT_MS).toBeGreaterThan(0);
+    expect(pushCrypto.PUSH_FETCH_TIMEOUT_MS).toBeLessThanOrEqual(30_000);
   });
 });
 
@@ -463,7 +506,7 @@ describe("push: checkSessionTransitions", () => {
   };
   const session = (episodeId?: string) => {
     const alert = quietAlert(episodeId);
-    recordQuietAlertEmission(sessionId, alert.episodeId);
+    pushFixture.service.recordQuietAlertEmission(sessionId, alert.episodeId);
     return [{
       name: "agent",
       identity: { wolfpackSessionId: sessionId },
@@ -472,52 +515,52 @@ describe("push: checkSessionTransitions", () => {
   };
 
   beforeEach(async () => {
-    const { _testing } = await import("../../src/server/push.ts");
-    _testing.resetDebounce();
+
+    pushFixture.reset();
   });
 
   test("does nothing when no subscriptions", async () => {
-    const { checkSessionTransitions, getSubscriptionCount } = await import("../../src/server/push.ts");
-    if (getSubscriptionCount() > 0) return;
-    await checkSessionTransitions(session());
+
+    if (pushFixture.service.getSubscriptionCount() > 0) return;
+    await pushFixture.service.checkSessionTransitions(session());
   });
 
   test("fails closed without a stable identity or a matching quiet-alert session id", async () => {
-    const { addSubscription, checkSessionTransitions, removeSubscription, _testing } = await import("../../src/server/push.ts");
+
     const endpoint = `https://fcm.googleapis.com/untrusted-quiet-${Date.now()}`;
-    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    pushFixture.service.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
     const payloads: unknown[] = [];
-    _testing.sessionPushSender = async (payload) => {
+    pushFixture.dependencies.sender = async (payload) => {
       payloads.push(payload);
       return { sent: 1, failed: 0, pruned: 0 };
     };
     try {
-      await checkSessionTransitions([{ name: "same-name", quietAlert: quietAlert() }]);
-      await checkSessionTransitions([{
+      await pushFixture.service.checkSessionTransitions([{ name: "same-name", quietAlert: quietAlert() }]);
+      await pushFixture.service.checkSessionTransitions([{
         name: "agent",
         identity: { wolfpackSessionId: sessionId },
         quietAlert: { ...quietAlert(), sessionId: "other-session" },
       }]);
       expect(payloads).toEqual([]);
     } finally {
-      _testing.sessionPushSender = null;
-      removeSubscription(endpoint);
+      pushFixture.dependencies.sender = null;
+      pushFixture.service.removeSubscription(endpoint);
     }
   });
 
   test("retries only failed original endpoints and never redelivers successes", async () => {
-    const { addSubscription, checkSessionTransitions, removeSubscription, _testing } = await import("../../src/server/push.ts");
+
     const originalNow = Date.now;
     let now = 1_000_000;
     Date.now = () => now;
     const first = `https://fcm.googleapis.com/quiet-first-${now}`;
     const second = `https://fcm.googleapis.com/quiet-second-${now}`;
     const later = `https://fcm.googleapis.com/quiet-later-${now}`;
-    addSubscription({ endpoint: first, keys: { p256dh: "key", auth: "auth" } });
-    addSubscription({ endpoint: second, keys: { p256dh: "key", auth: "auth" } });
+    pushFixture.service.addSubscription({ endpoint: first, keys: { p256dh: "key", auth: "auth" } });
+    pushFixture.service.addSubscription({ endpoint: second, keys: { p256dh: "key", auth: "auth" } });
     const targets: string[][] = [];
     const attemptTimes: number[] = [];
-    _testing.sessionPushSender = async (_payload, endpoints) => {
+    pushFixture.dependencies.sender = async (_payload, endpoints) => {
       targets.push([...endpoints].sort());
       attemptTimes.push(Date.now());
       return targets.length === 1
@@ -525,57 +568,54 @@ describe("push: checkSessionTransitions", () => {
         : { sent: 1, failed: 0, pruned: 0, successfulEndpoints: [second], failedEndpoints: [] };
     };
     try {
-      await checkSessionTransitions(session());
-      expect(_testing.quietAlertDeliveries.get(sessionId)?.pendingEndpoints).toEqual(new Set([second]));
-      addSubscription({ endpoint: later, keys: { p256dh: "key", auth: "auth" } });
-      now += _testing.PUSH_DEBOUNCE_MS;
-      await checkSessionTransitions(session());
-      await checkSessionTransitions(session());
+      await pushFixture.service.checkSessionTransitions(session());
+      pushFixture.service.addSubscription({ endpoint: later, keys: { p256dh: "key", auth: "auth" } });
+      now += pushCrypto.PUSH_DEBOUNCE_MS;
+      await pushFixture.service.checkSessionTransitions(session());
+      await pushFixture.service.checkSessionTransitions(session());
 
       expect(targets).toEqual([[first, second].sort(), [second]]);
-      expect(attemptTimes[1] - attemptTimes[0]).toBeGreaterThanOrEqual(_testing.PUSH_DEBOUNCE_MS);
-      expect(_testing.quietAlertDeliveries.get(sessionId)?.pendingEndpoints.size).toBe(0);
+      expect(attemptTimes[1] - attemptTimes[0]).toBeGreaterThanOrEqual(pushCrypto.PUSH_DEBOUNCE_MS);
     } finally {
       Date.now = originalNow;
-      _testing.sessionPushSender = null;
-      removeSubscription(first);
-      removeSubscription(second);
-      removeSubscription(later);
+      pushFixture.dependencies.sender = null;
+      pushFixture.service.removeSubscription(first);
+      pushFixture.service.removeSubscription(second);
+      pushFixture.service.removeSubscription(later);
     }
   });
 
   test("stops retrying after three failed attempts", async () => {
-    const { addSubscription, checkSessionTransitions, removeSubscription, _testing } = await import("../../src/server/push.ts");
+
     const originalNow = Date.now;
     let now = 2_000_000;
     Date.now = () => now;
     const endpoint = `https://fcm.googleapis.com/quiet-exhaustion-${now}`;
-    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    pushFixture.service.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
     const targets: string[][] = [];
-    _testing.sessionPushSender = async (_payload, endpoints) => {
+    pushFixture.dependencies.sender = async (_payload, endpoints) => {
       targets.push([...endpoints]);
       return { sent: 0, failed: 1, pruned: 0, successfulEndpoints: [], failedEndpoints: [endpoint] };
     };
     try {
-      await checkSessionTransitions(session());
-      now += _testing.PUSH_DEBOUNCE_MS;
-      await checkSessionTransitions(session());
-      now += _testing.PUSH_DEBOUNCE_MS;
-      await checkSessionTransitions(session());
-      now += _testing.PUSH_DEBOUNCE_MS;
-      await checkSessionTransitions(session());
+      await pushFixture.service.checkSessionTransitions(session());
+      now += pushCrypto.PUSH_DEBOUNCE_MS;
+      await pushFixture.service.checkSessionTransitions(session());
+      now += pushCrypto.PUSH_DEBOUNCE_MS;
+      await pushFixture.service.checkSessionTransitions(session());
+      now += pushCrypto.PUSH_DEBOUNCE_MS;
+      await pushFixture.service.checkSessionTransitions(session());
 
       expect(targets).toEqual([[endpoint], [endpoint], [endpoint]]);
-      expect(_testing.quietAlertDeliveries.get(sessionId)?.pendingEndpoints.size).toBe(0);
     } finally {
       Date.now = originalNow;
-      _testing.sessionPushSender = null;
-      removeSubscription(endpoint);
+      pushFixture.dependencies.sender = null;
+      pushFixture.service.removeSubscription(endpoint);
     }
   });
 
   test("limits automatic quiet delivery to three physical posts at least 30 seconds apart", async () => {
-    const { addSubscription, checkSessionTransitions, removeSubscription } = await import("../../src/server/push.ts");
+
     const originalNow = Date.now;
     const originalFetch = globalThis.fetch;
     let now = 4_000_000;
@@ -592,67 +632,64 @@ describe("push: checkSessionTransitions", () => {
       { preconnect: originalFetch.preconnect },
     );
     globalThis.fetch = failingFetch;
-    addSubscription({
+    pushFixture.service.addSubscription({
       endpoint,
       keys: {
-        p256dh: (await import("../../src/server/push.ts"))._testing.b64urlEncode(client.getPublicKey() as Buffer),
-        auth: (await import("../../src/server/push.ts"))._testing.b64urlEncode(Buffer.alloc(16, 7)),
+        p256dh: pushCrypto.b64urlEncode(client.getPublicKey() as Buffer),
+        auth: pushCrypto.b64urlEncode(Buffer.alloc(16, 7)),
       },
     });
     try {
-      await checkSessionTransitions(session("physical-attempts"));
+      await pushFixture.service.checkSessionTransitions(session("physical-attempts"));
       now += 30_000;
-      await checkSessionTransitions(session("physical-attempts"));
+      await pushFixture.service.checkSessionTransitions(session("physical-attempts"));
       now += 30_000;
-      await checkSessionTransitions(session("physical-attempts"));
+      await pushFixture.service.checkSessionTransitions(session("physical-attempts"));
 
       expect(postTimes).toHaveLength(3);
       expect(postTimes.slice(1).every((time, index) => time - postTimes[index] >= 30_000)).toBe(true);
     } finally {
       Date.now = originalNow;
       globalThis.fetch = originalFetch;
-      removeSubscription(endpoint);
+      pushFixture.service.removeSubscription(endpoint);
     }
   });
 
   test("retires a transport-pruned endpoint registration lifetime after 410", async () => {
-    const { addSubscription, checkSessionTransitions, removeSubscription, sendPush, _testing } = await import("../../src/server/push.ts");
+
     const originalFetch = globalThis.fetch;
     const endpoint = `https://fcm.googleapis.com/quiet-pruned-lifetime-${Date.now()}`;
     const client = createECDH("prime256v1");
     client.generateKeys();
-    addSubscription({
+    pushFixture.service.addSubscription({
       endpoint,
       keys: {
-        p256dh: _testing.b64urlEncode(client.getPublicKey() as Buffer),
-        auth: _testing.b64urlEncode(Buffer.alloc(16, 11)),
+        p256dh: pushCrypto.b64urlEncode(client.getPublicKey() as Buffer),
+        auth: pushCrypto.b64urlEncode(Buffer.alloc(16, 11)),
       },
     });
     const oldEpisode = "transport-pruned-episode";
-    recordQuietAlertEmission(sessionId, oldEpisode);
-    const firstGeneration = _testing.subscriptionEnrollmentGenerations.get(endpoint);
+    pushFixture.service.recordQuietAlertEmission(sessionId, oldEpisode);
     globalThis.fetch = Object.assign(
       async (..._args: Parameters<typeof fetch>): Promise<Response> => new Response(null, { status: 410 }),
       { preconnect: originalFetch.preconnect },
     );
     try {
-      await sendPush({ title: "Test", body: "transport prune" });
-      expect(_testing.subscriptionEnrollmentGenerations.has(endpoint)).toBe(false);
+      await pushFixture.service.sendPush({ title: "Test", body: "transport prune" });
 
-      addSubscription({
+      pushFixture.service.addSubscription({
         endpoint,
         keys: {
-          p256dh: _testing.b64urlEncode(client.getPublicKey() as Buffer),
-          auth: _testing.b64urlEncode(Buffer.alloc(16, 11)),
+          p256dh: pushCrypto.b64urlEncode(client.getPublicKey() as Buffer),
+          auth: pushCrypto.b64urlEncode(Buffer.alloc(16, 11)),
         },
       });
-      expect(_testing.subscriptionEnrollmentGenerations.get(endpoint)).not.toBe(firstGeneration);
       const targets: string[][] = [];
-      _testing.sessionPushSender = async (_payload, endpoints) => {
+      pushFixture.dependencies.sender = async (_payload, endpoints) => {
         targets.push([...endpoints]);
         return { sent: endpoints.size, failed: 0, pruned: 0, successfulEndpoints: [...endpoints], failedEndpoints: [] };
       };
-      await checkSessionTransitions([{
+      await pushFixture.service.checkSessionTransitions([{
         name: "agent",
         identity: { wolfpackSessionId: sessionId },
         quietAlert: quietAlert(oldEpisode),
@@ -660,13 +697,13 @@ describe("push: checkSessionTransitions", () => {
       expect(targets).toEqual([]);
     } finally {
       globalThis.fetch = originalFetch;
-      _testing.sessionPushSender = null;
-      removeSubscription(endpoint);
+      pushFixture.dependencies.sender = null;
+      pushFixture.service.removeSubscription(endpoint);
     }
   });
 
   test("does not let a stale 410 remove replacement or concurrent registrations", async () => {
-    const { addSubscription, checkSessionTransitions, getSubscriptionCount, removeSubscription, sendPush, _testing } = await import("../../src/server/push.ts");
+
     const originalFetch = globalThis.fetch;
     const suffix = Date.now();
     const firstEndpoint = `https://fcm.googleapis.com/quiet-stale-first-${suffix}`;
@@ -674,12 +711,12 @@ describe("push: checkSessionTransitions", () => {
     const client = createECDH("prime256v1");
     client.generateKeys();
     const keys = {
-      p256dh: _testing.b64urlEncode(client.getPublicKey() as Buffer),
-      auth: _testing.b64urlEncode(Buffer.alloc(16, 13)),
+      p256dh: pushCrypto.b64urlEncode(client.getPublicKey() as Buffer),
+      auth: pushCrypto.b64urlEncode(Buffer.alloc(16, 13)),
     };
-    addSubscription({ endpoint: firstEndpoint, keys });
+    pushFixture.service.addSubscription({ endpoint: firstEndpoint, keys });
     const oldEpisode = "stale-transport-episode";
-    recordQuietAlertEmission(sessionId, oldEpisode);
+    pushFixture.service.recordQuietAlertEmission(sessionId, oldEpisode);
     let releaseFetch: (() => void) | undefined;
     const fetchReleased = new Promise<void>((resolve) => { releaseFetch = resolve; });
     let fetchStarted: (() => void) | undefined;
@@ -693,26 +730,22 @@ describe("push: checkSessionTransitions", () => {
       { preconnect: originalFetch.preconnect },
     );
     try {
-      const staleSend = sendPush({ title: "Test", body: "held stale transport" });
+      const staleSend = pushFixture.service.sendPush({ title: "Test", body: "held stale transport" });
       await fetchStartedPromise;
-      removeSubscription(firstEndpoint);
-      addSubscription({ endpoint: firstEndpoint, keys });
-      addSubscription({ endpoint: secondEndpoint, keys });
-      const replacementGeneration = _testing.subscriptionEnrollmentGenerations.get(firstEndpoint);
-      const concurrentGeneration = _testing.subscriptionEnrollmentGenerations.get(secondEndpoint);
+      pushFixture.service.removeSubscription(firstEndpoint);
+      pushFixture.service.addSubscription({ endpoint: firstEndpoint, keys });
+      pushFixture.service.addSubscription({ endpoint: secondEndpoint, keys });
 
       releaseFetch?.();
       await staleSend;
-      expect(getSubscriptionCount()).toBe(2);
-      expect(_testing.subscriptionEnrollmentGenerations.get(firstEndpoint)).toBe(replacementGeneration);
-      expect(_testing.subscriptionEnrollmentGenerations.get(secondEndpoint)).toBe(concurrentGeneration);
+      expect(pushFixture.service.getSubscriptionCount()).toBe(2);
 
       const targets: string[][] = [];
-      _testing.sessionPushSender = async (_payload, endpoints) => {
+      pushFixture.dependencies.sender = async (_payload, endpoints) => {
         targets.push([...endpoints]);
         return { sent: endpoints.size, failed: 0, pruned: 0, successfulEndpoints: [...endpoints], failedEndpoints: [] };
       };
-      await checkSessionTransitions([{
+      await pushFixture.service.checkSessionTransitions([{
         name: "agent",
         identity: { wolfpackSessionId: sessionId },
         quietAlert: quietAlert(oldEpisode),
@@ -721,77 +754,81 @@ describe("push: checkSessionTransitions", () => {
     } finally {
       releaseFetch?.();
       globalThis.fetch = originalFetch;
-      _testing.sessionPushSender = null;
-      removeSubscription(firstEndpoint);
-      removeSubscription(secondEndpoint);
+      pushFixture.dependencies.sender = null;
+      pushFixture.service.removeSubscription(firstEndpoint);
+      pushFixture.service.removeSubscription(secondEndpoint);
     }
   });
 
   test("retires a failed endpoint that is unregistered before its retry", async () => {
-    const { addSubscription, checkSessionTransitions, removeSubscription, _testing } = await import("../../src/server/push.ts");
+
     const originalNow = Date.now;
     let now = 3_000_000;
     Date.now = () => now;
     const successful = `https://fcm.googleapis.com/quiet-registered-${now}`;
     const failed = `https://fcm.googleapis.com/quiet-removed-${now}`;
-    addSubscription({ endpoint: successful, keys: { p256dh: "key", auth: "auth" } });
-    addSubscription({ endpoint: failed, keys: { p256dh: "key", auth: "auth" } });
+    pushFixture.service.addSubscription({ endpoint: successful, keys: { p256dh: "key", auth: "auth" } });
+    pushFixture.service.addSubscription({ endpoint: failed, keys: { p256dh: "key", auth: "auth" } });
     const targets: string[][] = [];
-    _testing.sessionPushSender = async (_payload, endpoints) => {
+    pushFixture.dependencies.sender = async (_payload, endpoints) => {
       targets.push([...endpoints].sort());
       return { sent: 1, failed: 1, pruned: 0, successfulEndpoints: [successful], failedEndpoints: [failed] };
     };
     try {
-      await checkSessionTransitions(session());
-      removeSubscription(failed);
-      now += _testing.PUSH_DEBOUNCE_MS;
-      await checkSessionTransitions(session());
+      await pushFixture.service.checkSessionTransitions(session());
+      pushFixture.service.removeSubscription(failed);
+      now += pushCrypto.PUSH_DEBOUNCE_MS;
+      await pushFixture.service.checkSessionTransitions(session());
 
       expect(targets).toEqual([[failed, successful].sort()]);
-      expect(_testing.quietAlertDeliveries.get(sessionId)?.pendingEndpoints.size).toBe(0);
     } finally {
       Date.now = originalNow;
-      _testing.sessionPushSender = null;
-      removeSubscription(successful);
-      removeSubscription(failed);
+      pushFixture.dependencies.sender = null;
+      pushFixture.service.removeSubscription(successful);
+      pushFixture.service.removeSubscription(failed);
     }
   });
 
   test("keeps in-flight completion from consuming a replacement episode", async () => {
-    const { addSubscription, checkSessionTransitions, removeSubscription, _testing } = await import("../../src/server/push.ts");
+
     const endpoint = `https://fcm.googleapis.com/inflight-quiet-${Date.now()}`;
-    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    pushFixture.service.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
     let releaseFirst: (() => void) | undefined;
     const firstDelivery = new Promise<void>((resolve) => { releaseFirst = resolve; });
     let calls = 0;
-    _testing.sessionPushSender = async () => {
+    pushFixture.dependencies.sender = async () => {
       calls += 1;
-      if (calls === 1) await firstDelivery;
-      return { sent: 1, failed: 0, pruned: 0, successfulEndpoints: [endpoint], failedEndpoints: [] };
+      if (calls === 1) {
+        await firstDelivery;
+        return { sent: 1, failed: 0, pruned: 0, successfulEndpoints: [endpoint], failedEndpoints: [] };
+      }
+      return { sent: 0, failed: 1, pruned: 0, successfulEndpoints: [], failedEndpoints: [endpoint] };
     };
     try {
-      const inFlight = checkSessionTransitions(session("episode-one"));
+      const inFlight = pushFixture.service.checkSessionTransitions(session("episode-one"));
       await Promise.resolve();
-      await checkSessionTransitions(session("episode-two"));
+      await pushFixture.service.checkSessionTransitions(session("episode-two"));
       releaseFirst?.();
       await inFlight;
 
-      expect(_testing.quietAlertDeliveries.get(sessionId)?.episodeId).toBe("episode-two");
+      pushFixture.dependencies.now = () => Date.now() + pushCrypto.PUSH_DEBOUNCE_MS;
+      await pushFixture.service.checkSessionTransitions(session("episode-two"));
+      expect(calls).toBe(3);
     } finally {
-      _testing.sessionPushSender = null;
-      removeSubscription(endpoint);
+      pushFixture.dependencies.sender = null;
+      pushFixture.service.removeSubscription(endpoint);
     }
   });
 
   test("does not start a later stale delivery after invalidation during an earlier send", async () => {
-    const { addSubscription, checkSessionTransitions, removeSubscription, _testing } = await import("../../src/server/push.ts");
+
     const { invalidateQuietAlertPolicy } = await import("../../src/quiet-alert-policy-invalidation.ts");
     const endpoint = `https://fcm.googleapis.com/invalidate-batch-${Date.now()}`;
-    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    pushFixture.service.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
     let releaseFirst: (() => void) | undefined;
     const firstDelivery = new Promise<void>((resolve) => { releaseFirst = resolve; });
     const deliveredSessions: string[] = [];
-    _testing.sessionPushSender = async (payload) => {
+    pushFixture.dependencies.sender = async (payload) => {
       deliveredSessions.push(payload.title);
       if (deliveredSessions.length === 1) await firstDelivery;
       return { sent: 1, failed: 0, pruned: 0, successfulEndpoints: [endpoint], failedEndpoints: [] };
@@ -799,9 +836,9 @@ describe("push: checkSessionTransitions", () => {
     try {
       const firstAlert = { ...quietAlert("invalidate-episode-first"), sessionId: "invalidate-first" };
       const secondAlert = { ...quietAlert("invalidate-episode-second"), sessionId: "invalidate-second" };
-      recordQuietAlertEmission("invalidate-first", firstAlert.episodeId);
-      recordQuietAlertEmission("invalidate-second", secondAlert.episodeId);
-      const inFlight = checkSessionTransitions([
+      pushFixture.service.recordQuietAlertEmission("invalidate-first", firstAlert.episodeId);
+      pushFixture.service.recordQuietAlertEmission("invalidate-second", secondAlert.episodeId);
+      const inFlight = pushFixture.service.checkSessionTransitions([
         { name: "first", identity: { wolfpackSessionId: "invalidate-first" }, quietAlert: firstAlert },
         { name: "second", identity: { wolfpackSessionId: "invalidate-second" }, quietAlert: secondAlert },
       ]);
@@ -811,31 +848,29 @@ describe("push: checkSessionTransitions", () => {
       await inFlight;
 
       expect(deliveredSessions).toEqual(["Wolfpack: first"]);
-      expect(_testing.quietAlertDeliveries.size).toBe(0);
-      expect(_testing.lastSessionPushTime.size).toBe(0);
     } finally {
-      _testing.sessionPushSender = null;
-      removeSubscription(endpoint);
+      pushFixture.dependencies.sender = null;
+      pushFixture.service.removeSubscription(endpoint);
     }
   });
 
   test("does not start a later delivery after observation authority changes during the first send", async () => {
-    const { addSubscription, checkSessionTransitions, removeSubscription, _testing } = await import("../../src/server/push.ts");
+
     const endpoint = `https://fcm.googleapis.com/observation-authority-${Date.now()}`;
-    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    pushFixture.service.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
     const firstSessionId = "observation-authority-first";
     const secondSessionId = "observation-authority-second";
     const firstAlert = { ...quietAlert("observation-authority-first-episode"), sessionId: firstSessionId };
     const secondAlert = { ...quietAlert("observation-authority-second-episode"), sessionId: secondSessionId };
-    recordQuietAlertEmission(firstSessionId, firstAlert.episodeId);
-    recordQuietAlertEmission(secondSessionId, secondAlert.episodeId);
+    pushFixture.service.recordQuietAlertEmission(firstSessionId, firstAlert.episodeId);
+    pushFixture.service.recordQuietAlertEmission(secondSessionId, secondAlert.episodeId);
     let currentAuthority = true;
     let releaseFirst: (() => void) | undefined;
     const firstReleased = new Promise<void>((resolve) => { releaseFirst = resolve; });
     let firstStarted: (() => void) | undefined;
     const firstStartedPromise = new Promise<void>((resolve) => { firstStarted = resolve; });
     const deliveredSessions: string[] = [];
-    _testing.sessionPushSender = async (payload) => {
+    pushFixture.dependencies.sender = async (payload) => {
       deliveredSessions.push(payload.title);
       if (deliveredSessions.length === 1) {
         firstStarted?.();
@@ -844,7 +879,7 @@ describe("push: checkSessionTransitions", () => {
       return { sent: 1, failed: 0, pruned: 0, successfulEndpoints: [endpoint], failedEndpoints: [] };
     };
     try {
-      const delivery = checkSessionTransitions([
+      const delivery = pushFixture.service.checkSessionTransitions([
         { name: "first", identity: { wolfpackSessionId: firstSessionId }, quietAlert: firstAlert },
         { name: "second", identity: { wolfpackSessionId: secondSessionId }, quietAlert: secondAlert },
       ], undefined, () => currentAuthority);
@@ -854,38 +889,36 @@ describe("push: checkSessionTransitions", () => {
       await delivery;
 
       expect(deliveredSessions).toEqual(["Wolfpack: first"]);
-      expect(_testing.quietAlertDeliveries.get(firstSessionId)?.pendingEndpoints.size).toBe(0);
-      expect(_testing.quietAlertDeliveries.has(secondSessionId)).toBe(false);
     } finally {
-      _testing.sessionPushSender = null;
-      removeSubscription(endpoint);
+      pushFixture.dependencies.sender = null;
+      pushFixture.service.removeSubscription(endpoint);
     }
   });
 
   test("builds a stable-identity route for an observed quiet episode", async () => {
-    const { _testing } = await import("../../src/server/push.ts");
+
     const alert = { sessionId: "broker/session id", episodeId: "e", eligibleAtMs: 0, observedAtMs: 0 };
-    expect(_testing.quietAlertPayload({ name: "agent one" }, "broker/session id", { ...alert, kind: "quiet" })).toEqual({
+    expect(pushCrypto.quietAlertPayload({ name: "agent one" }, "broker/session id", { ...alert, kind: "quiet" })).toEqual({
       title: "Wolfpack: agent one",
       body: "Idle",
       tag: "session-broker/session id",
       url: "/?sessionId=broker%2Fsession+id&session=agent+one&machine=local",
     });
-    const needsInput = _testing.quietAlertPayload({ name: "agent one" }, "broker/session id", { ...alert, kind: "needs-input", inputKind: "question" });
+    const needsInput = pushCrypto.quietAlertPayload({ name: "agent one" }, "broker/session id", { ...alert, kind: "needs-input", inputKind: "question" });
     expect(needsInput).toMatchObject({ title: "Wolfpack: agent one", tag: "session-broker/session id", body: "Needs input (question)" });
-    expect(_testing.quietAlertPayload({ name: "agent one" }, "broker/session id", { ...alert, kind: "needs-input" }).body).toBe("Needs input");
+    expect(pushCrypto.quietAlertPayload({ name: "agent one" }, "broker/session id", { ...alert, kind: "needs-input" }).body).toBe("Needs input");
   });
 
   test("relays a new-default needs-input episode through peer validation to push delivery", async () => {
     const { DEFAULT_QUIET_ALERT_POLICY, reduceQuietAlertPolicy } = await import("../../src/quiet-alert-policy.ts");
     const { observePeerNotifications } = await import("../../src/server/peer-notifications.ts");
     const { buildMachineHandshake } = await import("../../src/tailnet-machine-contract.ts");
-    const { addSubscription, checkSessionTransitions, removeSubscription, _testing } = await import("../../src/server/push.ts");
+
     expect(DEFAULT_QUIET_ALERT_POLICY.mode).toBe("needs-input-only");
     const endpoint = `https://fcm.googleapis.com/new-default-peer-${Date.now()}`;
-    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    pushFixture.service.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
     const payloads: string[] = [];
-    _testing.sessionPushSender = async payload => { payloads.push(payload.body); return { sent: 1, failed: 0, pruned: 0 }; };
+    pushFixture.dependencies.sender = async payload => { payloads.push(payload.body); return { sent: 1, failed: 0, pruned: 0 }; };
     try {
       const now = Date.now();
       const base = { sessionId: "new-default-peer", continuity: "fresh" as const, policy: undefined };
@@ -901,42 +934,42 @@ describe("push: checkSessionTransitions", () => {
           sessions: [{ name: "agent", identity: { wolfpackSessionId: base.sessionId }, quietAlert: due.fact }] }) });
       expect(peers).toHaveLength(1);
       for (const peer of peers) {
-        await checkSessionTransitions(peer.sessions, undefined, undefined, peer.machine);
-        await checkSessionTransitions(peer.sessions, undefined, undefined, peer.machine);
+        await pushFixture.service.checkSessionTransitions(peer.sessions, undefined, undefined, peer.machine);
+        await pushFixture.service.checkSessionTransitions(peer.sessions, undefined, undefined, peer.machine);
       }
       expect(payloads).toEqual(["Needs input (permission)"]);
-    } finally { _testing.sessionPushSender = null; removeSubscription(endpoint); }
+    } finally { pushFixture.dependencies.sender = null; pushFixture.service.removeSubscription(endpoint); }
   });
 
   test("delivers a relayed peer needs-input fact with its own text", async () => {
-    const { addSubscription, checkSessionTransitions, removeSubscription, _testing } = await import("../../src/server/push.ts");
+
     const endpoint = `https://fcm.googleapis.com/peer-needs-input-${Date.now()}`;
-    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    pushFixture.service.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
     const payloads: Array<{ readonly title: string; readonly body: string }> = [];
-    _testing.sessionPushSender = async (payload) => {
+    pushFixture.dependencies.sender = async (payload) => {
       payloads.push({ title: payload.title, body: payload.body });
       return { sent: 1, failed: 0, pruned: 0 };
     };
     try {
-      await checkSessionTransitions([{
+      await pushFixture.service.checkSessionTransitions([{
         name: "agent",
         identity: { wolfpackSessionId: "peer-needs-input" },
         quietAlert: { ...quietAlert("peer-needs-input-episode"), sessionId: "peer-needs-input", kind: "needs-input", inputKind: "permission" },
       }], undefined, undefined, { identity: "n123:12345678-1234-4234-8234-123456789abc", name: "peer" });
       expect(payloads).toEqual([{ title: "Wolfpack: peer: agent", body: "Needs input (permission)" }]);
     } finally {
-      _testing.sessionPushSender = null;
-      removeSubscription(endpoint);
+      pushFixture.dependencies.sender = null;
+      pushFixture.service.removeSubscription(endpoint);
     }
   });
 
   test("delivers a peer episode released after a long child-wait suppression", async () => {
     const { reduceQuietAlertPolicy } = await import("../../src/quiet-alert-policy.ts");
-    const { addSubscription, checkSessionTransitions, removeSubscription, _testing } = await import("../../src/server/push.ts");
+
     const endpoint = `https://fcm.googleapis.com/peer-released-${Date.now()}`;
-    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    pushFixture.service.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
     const payloads: string[] = [];
-    _testing.sessionPushSender = async (payload) => {
+    pushFixture.dependencies.sender = async (payload) => {
       payloads.push(payload.body);
       return { sent: 1, failed: 0, pruned: 0 };
     };
@@ -946,30 +979,32 @@ describe("push: checkSessionTransitions", () => {
     const withheld = reduceQuietAlertPolicy(active.state, { ...base, observedAtMs: activityAtMs + 30_000, renderedActivityAt: undefined, episodeId: undefined, suppressed: true });
     const released = reduceQuietAlertPolicy(withheld.state, { ...base, observedAtMs: Date.now(), renderedActivityAt: undefined, episodeId: undefined });
     try {
-      await checkSessionTransitions([{
+      await pushFixture.service.checkSessionTransitions([{
         name: "agent",
         identity: { wolfpackSessionId: "peer-released" },
         quietAlert: released.fact,
       }], undefined, undefined, { identity: "n123:12345678-1234-4234-8234-123456789abc", name: "peer" });
       expect(payloads).toEqual(["Idle"]);
     } finally {
-      _testing.sessionPushSender = null;
-      removeSubscription(endpoint);
+      pushFixture.dependencies.sender = null;
+      pushFixture.service.removeSubscription(endpoint);
     }
   });
 
   test("prunes delivery and debounce state for removed sessions", async () => {
-    const { addSubscription, checkSessionTransitions, removeSubscription, _testing } = await import("../../src/server/push.ts");
-    const endpoint = `https://fcm.googleapis.com/prune-quiet-${Date.now()}`;
-    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
-    _testing.quietAlertDeliveries.set("removed", { kind: "quiet", episodeId: "old", attempts: 1, pendingEndpoints: new Set(), nextAttemptAtMs: 0 });
-    _testing.lastSessionPushTime.set("removed", Date.now());
+    const endpoint = "https://fcm.googleapis.com/prune-quiet";
+    pushFixture.service.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    let sends = 0;
+    pushFixture.dependencies.sender = async () => { sends++; return { sent: 1, failed: 0, pruned: 0 }; };
     try {
-      await checkSessionTransitions(session());
-      expect(_testing.quietAlertDeliveries.has("removed")).toBe(false);
-      expect(_testing.lastSessionPushTime.has("removed")).toBe(false);
+      await pushFixture.service.checkSessionTransitions(session());
+      await pushFixture.service.checkSessionTransitions(session());
+      expect(sends).toBe(1);
+      await pushFixture.service.checkSessionTransitions([]);
+      await pushFixture.service.checkSessionTransitions(session());
+      expect(sends).toBe(2);
     } finally {
-      removeSubscription(endpoint);
+      pushFixture.service.removeSubscription(endpoint);
     }
   });
 });

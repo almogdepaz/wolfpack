@@ -834,7 +834,7 @@ export class AgentRuntimeStateStore {
     if (this.persistTimer || this.inFlight || this.draining) return;
     this.persistTimer = setTimeout(() => {
       this.persistTimer = null;
-      this.startPersist();
+      void this.startPersist();
     }, RUNTIME_STATE_PERSIST_DEBOUNCE_MS);
     this.persistTimer.unref();
   }
@@ -849,11 +849,11 @@ export class AgentRuntimeStateStore {
   }
 
   private async persist(): Promise<boolean> {
-    const tmp = `${this.path}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
     // Capture before yielding; later semantic changes remain dirty for one
     // follow-up window, rather than being cleared by this older write.
     this.dirty = false;
     try {
+      const tmp = `${this.path}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
       const contents = `${JSON.stringify(this.file, null, 2)}\n`;
       await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
       try {
@@ -885,25 +885,9 @@ export class AgentRuntimeStateStore {
     }
   }
 
-  /** Also used by test singleton resets to avoid writes from abandoned stores. */
+  /** Cancel the debounce timer; in-flight persistence is drained by flushForShutdown. */
   cancelScheduledPersist(): void {
     if (this.persistTimer) clearTimeout(this.persistTimer);
     this.persistTimer = null;
   }
-}
-
-let runtimeStateStore: AgentRuntimeStateStore | null = null;
-
-export function getAgentRuntimeStateStore(): AgentRuntimeStateStore {
-  runtimeStateStore ??= new AgentRuntimeStateStore();
-  return runtimeStateStore;
-}
-
-export async function flushAgentRuntimeStateForShutdown(): Promise<void> {
-  await runtimeStateStore?.flushForShutdown();
-}
-
-export function __resetAgentRuntimeStateStoreForTests(): void {
-  runtimeStateStore?.cancelScheduledPersist();
-  runtimeStateStore = null;
 }

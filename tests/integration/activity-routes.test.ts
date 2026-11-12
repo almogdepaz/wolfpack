@@ -12,16 +12,15 @@ const { MockBackend } = await import("../../src/server/mock-backend.ts");
 test("GET /api/activity pages rows behind normal owner auth, like /api/sessions", async () => {
   const root = mkdtempSync(join(tmpdir(), "activity-route-"));
   const prior = process.env.WOLFPACK_JWT_SECRET;
-  const { __resetJwtAuthConfig } = await import("../../src/test-hooks.ts");
+  const { getJwtAuthConfig } = await import("../../src/auth.ts");
   const { issueJwt } = await import("../../src/jwt-issue.ts");
   process.env.WOLFPACK_JWT_SECRET = "activity-route-test-secret-01234567890123456789";
-  __resetJwtAuthConfig();
   const { createServerInstance } = await import("../../src/server/index.ts");
   const { getInstallationId } = await import("../../src/tailnet-machine-installation.ts");
   const journal = new ActivityJournal({ dir: join(root, "activity") });
   for (const id of ["a", "b", "c"]) journal.append({ kind: ACTIVITY_KIND.TASK_UPDATED, taskId: id, eventType: "task.completed" });
   journal.append({ kind: ACTIVITY_KIND.INPUT, session: "app", source: "browser", bucket: "2026-11-06T10:00:00.000Z" });
-  const ctx = createServerContext({ backend: new MockBackend(), config: null, activityJournal: journal, taskRelayRoot: join(root, "relay") });
+  const ctx = createServerContext({ backend: new MockBackend(), config: null, jwtAuthConfig: getJwtAuthConfig(), activityJournal: journal, taskRelayRoot: join(root, "relay") });
   const { server, wss } = createServerInstance(ctx);
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -60,7 +59,6 @@ test("GET /api/activity pages rows behind normal owner auth, like /api/sessions"
     wss.close();
     await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });
     if (prior === undefined) delete process.env.WOLFPACK_JWT_SECRET; else process.env.WOLFPACK_JWT_SECRET = prior;
-    __resetJwtAuthConfig();
     journal.close();
     rmSync(root, { recursive: true, force: true });
   }

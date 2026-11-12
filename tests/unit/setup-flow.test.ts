@@ -40,6 +40,7 @@ interface SetupFlowFixture {
     readonly devDir: string;
     readonly port: number;
     readonly tailscaleHostname?: string;
+    readonly allowedHosts?: string[];
     readonly displayName?: string;
     readonly claudeTaskIntegration?: boolean;
     readonly focus?: Config["focus"];
@@ -76,6 +77,7 @@ function runSetupFlow(home: string, fixture?: SetupFlowFixture): SetupFlowResult
     const fixture = ${serializedFixture};
     const configPath = join(home, ".wolfpack", "config.json");
     const config = await import("./src/cli/config.ts");
+    const rootConfig = await import("./src/config.ts");
     if (fixture?.tailscale || fixture?.failsTailscaleInstallation) {
       const childProcess = await import("node:child_process");
       await mock.module("node:child_process", () => ({
@@ -114,12 +116,23 @@ function runSetupFlow(home: string, fixture?: SetupFlowFixture): SetupFlowResult
       Object.defineProperty(process.stdin, "isTTY", { value: true });
       Object.defineProperty(process.stdout, "isTTY", { value: true });
     }
-    await mock.module("./src/cli/config.js", () => ({
-      ...config,
+    await mock.module("./src/config.js", () => ({
+      ...rootConfig,
       CONFIG_PATH: configPath,
       WOLFPACK_DIR: join(home, ".wolfpack"),
       IS_MACOS: fixture?.failsTailscaleInstallation ?? false,
       IS_LINUX: false,
+      loadConfig: () => fixture?.existingConfig ?? (fixture?.tailscale?.previousHostname
+        ? { devDir: home, port: 18790, tailscaleHostname: fixture.tailscale.previousHostname }
+        : null),
+      saveConfig: (nextConfig) => {
+        mkdirSync(join(home, ".wolfpack"), { recursive: true });
+        writeFileSync(configPath, JSON.stringify(nextConfig));
+      },
+      remoteUrl: (nextConfig) => nextConfig.tailscaleHostname ? "https://" + nextConfig.tailscaleHostname : null,
+    }));
+    await mock.module("./src/cli/config.js", () => ({
+      ...config,
       ask: (prompt) => {
         if (!interactiveFixture) throw new Error("noninteractive setup must not prompt");
         for (const [promptPart, answer] of Object.entries(fixture?.claude?.answers ?? {})) {
@@ -138,14 +151,6 @@ function runSetupFlow(home: string, fixture?: SetupFlowFixture): SetupFlowResult
         }
         return "n";
       },
-      loadConfig: () => fixture?.existingConfig ?? (fixture?.tailscale?.previousHostname
-        ? { devDir: home, port: 18790, tailscaleHostname: fixture.tailscale.previousHostname }
-        : null),
-      saveConfig: (nextConfig) => {
-        mkdirSync(join(home, ".wolfpack"), { recursive: true });
-        writeFileSync(configPath, JSON.stringify(nextConfig));
-      },
-      remoteUrl: (nextConfig) => nextConfig.tailscaleHostname ? "https://" + nextConfig.tailscaleHostname : null,
       tailscaleBin: () => fixture?.tailscale ? "tailscale" : null,
     }));
     if (fixture?.serviceRunning || fixture?.serviceInstalled) {
@@ -330,6 +335,22 @@ describe("first-run setup", () => {
     expect(JSON.parse(readFileSync(join(home, ".wolfpack", "config.json"), "utf-8"))).toEqual({ devDir: home, port: 18790 });
     expect(cleared.stdout).toContain("SERVICE_RESTART={\"broker\":false,\"skipBrokerSessionWarning\":true}");
     expect(cleared.stdout).not.toContain("SERVICE_REFRESH=");
+  });
+
+  test("preserves existing allowedHosts when it rewrites the config", () => {
+    const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
+    temporaryHomes.push(home);
+    const existingConfig = {
+      devDir: home,
+      port: 18790,
+      allowedHosts: ["proxy.example", "fd7a:115c:a1e0::1"],
+    };
+    const result = runSetupFlow(home, { existingConfig, setupOptions: { port: 24444 } });
+    expectSuccessfulSetup(result);
+    expect(JSON.parse(readFileSync(join(home, ".wolfpack", "config.json"), "utf-8"))).toEqual({
+      ...existingConfig,
+      port: 24444,
+    });
   });
 
   test("preserves the Claude task integration opt-in when it rewrites the config", () => {

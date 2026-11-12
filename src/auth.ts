@@ -197,7 +197,7 @@ export function validateJwtHs256(
   }
 }
 
-/** Cached config — read once at import time. Restart server to pick up env changes. */
+/** Cached on first use. Restart the process to pick up environment changes. */
 let _cachedConfig: JwtAuthConfig | null = null;
 
 export function getCachedJwtAuthConfig(): JwtAuthConfig {
@@ -207,18 +207,12 @@ export function getCachedJwtAuthConfig(): JwtAuthConfig {
   return _cachedConfig;
 }
 
-/** Reset cached config — only for tests that need to override env vars. */
-export function __resetJwtAuthConfig(): void {
-  if (!process.env.WOLFPACK_TEST) throw new Error("__resetJwtAuthConfig() is only available in test mode");
-  _cachedConfig = null;
-}
-
 export function validateRequestJwt(
   headers: IncomingHttpHeaders,
   url: URL,
   allowQueryToken: boolean,
+  cfg: JwtAuthConfig = getCachedJwtAuthConfig(),
 ): JwtValidationResult {
-  const cfg = getCachedJwtAuthConfig();
   if (!cfg.enabled) return { ok: true, payload: {} };
 
   const token = getRequestToken(headers, url, allowQueryToken);

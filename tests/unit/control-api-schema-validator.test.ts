@@ -4,6 +4,22 @@ import { validateControlApiSchemaValue } from "../control-api-schema-validator.t
 const root = {};
 
 describe("control api schema validator", () => {
+  test("enforces required siblings of anyOf", () => {
+    const schema = { type: "object", properties: { a: {} }, anyOf: [{ type: "object" }], required: ["a"] };
+    expect(validateControlApiSchemaValue(schema, {}, root)).not.toEqual([]);
+  });
+
+  test("enforces property siblings of oneOf", () => {
+    const schema = { type: "object", oneOf: [{ type: "object" }], properties: { a: { type: "string" } } };
+    expect(validateControlApiSchemaValue(schema, { a: 1 }, root)).not.toEqual([]);
+  });
+
+  test("enforces date-time format", () => {
+    const schema = { type: "string", format: "date-time" };
+    expect(validateControlApiSchemaValue(schema, "yesterday", root)).not.toEqual([]);
+    expect(validateControlApiSchemaValue(schema, "2026-11-10T12:00:00Z", root)).toEqual([]);
+  });
+
   test("enforces emitted string constraints", () => {
     const schema = { type: "string", minLength: 2, maxLength: 4 };
 

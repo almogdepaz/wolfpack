@@ -1,15 +1,19 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
-import { extensionsCommand, extensionsUsage } from "../../src/cli/extensions.ts";
-import { __setExtensionRuntimeForTests } from "../../src/extensions/runtime.ts";
+import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { extensionsUsage } from "../../src/cli/extensions.ts";
 
-const previousTest = process.env.WOLFPACK_TEST;
-beforeEach(() => { process.env.WOLFPACK_TEST = "1"; });
-afterEach(() => { __setExtensionRuntimeForTests(undefined); if (previousTest === undefined) delete process.env.WOLFPACK_TEST; else process.env.WOLFPACK_TEST = previousTest; });
-
-test("update help and accepted flags describe the implemented source-and-trust contract", async () => {
+test("update help and accepted flags describe the implemented source-and-trust contract", () => {
   expect(extensionsUsage()).toContain("update <absolute-directory|npm:name@version> --trust-browser-code [--skills pi]");
-  let installed = false;
-  __setExtensionRuntimeForTests({ install: async () => { installed = true; return { installation: {}, skills: [] }; } } as never);
-  expect(await extensionsCommand(["update", "/absolute/source", "--trust-browser-code", "--unexpected"])).toBe(1);
-  expect(installed).toBe(false);
+  const home = mkdtempSync(join(tmpdir(), "extensions-cli-"));
+  try {
+    // Exercise flag rejection through the real command, before source acquisition.
+    const child = Bun.spawnSync([process.execPath, "--eval", `
+      import { extensionsCommand } from ${JSON.stringify(new URL("../../src/cli/extensions.ts", import.meta.url).href)};
+      process.exit(await extensionsCommand(["update", "/absolute/source", "--trust-browser-code", "--unexpected"]));
+    `], { env: { ...process.env, HOME: home }, stdout: "pipe", stderr: "pipe" });
+    expect(child.exitCode).toBe(1);
+    expect(child.stderr.toString()).toContain("update requires source and --trust-browser-code");
+  } finally { rmSync(home, { recursive: true, force: true }); }
 });

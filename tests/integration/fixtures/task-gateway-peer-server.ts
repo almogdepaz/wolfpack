@@ -37,7 +37,6 @@ if ((role !== "sender" && role !== "receiver") || !taskRoot || !projectRoot || !
 }
 const fixtureProjectRoot = projectRoot;
 
-process.env.WOLFPACK_TEST = "1";
 process.env.WOLFPACK_TAILNET_SUFFIX = "example.ts.net";
 mkdirSync(projectRoot, { recursive: true });
 mkdirSync(join(process.env.HOME ?? "", ".wolfpack"), { recursive: true });
@@ -118,7 +117,7 @@ const rewrittenFetch: typeof globalThis.fetch = Object.assign((input: RequestInf
 }, { preconnect: nativeFetch.preconnect });
 globalThis.fetch = rewrittenFetch;
 
-const { __setTestBackend } = await import("../../../src/server/backend.ts");
+const { createServerContext } = await import("../../../src/server/context.ts");
 const { MockBackend } = await import("../../../src/server/mock-backend.ts");
 
 class PeerBackend extends MockBackend {
@@ -134,15 +133,16 @@ class PeerBackend extends MockBackend {
   }
 }
 
-__setTestBackend(new PeerBackend({ sessions: [role === "sender" ? "parent" : "receiver"] }));
-const { getTaskGateway, __resetTaskGatewayForTests } = await import("../../../src/server/task-gateways.ts");
-if (process.env.WOLFPACK_TEST_FAST_RETRY === "1") {
+const { TaskGateway } = await import("../../../src/tasks/gateway.ts");
+const backend = new PeerBackend({ sessions: [role === "sender" ? "parent" : "receiver"] });
+const context = createServerContext({ backend, taskGateway: new TaskGateway({
+  root: taskRoot, inspectSession: selector => backend.inspectSession(selector),
   // Accelerate only peer retry backoff, not HTTP keepalive or unrelated deadlines.
-  __resetTaskGatewayForTests({ root: taskRoot, sleep: () => new Promise((resolve) => setTimeout(resolve, 1)) });
-}
+  ...(process.env.WOLFPACK_TEST_FAST_RETRY === "1" ? { sleep: () => new Promise<void>(resolve => setTimeout(resolve, 1)) } : {}),
+}) });
 const { createServerInstance } = await import("../../../src/server/index.ts");
-await getTaskGateway().initialize();
-const { server } = createServerInstance();
+await context.taskGateway.initialize();
+const { server } = createServerInstance(context);
 
 server.listen(listenPort, "127.0.0.1", () => {
   const address = server.address() as AddressInfo;

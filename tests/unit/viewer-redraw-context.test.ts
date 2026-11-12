@@ -1,5 +1,5 @@
 process.env.WOLFPACK_TEST = "1";
-import { expect, test } from "bun:test";
+import { expect, test, spyOn } from "bun:test";
 import { BrokerSupervisor } from "../../src/server/broker-supervisor";
 import { MockBackend } from "../../src/server/mock-backend";
 import { createServerContext } from "../../src/server/context";
@@ -8,7 +8,7 @@ import { createServerContext } from "../../src/server/context";
 test("context retires attribution, pending reads and input history on backend replacement", async () => {
   const supervisor = new BrokerSupervisor({ start: false });
   const old = new MockBackend({ sessions: ["work"] });
-  supervisor.__setBrokerForTest(old);
+  const broker = spyOn(supervisor, "backend").mockReturnValue(old as unknown as ReturnType<BrokerSupervisor["backend"]>);
   const ctx = createServerContext({ supervisor, config: null });
   const proxy = ctx.backend;
   const tracker = ctx.viewerRedraw;
@@ -16,10 +16,11 @@ test("context retires attribution, pending reads and input history on backend re
   tracker.prune([fact]);
   tracker.begin("work");
   expect(tracker.includes(fact)).toBe(true);
-  supervisor.__setBrokerForTest(new MockBackend({ sessions: ["work"] }));
+  broker.mockReturnValue(new MockBackend({ sessions: ["work"] }) as unknown as ReturnType<BrokerSupervisor["backend"]>);
   expect(ctx.backend).toBe(proxy);
   expect(ctx.viewerRedraw).not.toBe(tracker);
   expect(tracker.includes(fact)).toBe(false);
   expect(ctx.viewerRedraw.includes(fact)).toBe(false);
-  ctx.viewerRedraw.clear();
+  await ctx.close();
+  broker.mockRestore();
 });

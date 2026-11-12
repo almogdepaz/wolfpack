@@ -6,7 +6,6 @@ import { AssistantService } from "../../src/server/assistant-service.ts";
 import { MockBackend } from "../../src/server/mock-backend.ts";
 import { createServerContext } from "../../src/server/context.ts";
 import { ActivityJournal } from "../../src/server/activity-journal.ts";
-import { __resetSessionObservationForTests } from "../../src/server/session-observation.ts";
 import { emptyCoverage } from "../../src/focus-coverage.ts";
 import { ACTIVITY_KIND } from "../../src/activity-journal.ts";
 import { writePrivateJsonFile } from "../../src/persistence.ts";
@@ -29,7 +28,7 @@ async function fixture() {
   const kill = backend.killSessionById.bind(backend);
   backend.killSessionById = async id => { kills.push(id); return kill(id); };
   backend.sendAndObserveSubmission = async (_id, options) => { sends.push(options.text); return { delivery: "delivered", outcome: "submitted", observedMs: 1 }; };
-  let ctx = createServerContext({ backend, config, assistantService: assistant, activityJournal: journal });
+  let ctx = createServerContext({ backend, config, assistantService: assistant, activityJournal: journal, observationCacheTtlMs: 0 });
   ctx.focusRuntime.start();
   await ctx.focusRuntime.pins.tick();
   let at = Date.now();
@@ -46,7 +45,7 @@ async function fixture() {
       ctx.focusRuntime.stop();
       if (reopenJournal) { journal.close(); journal = new ActivityJournal({ dir: join(root, "activity") }); }
       assistant = service(skill);
-      ctx = createServerContext({ backend, config, assistantService: assistant, activityJournal: journal });
+      ctx = createServerContext({ backend, config, assistantService: assistant, activityJournal: journal, observationCacheTtlMs: 0 });
       ctx.focusRuntime.start();
       await ctx.focusRuntime.pins.tick();
     },
@@ -325,7 +324,7 @@ test.each(["unchanged", "advanced", "missing-final", "missing-sample"] as const)
       expect(t.kills).toEqual([]);
       expect(readFileSync(t.transcript, "utf8")).toBe("keep the active turn");
     }
-  } finally { setSystemTime(); __resetSessionObservationForTests(); t.close(); }
+  } finally { setSystemTime(); t.close(); }
 });
 
 test("SR-R2: stop during an awaited kill revokes archive/create; a later start can reconcile", async () => {
@@ -387,13 +386,14 @@ test("SR-R2: a new runtime lifetime cannot revive an old held rotation or clear 
 
 test.each(["viewer", "pendingViewer"] as const)("L3: an interactive %s defers rotation until detached", async which => {
   const t = await fixture();
-  const { activePtySessions } = await import("../../src/server/websocket.ts");
+  let activePtySessions = t.ctx.terminals.activePtySessions;
   const { default: WebSocket } = await import("ws");
   const before = activePtySessions.get("assistant");
   try {
     writeFileSync(t.transcript, "user draft");
     await t.reopen();
-    // Only the existing registry's presence fact is used; no socket transport is constructed.
+    // Only the context registry's presence fact is used; no socket transport is constructed.
+    activePtySessions = t.ctx.terminals.activePtySessions;
     activePtySessions.set("assistant", { alive: true, viewer: null, pendingViewer: null, proc: null, [which]: Object.create(WebSocket.prototype) });
     await t.ctx.focusRuntime.tick();
     expect(t.kills).toEqual([]);
@@ -410,7 +410,6 @@ test("L3: every input presence refreshes the 60s gate, including repeats in one 
     await t.reopen();
     const at = Date.UTC(2026, 10, 10, 20, 0, 1);
     setSystemTime(new Date(at));
-    __resetSessionObservationForTests();
     t.ctx.activityRecorder.notePresence("assistant", "browser");
     setSystemTime(new Date(at + 59_000));
     t.ctx.activityRecorder.notePresence("assistant", "cli"); // same five-minute bucket, still fresh input
@@ -420,7 +419,7 @@ test("L3: every input presence refreshes the 60s gate, including repeats in one 
     setSystemTime(new Date(at + 119_000));
     await t.ctx.focusRuntime.tick();
     expect(t.kills).toEqual(["mock:assistant"]);
-  } finally { setSystemTime(); __resetSessionObservationForTests(); t.close(); }
+  } finally { setSystemTime(); t.close(); }
 });
 
 test("L3: journaled recent input survives a server restart", async () => {
@@ -435,7 +434,7 @@ test("L3: journaled recent input survives a server restart", async () => {
     setSystemTime(new Date(at + 6 * 60_000)); // journal-only history may contain later deduplicated input
     await t.ctx.focusRuntime.tick();
     expect(t.kills).toEqual(["mock:assistant"]);
-  } finally { setSystemTime(); __resetSessionObservationForTests(); t.close(); }
+  } finally { setSystemTime(); t.close(); }
 });
 
 test.each(["sessions-link", "archive-link", "sessions-file", "archive-file", "family-link", "family-directory"] as const)("SR-N1/L1: refuse unsafe conversation paths (%s) without modifying them", async kind => {
@@ -490,7 +489,7 @@ test("D1: the first delivered routine alone gets read-first, surviving restarts 
     expect(t.sends).toHaveLength(2);
     expect(t.sends[1]).toStartWith("process inbox inbox/");
     expect(JSON.parse(readFileSync(t.record, "utf8")).readSkillPending).toBe(false);
-  } finally { setSystemTime(); __resetSessionObservationForTests(); t.close(); }
+  } finally { setSystemTime(); t.close(); }
 });
 
 test("D1: enqueuing then discarding an undelivered routine does not consume the first-send flag", async () => {
@@ -622,7 +621,6 @@ test("L3: a journal bucket cannot hide deduplicated recent input after restart",
     writeFileSync(t.transcript, "preserve input near a bucket boundary");
     const at = Date.UTC(2026, 10, 10, 20, 0, 1);
     setSystemTime(new Date(at));
-    __resetSessionObservationForTests();
     t.ctx.activityRecorder.notePresence("assistant", "browser");
     setSystemTime(new Date(Date.UTC(2026, 10, 10, 20, 4, 50)));
     t.ctx.activityRecorder.notePresence("assistant", "cli");
@@ -633,7 +631,7 @@ test("L3: a journal bucket cannot hide deduplicated recent input after restart",
     setSystemTime(new Date(Date.UTC(2026, 10, 10, 20, 6, 0)));
     await t.ctx.focusRuntime.tick();
     expect(t.kills).toEqual(["mock:assistant"]);
-  } finally { setSystemTime(); __resetSessionObservationForTests(); t.close(); }
+  } finally { setSystemTime(); t.close(); }
 });
 
 test.each(["archive-link", "family-link", "late-corrupt-state", "healthy"] as const)("C1: rotation preflight preserves the live writer on failure (%s)", async kind => {

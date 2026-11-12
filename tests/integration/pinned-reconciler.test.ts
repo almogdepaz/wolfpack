@@ -116,8 +116,6 @@ test.each(["done", "blocked", "working"] as const)("generic runtime samples a qu
   const root = mkdtempSync(join(tmpdir(), "focus-generic-runtime-"));
   const { createServerContext } = await import("../../src/server/context.ts");
   const { AssistantService } = await import("../../src/server/assistant-service.ts");
-  const { __resetSessionObservationForTests } = await import("../../src/server/session-observation.ts");
-  __resetSessionObservationForTests();
   const folder = join(root, "assistant");
   mkdirSync(folder);
   let captures = 0;
@@ -138,7 +136,7 @@ test.each(["done", "blocked", "working"] as const)("generic runtime samples a qu
     expect(captures).toBeGreaterThan(baselineCaptures);
     expect(sent).toEqual(state === "done" ? ["queued ask"] : []);
     expect(ctx.focusRuntime.queue.size).toBe(state === "done" ? 0 : 1);
-  } finally { setSystemTime(); ctx.focusRuntime.stop(); __resetSessionObservationForTests(); rmSync(root, { recursive: true, force: true }); }
+  } finally { setSystemTime(); ctx.focusRuntime.stop(); await ctx.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
 test("generic runtime retains an outstanding send across a fresh working timestamp with a quiet visible prompt", async () => {
@@ -146,8 +144,6 @@ test("generic runtime retains an outstanding send across a fresh working timesta
   const root = mkdtempSync(join(tmpdir(), "focus-generic-outstanding-"));
   const { createServerContext } = await import("../../src/server/context.ts");
   const { AssistantService } = await import("../../src/server/assistant-service.ts");
-  const { __resetSessionObservationForTests } = await import("../../src/server/session-observation.ts");
-  __resetSessionObservationForTests();
   const folder = join(root, "assistant");
   mkdirSync(folder);
   const backend = new MockBackend({ capturePane: async () => "› " });
@@ -157,7 +153,7 @@ test("generic runtime retains an outstanding send across a fresh working timesta
   const sent: string[] = [];
   backend.sendAndObserveSubmission = async (_id, options) => { sent.push(options.text); return { delivery: "delivered", outcome: "submitted", observedMs: 1 }; };
   const config = { devDir: root, port: 19864, pinnedSessions: [{ name: "assistant", cwd: folder, command: ["hermes"], harness: "hermes" }] };
-  const ctx = createServerContext({ backend, config, assistantService: new AssistantService({ root, readConfig: () => config }) });
+  const ctx = createServerContext({ backend, config, observationCacheTtlMs: 0, assistantService: new AssistantService({ root, readConfig: () => config }) });
   try {
     const status = await ctx.focusRuntime.status();
     ctx.focusRuntime.queue.enqueue(status.sessionId!, "first turn");
@@ -180,7 +176,7 @@ test("generic runtime retains an outstanding send across a fresh working timesta
     setSystemTime(new Date(at + 18002));
     await ctx.focusRuntime.tick();
     expect(sent).toEqual(["first turn", "next turn must wait"]);
-  } finally { setSystemTime(); ctx.focusRuntime.stop(); __resetSessionObservationForTests(); rmSync(root, { recursive: true, force: true }); }
+  } finally { setSystemTime(); ctx.focusRuntime.stop(); await ctx.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
 test("reconciler preserves the configured non-pi assistant's effective argv and harness", async () => {
@@ -212,8 +208,6 @@ test("a pi dialog with no semantic status reports needs-input in /api/focus stat
   const root = mkdtempSync(join(tmpdir(), "focus-dialog-status-"));
   const { createServerContext } = await import("../../src/server/context.ts");
   const { AssistantService } = await import("../../src/server/assistant-service.ts");
-  const { __resetSessionObservationForTests } = await import("../../src/server/session-observation.ts");
-  __resetSessionObservationForTests();
   const folder = join(root, "assistant");
   mkdirSync(folder);
   let captures = 0;
@@ -235,7 +229,7 @@ test("a pi dialog with no semantic status reports needs-input in /api/focus stat
     ctx.focusRuntime.queue.enqueue(status.sessionId!, "move ship first");
     await ctx.focusRuntime.tick();
     expect(ctx.focusRuntime.queue.size).toBe(1);
-  } finally { ctx.focusRuntime.stop(); __resetSessionObservationForTests(); rmSync(root, { recursive: true, force: true }); }
+  } finally { ctx.focusRuntime.stop(); await ctx.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
 test("a relaunched assistant never shows the previous incarnation's cached verdict", async () => {
@@ -243,8 +237,6 @@ test("a relaunched assistant never shows the previous incarnation's cached verdi
   const root = mkdtempSync(join(tmpdir(), "focus-verdict-incarnation-"));
   const { createServerContext } = await import("../../src/server/context.ts");
   const { AssistantService } = await import("../../src/server/assistant-service.ts");
-  const { __resetSessionObservationForTests } = await import("../../src/server/session-observation.ts");
-  __resetSessionObservationForTests();
   const folder = join(root, "assistant");
   mkdirSync(folder);
   let captures = 0;
@@ -260,7 +252,7 @@ test("a relaunched assistant never shows the previous incarnation's cached verdi
     return out;
   };
   const config = { devDir: root, port: 19866, pinnedSessions: [{ name: "assistant", cwd: folder, command: ["pi"], harness: "pi" }] };
-  const ctx = createServerContext({ backend, config, assistantService: new AssistantService({ root, readConfig: () => config }) });
+  const ctx = createServerContext({ backend, config, observationCacheTtlMs: 0, assistantService: new AssistantService({ root, readConfig: () => config }) });
   try {
     expect((await ctx.focusRuntime.status()).state).toBe("needs-input");
     const after = captures;
@@ -270,7 +262,7 @@ test("a relaunched assistant never shows the previous incarnation's cached verdi
     expect(relaunched.sessionId).toBe("mock:assistant:2");
     expect(relaunched.state).not.toBe("needs-input");
     expect(captures).toBeGreaterThan(after);
-  } finally { ctx.focusRuntime.stop(); __resetSessionObservationForTests(); rmSync(root, { recursive: true, force: true }); }
+  } finally { ctx.focusRuntime.stop(); await ctx.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
 test("enable requires login confirmation, seeds only focus skill, resumes by path", async () => {

@@ -66,7 +66,8 @@ import { parseTaskWorkerPolicyOverride } from "../task-worker-policy-contract.js
 import { readBoundedTaskWorkerPolicyFile, TaskWorkerPolicyFileError } from "../task-worker-policy-file.js";
 import type { TaskWorkerPolicyDiagnostics, TaskWorkerPolicyOverride } from "../task-worker-policy-contract.js";
 import type { VerifiedMachineTarget } from "./machine-target.js";
-import { print, printApiJson, printError, printJson, red, yellow } from "./formatting.js";
+import { print, printError, yellow } from "../terminal-output.js";
+import { printApiJson, printJson, red } from "./formatting.js";
 
 export const SESSION_EXIT = {
   OK: 0,
