@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ACTIVITY_KIND, pageActivity, type ActivityRow, type ActivityRowBody } from "../../src/activity-journal.ts";
+import { ACTIVITY_KIND, activityFileDay, activityFileName, pageActivity, type ActivityRow, type ActivityRowBody } from "../../src/activity-journal.ts";
 import { EventBus } from "../../src/event-bus.ts";
 import { WOLFPACK_EVENT_KIND } from "../../src/events-contract.ts";
 import { ActivityRecorder } from "../../src/server/activity-recorder.ts";
@@ -148,7 +148,7 @@ describe("focus routines runtime", () => {
     await t.routines.tick();
     expect(t.sends).toHaveLength(1);
     const file = fileOf(t.sends[0]!.text);
-    expect(file).toMatch(/^catch-up-\d{8}T\d{6}Z\.json$/);
+    expect(file).toMatch(/^catch-up-\d{8}T\d{6}Z-[0-9a-f]{8}\.json$/);
     const doc = t.inbox(file);
     expect(doc.trust).toBe("untrusted-data");
     expect(doc.ack).toBe(`wolfpack activity ack ${file}`);
@@ -353,6 +353,46 @@ describe("focus routines runtime", () => {
     expect(pulls).toBe(first + 1);
     expect(t.sends).toHaveLength(2);
     expect(t.inbox(fileOf(t.sends[1]!.text)).machines[0].rows).toHaveLength(2);
+  });
+
+  test("a replayed acknowledgement of an earlier inbox never acknowledges a newer one from the same second", async () => {
+    const t = setup();
+    t.append(state("app"), at(6, 14)); t.append(input("app"), at(6, 14, 50));
+    await t.routines.tick(); await t.routines.tick();
+    const first = fileOf(t.sends[0]!.text);
+    t.sends[0]!.settle("sent");
+    expect(await t.routines.ack(first)).toEqual({ ok: true, already: false });
+    const cursor = t.coverage().catchUpCursors.home.seq;
+    // New activity and a manual catch-up within the same clock second publish a second catch-up inbox.
+    t.append({ kind: ACTIVITY_KIND.TASK_UPDATED, taskId: "later", eventType: "task.completed" }, t.clock.now);
+    await t.routines.tick({ manual: true });
+    expect(t.sends).toHaveLength(2);
+    const second = fileOf(t.sends[1]!.text);
+    expect(second).not.toBe(first);
+    // The assistant retries its earlier ack: it is a repeat, and the newer inbox stays outstanding.
+    expect(await t.routines.ack(first)).toEqual({ ok: true, already: true });
+    expect(t.coverage().inbox?.file).toBe(second);
+    expect(t.coverage().catchUpCursors.home.seq).toBe(cursor);
+  });
+
+  test("a catch-up during a journal storage failure is retried after recovery at the same head", async () => {
+    const t = setup();
+    t.append(state("app"), at(6, 14)); t.append(input("app"), at(6, 14, 50));
+    await t.routines.tick(); await t.routines.tick();
+    t.sends[0]!.settle("sent"); await t.routines.ack(fileOf(t.sends[0]!.text));
+    // New activity lands in a day file whose path is a directory: the flush fails and the row stays in memory.
+    t.clock.now = at(7, 9);
+    const blocked = join(t.root, "activity", activityFileName(activityFileDay(new Date(t.clock.now).toISOString())));
+    mkdirSync(blocked);
+    t.append({ kind: ACTIVITY_KIND.TASK_UPDATED, taskId: "recovered", eventType: "task.completed" }, t.clock.now);
+    await t.routines.tick({ manual: true });
+    expect(t.sends).toHaveLength(1);
+    expect(t.routines.status().notice).not.toBe("nothing new to catch up on");
+    // Storage recovers without another append: the head is unchanged, so only a retried read can deliver the row.
+    rmSync(blocked, { recursive: true });
+    await t.routines.tick({ manual: true });
+    expect(t.sends).toHaveLength(2);
+    expect(t.inbox(fileOf(t.sends[1]!.text)).machines[0].rows.map((r: ActivityRow) => r.kind === ACTIVITY_KIND.TASK_UPDATED && r.taskId)).toContain("recovered");
   });
 
   test("day/gap review ticks do not also pull pending catch-up rows", async () => {

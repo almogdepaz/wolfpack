@@ -56,9 +56,23 @@ function intentionFields(v: Record<string, unknown>): boolean {
   return (v.title === undefined || text(v.title, 500)) && (v.project === undefined || text(v.project, 4096))
     && (v.machine === undefined || text(v.machine, 256)) && (v.sessions === undefined || strings(v.sessions, 100));
 }
-const oneLine = (v: unknown, max: number): v is string => text(v, max) && !/[\u0000-\u001f\u007f-\u009f\u2028\u2029\p{Cf}\p{Default_Ignorable_Code_Point}]/u.test(v);
+/** Terminal controls, line separators, and invisible/bidi formatting: never part of a visible one-line message. */
+const HIDDEN_CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\p{Cf}\p{Default_Ignorable_Code_Point}]/u;
+const HIDDEN_CONTROLS = new RegExp(HIDDEN_CONTROL.source, "gu");
+/** Emoji joining (ZWJ) and presentation (VS16) characters render as part of visible text. */
+const EMOJI_JOINERS = /[\u200d\ufe0f]/gu;
+const oneLine = (v: unknown, max: number): v is string => text(v, max) && !HIDDEN_CONTROL.test(v);
 /** Reasons are display-only: retain emoji variation/joining, never bidi or other hidden controls. */
-const reasonLine = (v: unknown): v is string => typeof v === "string" && v.length <= 300 && oneLine(v.replace(/[\u200d\ufe0f]/gu, ""), 300);
+const reasonLine = (v: unknown): v is string => typeof v === "string" && v.length <= 300 && oneLine(v.replace(EMOJI_JOINERS, ""), 300);
+/**
+ * A reply the user edits is typed into a live terminal: it may carry visible `/` or `!` commands
+ * and emoji, but no hidden control that would edit, reorder, or disguise what the user sees.
+ */
+export function focusReplyHasHiddenControl(reply: string): boolean { return HIDDEN_CONTROL.test(reply.replace(EMOJI_JOINERS, "")); }
+/** Pasted text keeps its visible content: line breaks and tabs become spaces, other hidden controls are dropped. */
+export function focusPastedReply(pasted: string): string {
+  return pasted.replace(/\r\n|[\r\n\t]/g, " ").replace(HIDDEN_CONTROLS, ch => ch === "\u200d" || ch === "\ufe0f" ? ch : "");
+}
 export function focusNextRefKey(ref: FocusNextRef): string {
   return "sessionId" in ref ? JSON.stringify([ref.machine, ref.sessionId]) : JSON.stringify([ref.intentionId]);
 }

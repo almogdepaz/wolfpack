@@ -1,6 +1,6 @@
 import { esc, escAttr, isDesktop } from "./app-state";
 import { focusCards, mergeFocus, takeVisible, stoppedUnseen, linkedFocusSessions, doneToday, groupFocusDone, type FocusDoneGroup, focusSessionLabel, focusActionVerb, type FocusAction, type FocusSession } from "../src/focus-ranking";
-import { emptyFocus, isFocusDocument, focusNextRefKey, type FocusDocument, type FocusIntention, type FocusOp } from "../src/focus-contract";
+import { emptyFocus, isFocusDocument, focusNextRefKey, focusPastedReply, focusReplyHasHiddenControl, type FocusDocument, type FocusIntention, type FocusOp } from "../src/focus-contract";
 import type { AssistantTiming } from "../src/focus-scheduler";
 import { SESSION_SEND_OUTCOME, type SessionSendOutcome } from "../src/session-send-contract";
 import { focusLastLine } from "../src/focus-text";
@@ -1013,7 +1013,7 @@ export function createAssistantView(deps: {
       const field = event.target;
       if (!(field instanceof HTMLTextAreaElement) || !field.dataset.focusReply || field.readOnly || !event.clipboardData) return;
       event.preventDefault();
-      const text = event.clipboardData.getData("text/plain").replace(/\r\n|[\r\n]/g, " ");
+      const text = focusPastedReply(event.clipboardData.getData("text/plain"));
       const available = FOCUS_REPLY_MAX_LENGTH - (field.value.length - (field.selectionEnd - field.selectionStart));
       field.setRangeText(text.slice(0, available), field.selectionStart, field.selectionEnd, "end");
       field.dispatchEvent(new Event("input", { bubbles: true }));
@@ -1075,7 +1075,9 @@ export function createAssistantView(deps: {
         const { row, kind } = action;
         if (kind === "reply") {
           const text = drafts.get(rowAction) ?? row.triage?.suggestion ?? "";
-          if (!text.trim() || text.length > FOCUS_REPLY_MAX_LENGTH || /[\r\n]/.test(text)) return;
+          if (!text.trim() || text.length > FOCUS_REPLY_MAX_LENGTH) return;
+          // Paste already strips these; anything else (IME, autofill, script) is refused with a reason.
+          if (focusReplyHasHiddenControl(text)) { void run(async () => { throw new Error("remove hidden control characters (tabs, line breaks, escapes or invisible formatting) before sending"); }); return; }
           void run(() => sendReply(row, rowAction, text));
           return;
         }

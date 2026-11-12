@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { emptyFocus, isFocusDocument, reduceFocus, type FocusOp, type FocusTriage } from "../../src/focus-contract.ts";
+import { emptyFocus, focusPastedReply, focusReplyHasHiddenControl, isFocusDocument, reduceFocus, type FocusOp, type FocusTriage } from "../../src/focus-contract.ts";
 
 const now = "2026-11-06T12:00:00.000Z";
 const add = { type: "add", intention: { id: "ship", title: "ship focus", project: "/dev/app", machine: "sgt", sessions: ["id-1"] } } as const;
@@ -99,5 +99,18 @@ describe("focus document", () => {
     expect(doc.revision).toBe(1);
     expect(isFocusDocument({ ...doc, version: 2 })).toBe(false);
     expect(isFocusDocument({ ...doc, intentions: [...doc.intentions, ...doc.intentions] })).toBe(false);
+  });
+});
+
+describe("user-edited replies", () => {
+  test("hidden terminal controls and invisible formatting are refused; visible commands and emoji are kept", () => {
+    for (const hidden of ["Continue\u001b[D", "go\tnow", "Continue\u202e", "a\u200bb", "x\u0007", "a\u0085b", "go\u2028on"]) expect(focusReplyHasHiddenControl(hidden)).toBe(true);
+    for (const visible of ["/review notes  exactly as typed", "!ls -la", "continue with step 2", "ship it 👩‍💻 ❤️", "naïve café"]) expect(focusReplyHasHiddenControl(visible)).toBe(false);
+  });
+  test("pasting flattens line breaks and tabs to spaces and drops other hidden controls", () => {
+    expect(focusPastedReply("one\r\ntwo\nthree\tfour")).toBe("one two three four");
+    expect(focusPastedReply("Continue\u001b[D\u202e ok\u200b")).toBe("Continue[D ok");
+    expect(focusPastedReply("ship it 👩‍💻 ❤️")).toBe("ship it 👩‍💻 ❤️");
+    expect(focusReplyHasHiddenControl(focusPastedReply("a\u0000b\u009bc\u2066d"))).toBe(false);
   });
 });

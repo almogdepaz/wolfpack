@@ -20,6 +20,8 @@ import { writePrivateFile } from "../persistence.js";
 import { resolveWolfpackDir } from "../wolfpack-dir.js";
 
 const log = createLogger("server");
+/** A pruned or not-yet-created path is legitimately empty; every other error is a storage failure. */
+const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT";
 export const ACTIVITY_FLUSH_MS = 1000;
 export const ACTIVITY_RETENTION_INTERVAL_MS = 60 * 60_000;
 /** Rows held while the disk refuses writes; beyond this the oldest are dropped with a warning. */
@@ -64,9 +66,12 @@ export class ActivityJournal {
   }
 
   private now(): number { return (this.options.now ?? Date.now)(); }
-  private files(): string[] { try { return readdirSync(this.dir).filter(isActivityFileName).sort(); } catch { return []; } }
-  private readFile(name: string): ActivityRow[] {
-    try { return parseActivityLines(readFileSync(join(this.dir, name), "utf8")).rows; } catch { return []; }
+  /** `strict` (paged reads): only a missing path is empty; any other storage error throws instead of passing for "no rows". */
+  private files(strict = false): string[] {
+    try { return readdirSync(this.dir).filter(isActivityFileName).sort(); } catch (error) { if (strict && !missing(error)) throw error; return []; }
+  }
+  private readFile(name: string, strict = false): ActivityRow[] {
+    try { return parseActivityLines(readFileSync(join(this.dir, name), "utf8")).rows; } catch (error) { if (strict && !missing(error)) throw error; return []; }
   }
 
   private open(): void {
@@ -170,16 +175,16 @@ export class ActivityJournal {
   }
 
   /** Day files that can hold rows of the window, oldest first. */
-  private filesIn(window: Window): string[] {
+  private filesIn(window: Window, strict = false): string[] {
     const first = window.from === undefined ? "" : activityFileName(activityFileDay(new Date(window.from).toISOString()));
     const last = window.to === undefined ? "~" : activityFileName(activityFileDay(new Date(window.to - 1).toISOString()));
-    return this.files().filter(name => name >= first && name <= last);
+    return this.files(strict).filter(name => name >= first && name <= last);
   }
 
-  private rowsIn(names: readonly string[], window: Window): ActivityRow[] {
+  private rowsIn(names: readonly string[], window: Window, strict = false): ActivityRow[] {
     const inWindow = (row: ActivityRow) => { const at = Date.parse(row.at); return (window.from === undefined || at >= window.from) && (window.to === undefined || at < window.to); };
     // A clock step can put a higher seq in an earlier-named file; pages are by seq.
-    return names.flatMap(name => this.readFile(name)).filter(inWindow).sort((a, b) => a.seq - b.seq);
+    return names.flatMap(name => this.readFile(name, strict)).filter(inWindow).sort((a, b) => a.seq - b.seq);
   }
 
   /**
@@ -190,8 +195,11 @@ export class ActivityJournal {
   read(since: number, limit: number, window: Window = {}): ActivityPage {
     this.open();
     this.flush();
-    const names = limit > 0 ? this.filesIn(window).filter(name => (this.fileMaxSeq.get(name) ?? Infinity) > since) : [];
-    const page = pageActivity(this.rowsIn(names, window), since, limit, this.oldestSeq);
+    // Rows still buffered after a flush failed to reach disk. headSeq already counts them, so an
+    // empty page would look complete and callers would treat the activity as already seen.
+    if (limit > 0 && this.buffer.some(row => row.seq > since)) throw new Error("activity journal rows are not on disk yet (storage unavailable)");
+    const names = limit > 0 ? this.filesIn(window, true).filter(name => (this.fileMaxSeq.get(name) ?? Infinity) > since) : [];
+    const page = pageActivity(this.rowsIn(names, window, true), since, limit, this.oldestSeq);
     const oldestFile = this.files()[0];
     const oldestDayStart = oldestFile ? Date.parse(`${oldestFile.slice(0, 10)}T00:00:00.000Z`) : -Infinity;
     const truncated = page.truncated && (window.from === undefined || window.from < oldestDayStart);

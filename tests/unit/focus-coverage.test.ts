@@ -45,10 +45,19 @@ describe("coverage document", () => {
     expect(isFocusCoverage({ ...emptyCoverage(), catchUpCursors: { home: { name: "sgt", seq: -1 } } })).toBe(false);
   });
   test("inbox names are routine-timestamped and nothing else passes", () => {
-    expect(inboxFileName("gap-review", Date.parse("2026-11-06T15:04:05.678Z"))).toBe("gap-review-20261106T150405Z.json");
+    expect(inboxFileName("gap-review", Date.parse("2026-11-06T15:04:05.678Z"), "0123abcd")).toBe("gap-review-20261106T150405Z-0123abcd.json");
+    // Outstanding inboxes written before generation ids keep validating.
     expect(isInboxFileName("catch-up-20261106T150405Z.json")).toBe(true);
+    expect(isInboxFileName("catch-up-20261106T150405Z-0123abcd.json")).toBe(true);
+    for (const bad of ["catch-up-20261106T150405Z-.json", "catch-up-20261106T150405Z-0123ABCD.json", "catch-up-20261106T150405Z-0123abc.json", "catch-up-20261106T150405Z-0123abcd/x.json"]) expect(isInboxFileName(bad)).toBe(false);
     for (const bad of ["../catch-up-20261106T150405Z.json", "catch-up-20261106T150405Z.json/x", "other-20261106T150405Z.json", "catch-up.json"]) expect(isInboxFileName(bad)).toBe(false);
     expect(inboxPrompt("catch-up-20261106T150405Z.json")).toBe("process inbox inbox/catch-up-20261106T150405Z.json");
+  });
+  test("two inboxes of one routine in the same clock second get different names", () => {
+    const second = Date.parse("2026-11-12T12:00:00.000Z");
+    const names = new Set([inboxFileName("catch-up", second), inboxFileName("catch-up", second + 500), inboxFileName("catch-up", second + 500)]);
+    expect(names.size).toBe(3);
+    for (const file of names) expect(isInboxFileName(file)).toBe(true);
   });
 });
 

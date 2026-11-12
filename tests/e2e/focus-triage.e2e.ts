@@ -528,6 +528,35 @@ test("editable reply prevents Enter, flattens pasted newlines, caps at 2000 and 
   expect(sends).toEqual([]);
 });
 
+test("edited reply strips hidden controls on paste and refuses to send any that remain", async ({ page }) => {
+  await seed(page);
+  const sends: { text: string }[] = [];
+  await page.route("**/api/session-control/send", async route => {
+    sends.push(route.request().postDataJSON());
+    await route.fulfill({ json: { outcome: "submitted" } });
+  });
+  await page.goto(server.baseUrl);
+  const panel = page.locator("#dashboard-focus");
+  const reply = panel.getByRole("textbox", { name: "reply to prompt-project", exact: true });
+  await expandFocusCard(panel.locator(".focus-next > li").first());
+  const send = panel.getByRole("button", { name: "Send to prompt-project", exact: true });
+  await reply.fill("");
+  await reply.evaluate(el => {
+    const data = new DataTransfer(); data.setData("text/plain", "Continue\u001b[D\u202e now\tplease");
+    el.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+  });
+  await expect(reply).toHaveValue("Continue[D now please");
+  // A control that arrives other than by paste (IME, autofill, script) is refused at send with a reason.
+  await reply.fill("Continue\u001b[D");
+  await send.click();
+  await expect(panel.getByRole("status").filter({ hasText: "hidden control characters" })).toBeVisible();
+  expect(sends).toEqual([]);
+  await reply.fill("Continue[D now please");
+  await send.click();
+  await expect.poll(() => sends.length).toBe(1);
+  expect(sends[0].text).toBe("Continue[D now please");
+});
+
 for (const outcome of ["submitted", "unverified", "pasted_not_submitted", "not_delivered"] as const) test(`edited reply sends the user's text and retains the original duplicate fence: ${outcome}`, async ({ page }) => {
   await seed(page);
   const sends: { text: string }[] = [];

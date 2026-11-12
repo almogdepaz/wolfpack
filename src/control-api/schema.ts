@@ -1478,7 +1478,8 @@ export const controlApiSource: ControlApiSource = {
     "GET /api/focus": {
       operationId: "getFocus", stable: true, auth: "jwt-when-configured",
       response: object({ home: string(), installationId: string(), local: boolean(), document: { type: ["object", "null"] }, revision: integer(), assistant: { type: "object" },
-        routines: { type: "object", description: "Render-ready routine state from src/server/focus-routines.ts (home only); ?open=1 also requests a debounced catch-up" } }, ["home", "installationId", "local", "document", "revision"]),
+        routines: { type: "object", description: "Render-ready routine state from src/server/focus-routines.ts (home only); ?open=1 also requests a debounced catch-up" },
+        nextOrderTtlHours: integer("Configured assistant next-order lifetime (1-24); home only") }, ["home", "installationId", "local", "document", "revision"]),
       errors: ["503 FocusUnavailableEnvelope"],
     },
     "POST /api/focus": {
@@ -1506,9 +1507,9 @@ export const controlApiSource: ControlApiSource = {
     },
     "GET /api/activity": {
       operationId: "readActivity", stable: true, auth: "jwt-when-configured",
-      response: object({ installationId: string(), machine: string(), rows: arrayOf({ type: "object", description: "Validated by src/activity-journal.ts; session/task rows and coarse input presence, never terminal content" }),
+      response: object({ installationId: string(), machine: string(), journalId: string("Journal generation for cursor recovery; empty when the id could not be persisted"), rows: arrayOf({ type: "object", description: "Validated by src/activity-journal.ts; session/task rows and coarse input presence, never terminal content" }),
         next: integer(), headSeq: integer(), oldestSeq: { type: ["integer", "null"] }, truncated: boolean(), lastRowAt: { type: ["string", "null"] }, lastInputAt: { type: ["string", "null"] } },
-      ["installationId", "machine", "rows", "next", "headSeq", "oldestSeq", "truncated"]),
+      ["installationId", "machine", "journalId", "rows", "next", "headSeq", "oldestSeq", "truncated"]),
       errors: ["400 ErrorEnvelope", "503 ErrorEnvelope"],
     },
     "GET /api/sessions": {

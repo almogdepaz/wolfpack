@@ -1695,6 +1695,10 @@
           "routines": {
             "type": "object",
             "description": "Render-ready routine state from src/server/focus-routines.ts (home only); ?open=1 also requests a debounced catch-up"
+          },
+          "nextOrderTtlHours": {
+            "type": "integer",
+            "description": "Configured assistant next-order lifetime (1-24); home only"
           }
         },
         "required": [
@@ -1906,6 +1910,10 @@
           "machine": {
             "type": "string"
           },
+          "journalId": {
+            "type": "string",
+            "description": "Journal generation for cursor recovery; empty when the id could not be persisted"
+          },
           "rows": {
             "type": "array",
             "items": {
@@ -1944,6 +1952,7 @@
         "required": [
           "installationId",
           "machine",
+          "journalId",
           "rows",
           "next",
           "headSeq",
