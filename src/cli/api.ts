@@ -2,8 +2,7 @@
  * Shared CLI HTTP/auth helpers.
  */
 import { issueJwt } from "../jwt-issue.js";
-export { issueJwt } from "../jwt-issue.js";
-import { loadConfig } from "./config.js";
+import { loadConfig } from "../config.js";
 import type { VerifiedMachineTarget } from "./machine-target.js";
 import { qualifyRemoteTaskEndpoint, unqualifiedRemoteTaskEndpoint } from "./task-endpoint.js";
 

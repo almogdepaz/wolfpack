@@ -58,7 +58,8 @@ fn read_expected_ansi(name: &str) -> Vec<u8> {
 }
 
 fn read_expected_trims() -> BTreeMap<String, Expected> {
-    let raw = std::fs::read_to_string(fixture_dir().join("expected.json")).expect("read expected.json");
+    let raw =
+        std::fs::read_to_string(fixture_dir().join("expected.json")).expect("read expected.json");
     serde_json::from_str(&raw).expect("parse expected.json")
 }
 
@@ -111,7 +112,11 @@ fn rust_renderer_matches_typescript_renderer_byte_for_byte() {
                 let oracle = trims
                     .get(&case.name)
                     .unwrap_or_else(|| panic!("{}: missing expected.json entry", case.name));
-                assert_eq!(rendered.trimmed_lines, oracle.trimmed_lines, "{}: trimmed_lines", case.name);
+                assert_eq!(
+                    rendered.trimmed_lines, oracle.trimmed_lines,
+                    "{}: trimmed_lines",
+                    case.name
+                );
             }
         }
     }
@@ -147,8 +152,15 @@ fn dense_line(index: usize, width: usize) -> String {
     let mut line = String::new();
     for col in 0..width {
         let fg = (index * 7 + col * 13) % 256;
-        let (r, g, b) = ((index * 31) % 256, (col * 17) % 256, ((index + col) * 5) % 256);
-        line.push_str(&format!("\x1b[38;5;{fg};48;2;{r};{g};{b}m{}", (b'a' + (col % 26) as u8) as char));
+        let (r, g, b) = (
+            (index * 31) % 256,
+            (col * 17) % 256,
+            ((index + col) * 5) % 256,
+        );
+        line.push_str(&format!(
+            "\x1b[38;5;{fg};48;2;{r};{g};{b}m{}",
+            (b'a' + (col % 26) as u8) as char
+        ));
     }
     line.push_str("\x1b[0m\r\n");
     line
@@ -257,13 +269,26 @@ fn write_snapshot(dir: &std::path::Path, name: &str, snapshot: &Snapshot) {
 }
 
 fn cell(ch: &str, attrs: CellAttrs) -> StyledCell {
-    StyledCell { ch: Cow::Owned(ch.to_string()), attrs }
+    StyledCell {
+        ch: Cow::Owned(ch.to_string()),
+        attrs,
+    }
 }
 
 fn synthetic_edges() -> Snapshot {
-    let bold = CellAttrs { bold: true, ..CellAttrs::default() };
-    let high_bits = CellAttrs { fg: Some(0xff12_3456), bg: Some(0x00ab_cdef), ..CellAttrs::default() };
-    let blue_bg = CellAttrs { bg: Some(0x0000_00ff), ..CellAttrs::default() };
+    let bold = CellAttrs {
+        bold: true,
+        ..CellAttrs::default()
+    };
+    let high_bits = CellAttrs {
+        fg: Some(0xff12_3456),
+        bg: Some(0x00ab_cdef),
+        ..CellAttrs::default()
+    };
+    let blue_bg = CellAttrs {
+        bg: Some(0x0000_00ff),
+        ..CellAttrs::default()
+    };
     Snapshot {
         session_id: Uuid::nil(),
         seq: 0,
@@ -272,7 +297,11 @@ fn synthetic_edges() -> Snapshot {
         scrollback: vec![
             // Empty glyph mid-line counts as text before a non-blank cell.
             StyledLine {
-                cells: vec![cell("a", bold.clone()), cell("", bold.clone()), cell("b", CellAttrs::default())],
+                cells: vec![
+                    cell("a", bold.clone()),
+                    cell("", bold.clone()),
+                    cell("b", CellAttrs::default()),
+                ],
                 wrapped: true,
             },
             // No cells at all.
@@ -289,11 +318,25 @@ fn synthetic_edges() -> Snapshot {
             },
         ],
         visible_screen: vec![
-            StyledLine { cells: vec![cell("y", high_bits)], wrapped: false },
-            StyledLine { cells: vec![cell(" ", CellAttrs::default())], wrapped: false },
-            StyledLine { cells: vec![cell("z", bold)], wrapped: false },
+            StyledLine {
+                cells: vec![cell("y", high_bits)],
+                wrapped: false,
+            },
+            StyledLine {
+                cells: vec![cell(" ", CellAttrs::default())],
+                wrapped: false,
+            },
+            StyledLine {
+                cells: vec![cell("z", bold)],
+                wrapped: false,
+            },
         ],
-        cursor: CursorState { row: 2, col: 1, visible: true, shape: CursorShape::Bar },
+        cursor: CursorState {
+            row: 2,
+            col: 1,
+            visible: true,
+            shape: CursorShape::Bar,
+        },
         modes: TerminalModes {
             alt_screen: true,
             auto_wrap: true,
@@ -316,14 +359,26 @@ fn regenerate_snapshot_fixtures() {
         let mut terminal = TerminalState::try_new(scenario.cols, scenario.rows).expect("terminal");
         terminal.try_feed(&scenario.bytes).expect("feed");
         let snapshot = terminal
-            .try_snapshot_with_reflow(Uuid::nil(), 0, 0, scenario.scrollback_limit, scenario.target_cols)
+            .try_snapshot_with_reflow(
+                Uuid::nil(),
+                0,
+                0,
+                scenario.scrollback_limit,
+                scenario.target_cols,
+            )
             .expect("snapshot");
         write_snapshot(&dir, scenario.name, &snapshot);
-        cases.push(Case { name: scenario.name.to_string(), max_bytes: scenario.max_bytes });
+        cases.push(Case {
+            name: scenario.name.to_string(),
+            max_bytes: scenario.max_bytes,
+        });
     }
     // Shapes the terminal does not emit but the renderers must agree on.
     write_snapshot(&dir, "synthetic_edges", &synthetic_edges());
-    cases.push(Case { name: "synthetic_edges".to_string(), max_bytes: None });
+    cases.push(Case {
+        name: "synthetic_edges".to_string(),
+        max_bytes: None,
+    });
     let manifest = serde_json::to_string_pretty(&cases).expect("serialize cases");
     std::fs::write(dir.join("cases.json"), manifest + "\n").expect("write cases.json");
 }

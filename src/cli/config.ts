@@ -8,9 +8,9 @@ import {
   readSync,
 } from "node:fs";
 import { IS_MACOS } from "../config.js";
-export * from "../config.js";
 import { isValidPort } from "../validation.js";
-import { print, dim, yellow } from "./formatting.js";
+import { print, yellow } from "../terminal-output.js";
+import { dim } from "./formatting.js";
 
 export let hasTTY = true;
 

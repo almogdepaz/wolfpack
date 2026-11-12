@@ -1,18 +1,14 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
+import { createPushFixture } from "./push-service-fixture.ts";
+const pushFixture = createPushFixture();
+afterAll(() => pushFixture.close());
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertNotificationFixtureHome } from "./run-notification-test.ts";
 assertNotificationFixtureHome();
 const { MockBackend } = await import("../../../src/server/mock-backend.ts");
-const { __setTestBackend, getBackend } = await import("../../../src/server/backend.ts");
-const { addSubscription, removeSubscription, _testing } = await import("../../../src/server/push.ts");
-const {
-  __resetSessionObservationForTests,
-  __runSessionNotificationObservationForTests,
-  stopSessionNotificationObserver,
-} = await import("../../../src/server/session-observation.ts");
-const { __resetChildEventsForTests } = await import("../../../src/server/child-events.ts");
+const { createServerContext } = await import("../../../src/server/context.ts");
 const { clearParentInbox, listParentNotifications } = await import("../../../src/server/parent-inbox.ts");
 const { PROGRAM_STATUS_STATE } = await import("../../../src/program-status-contract.ts");
 const { QUIET_ALERT_KIND, QUIET_ALERT_MODE } = await import("../../../src/quiet-alert-policy.ts");
@@ -23,7 +19,7 @@ const { invalidateQuietAlertPolicy } = await import("../../../src/quiet-alert-po
 const realNow = Date.now;
 let offsetMs = 0;
 let backend: InstanceType<typeof MockBackend>;
-let previousBackend: ReturnType<typeof getBackend>;
+let context: ReturnType<typeof createServerContext>;
 let endpoint: string;
 let payloads: string[];
 let projectDir: string;
@@ -33,9 +29,9 @@ function writeQuietAlertMode(mode: string): void {
   writeFileSync(process.env.WOLFPACK_SETTINGS_PATH!, JSON.stringify({ agentCmd: "shell", cmds: [], quietAlerts: { mode, quietAfterSeconds: 30 } }));
 }
 
-async function observeAfter(seconds: number): Promise<Awaited<ReturnType<typeof __runSessionNotificationObservationForTests>>> {
+async function observeAfter(seconds: number): Promise<Awaited<ReturnType<typeof context.sessionObservation.runSessionNotificationObservation>>> {
   offsetMs += seconds * 1_000;
-  return __runSessionNotificationObservationForTests();
+  return context.sessionObservation.runSessionNotificationObservation();
 }
 
 async function spawnChild(): Promise<{ parentId: string; childId: string }> {
@@ -51,27 +47,25 @@ function setChildStatus(state: (typeof PROGRAM_STATUS_STATE)[keyof typeof PROGRA
 }
 
 beforeEach(() => {
+  pushFixture.reset();
   offsetMs = 0;
   Date.now = () => realNow() + offsetMs;
   writeQuietAlertMode(QUIET_ALERT_MODE.NEEDS_INPUT_ONLY);
   projectDir = mkdtempSync(join(tmpdir(), "wolfpack-blocked-push-"));
-  previousBackend = getBackend();
   backend = new MockBackend();
   backend.setCapturePane(async () => "$ same screen");
-  __setTestBackend(backend);
-  __resetSessionObservationForTests();
-  __resetChildEventsForTests();
+  context = createServerContext({ backend, observationCacheTtlMs: 0, push: pushFixture.service });
   endpoint = `https://fcm.googleapis.com/blocked-push-${realNow()}-${Math.random()}`;
-  addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+  pushFixture.service.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
   payloads = [];
-  _testing.sessionPushSender = async payload => { payloads.push(`${payload.title}: ${payload.body}`); return { sent: 1, failed: 0, pruned: 0 }; };
+  pushFixture.dependencies.sender = async payload => { payloads.push(`${payload.title}: ${payload.body}`); return { sent: 1, failed: 0, pruned: 0 }; };
 });
 
 afterEach(async () => {
-  await stopSessionNotificationObserver();
-  _testing.sessionPushSender = null;
-  removeSubscription(endpoint);
-  __setTestBackend(previousBackend);
+  await context.sessionObservation.stopSessionNotificationObserver();
+  pushFixture.dependencies.sender = null;
+  pushFixture.service.removeSubscription(endpoint);
+  await context.close();
   Date.now = realNow;
   rmSync(projectDir, { recursive: true, force: true });
 });
@@ -311,7 +305,7 @@ test("a child pushed for its block gets no second push after a capture gap and a
 function failingSender(failures: number): { attempts: () => number; delivered: () => number } {
   let attempts = 0;
   let delivered = 0;
-  _testing.sessionPushSender = async (_payload, endpoints) => {
+  pushFixture.dependencies.sender = async (_payload, endpoints) => {
     attempts += 1;
     if (attempts <= failures) return { sent: 0, failed: endpoints.size, pruned: 0, successfulEndpoints: [], failedEndpoints: [...endpoints] };
     delivered += 1;

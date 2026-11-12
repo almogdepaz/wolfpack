@@ -54,7 +54,6 @@ if (!isolatedHome) {
 }
 
 process.env.HOME = isolatedHome;
-process.env.WOLFPACK_TEST = "1";
 let shuttingDown = false;
 const shutdown = (): void => {
   if (shuttingDown) return;
@@ -69,25 +68,17 @@ if (process.env.WOLFPACK_E2E_IGNORE_SIGTERM === "1") {
   process.once("SIGTERM", shutdown);
 }
 process.env.WOLFPACK_MACHINE_ID_PATH = join(import.meta.dirname, "fixtures", "test-server-installation-id");
-process.env.WOLFPACK_TAILSCALE_STATUS_JSON = JSON.stringify({
+const tailscaleStatus = {
   Self: {
     ID: "n-e2e-test-server",
     HostName: "e2e-test-server",
     DNSName: "e2e-test-server.example.ts.net.",
   },
   Peer: {},
-});
+};
 
-// Keep the default fixture hermetic: peer-specific specs intercept this endpoint
-// in the browser, while ordinary specs must never probe the developer's Tailnet.
-const { mock: bunMock } = await import("bun:test");
-const realHttp = await import("../../src/server/http.ts");
-await bunMock.module("../../src/server/http.js", () => ({
-  ...realHttp,
-  enumerateLocalTailnetCandidates: async () => ({ candidates: [] }),
-}));
-
-const { __setTestBackend } = await import("../../src/server/backend.ts");
+const { createServerContext } = await import("../../src/server/context.ts");
+const { SessionIdentityStore } = await import("../../src/server/session-identity.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
 
 // ── Mock backend ──
@@ -122,7 +113,13 @@ if (process.env.WOLFPACK_E2E_CANONICAL_SESSION_IDS === "1") {
     return identities;
   };
 }
-__setTestBackend(mock);
+const sessionIdentityStore = new SessionIdentityStore(process.env.WOLFPACK_SESSION_IDENTITY_PATH
+  ? undefined : join(isolatedHome!, `session-identities-test-${process.pid}`));
+const context = createServerContext({
+  backend: mock, sessionIdentityStore, startSupervisor: false, observationCacheTtlMs: 0,
+  readTailscaleStatus: async () => tailscaleStatus,
+  terminalPrefillDelayMs: Number(process.env.WOLFPACK_TEST_PREFILL_DELAY_MS),
+});
 
 // Only the dedicated lifecycle fixture emits a completed mock-backend exit.
 // Keep the real /api/kill, event bus, filtered SSE route and /api/sessions path;
@@ -136,7 +133,8 @@ if (process.env.WOLFPACK_E2E_LIFECYCLE_EVENTS === "1") {
   };
 }
 
-const { server } = await import("../../src/server/index.ts");
+const { createServerInstance } = await import("../../src/server/index.ts");
+const { server } = createServerInstance(context, { allowLocalOrigins: true });
 
 // Suppress expected tmux noise
 const origError = console.error;

@@ -1,26 +1,14 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import {
-  addSubscription,
-  buildAgentNotificationPayload,
-  checkNotifyRateLimit,
-  getSubscriptionCount,
-  getVapidPublicKey,
-  removeSubscription,
-  sendPush,
-  sendTestPush,
-  validateSubscription,
-} from "./push.js";
+import { buildAgentNotificationPayload, validateSubscription } from "./push.js";
 import type { PushSubscription } from "./push.js";
 import {
   isJsonObject,
   json,
   parseObjectBody,
 } from "./http.js";
-import { resetNotificationObservation } from "./session-observation.js";
 import { notifyDelivery } from "../notify-contract.js";
 import { defaultServerContext, type ServerContext } from "./context.js";
 import { appendParentNotification } from "./parent-inbox.js";
-import { childMessageEvent } from "./child-events.js";
 import { childEventSummary } from "../child-event-contract.js";
 import { WOLFPACK_EVENT_KIND } from "../events-contract.js";
 import { createLogger, errMsg } from "../log.js";
@@ -29,9 +17,10 @@ const log = createLogger("push");
 
 type RouteHandler = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
 
-export const pushSubscriptionRoutes: Record<string, RouteHandler> = {
+export function createPushSubscriptionRoutes(ctx: Pick<ServerContext, "sessionObservation" | "push">): Record<string, RouteHandler> {
+return {
   "GET /api/push/vapid-key": (_req, res) => {
-    json(res, { publicKey: getVapidPublicKey() });
+    json(res, { publicKey: ctx.push.getVapidPublicKey() });
   },
 
   "POST /api/push/subscribe": async (req, res) => {
@@ -49,10 +38,10 @@ export const pushSubscriptionRoutes: Record<string, RouteHandler> = {
     };
     const validationError = validateSubscription(sub);
     if (validationError) return json(res, { error: validationError }, 400);
-    const hadSubscriptions = getSubscriptionCount() > 0;
-    const result = addSubscription(sub);
+    const hadSubscriptions = ctx.push.getSubscriptionCount() > 0;
+    const result = ctx.push.addSubscription(sub);
     if (!result.ok) return json(res, { error: result.error }, 429);
-    if (!hadSubscriptions) resetNotificationObservation();
+    if (!hadSubscriptions) ctx.sessionObservation.resetNotificationObservation();
     json(res, { ok: true });
   },
 
@@ -60,9 +49,9 @@ export const pushSubscriptionRoutes: Record<string, RouteHandler> = {
     const body = await parseObjectBody(req, res);
     if (!body) return;
     if (typeof body.endpoint !== "string" || !body.endpoint || body.endpoint.length > 1024) return json(res, { error: "invalid endpoint" }, 400);
-    const rateLimitError = checkNotifyRateLimit();
+    const rateLimitError = ctx.push.checkNotifyRateLimit();
     if (rateLimitError) return json(res, { error: rateLimitError }, 429);
-    const result = await sendTestPush(body.endpoint);
+    const result = await ctx.push.sendTestPush(body.endpoint);
     if (!result) return json(res, { error: "endpoint not registered" }, 404);
     json(res, { ok: result.sent === 1 && result.failed === 0, ...result }, result.sent === 1 && result.failed === 0 ? 200 : 502);
   },
@@ -71,13 +60,16 @@ export const pushSubscriptionRoutes: Record<string, RouteHandler> = {
     const body = await parseObjectBody(req, res);
     if (!body) return;
     if (!body.endpoint || typeof body.endpoint !== "string") return json(res, { error: "missing endpoint" }, 400);
-    removeSubscription(body.endpoint);
-    if (getSubscriptionCount() === 0) resetNotificationObservation();
+    ctx.push.removeSubscription(body.endpoint);
+    if (ctx.push.getSubscriptionCount() === 0) ctx.sessionObservation.resetNotificationObservation();
     json(res, { ok: true });
   },
 };
+}
 
-export function createPushNotifyRoutes(ctx: Pick<ServerContext, "backend" | "events">): Record<string, RouteHandler> {
+export const pushSubscriptionRoutes = createPushSubscriptionRoutes(defaultServerContext);
+
+export function createPushNotifyRoutes(ctx: Pick<ServerContext, "backend" | "events" | "childEvents" | "push">): Record<string, RouteHandler> {
 return {
   "POST /api/notify": async (req, res) => {
     const body = await parseObjectBody(req, res);
@@ -103,7 +95,7 @@ return {
       return json(res, { error: "invalid notification session target" }, 400);
     }
 
-    const rateLimitError = checkNotifyRateLimit();
+    const rateLimitError = ctx.push.checkNotifyRateLimit();
     if (rateLimitError) return json(res, { error: rateLimitError }, 429);
 
     let parentInbox: { queued: true; seq: number } | { queued: false; reason: "no_parent" | "parent_not_found" } =
@@ -120,7 +112,7 @@ return {
         // Selectors can also be names; require this exact live incarnation.
         if (!exited && inspection.ok && inspection.alive && inspection.sessionId === sessionId && inspection.session === sessionName) {
           // A message from a known child also becomes a structured child event.
-          const childEvent = childMessageEvent(sessionId, from, message, body => ctx.events.publishEvent(body));
+          const childEvent = ctx.childEvents.childMessageEvent(sessionId, from, message, body => ctx.events.publishEvent(body));
           const notification = childEvent
             ? { message: childEventSummary(childEvent), from: childEvent.childName }
             : { message, ...(from !== undefined && { from }) };
@@ -136,7 +128,7 @@ return {
       }
     }
 
-    const result = await sendPush(payload);
+    const result = await ctx.push.sendPush(payload);
     // `ok` means accepted; `delivered`/`reason` say whether any device got it.
     json(res, { ok: true, ...result, ...notifyDelivery(result), parentInbox });
   },

@@ -1,4 +1,4 @@
-import { afterAll, expect, spyOn, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -9,16 +9,10 @@ import { RELAY_WORKER_LIMITS } from "../../src/task-relay/worker-protocol.ts";
 import { validateControlApiSchemaValue as validate } from "../control-api-schema-validator.ts";
 
 // Isolate production singleton imports before loading the route factory.
-const priorTest = process.env.WOLFPACK_TEST;
-process.env.WOLFPACK_TEST = "1";
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
 const { createServerContext } = await import("../../src/server/context.ts");
 const { createSessionControlRoutes } = await import("../../src/server/session-control-routes.ts");
 const { createVolatileRelayRoutes } = await import("../../src/server/volatile-relay-routes.ts");
-afterAll(() => {
-  if (priorTest === undefined) delete process.env.WOLFPACK_TEST;
-  else process.env.WOLFPACK_TEST = priorTest;
-});
 
 const LIVE_ID = "11111111-1111-4111-8111-111111111111";
 const DEAD_ID = "22222222-2222-4222-8222-222222222222";

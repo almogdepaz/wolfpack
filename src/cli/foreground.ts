@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import { BrokerClient, defaultBrokerSocketPath } from "../broker/client.js";
 import { SERVER_LISTENING } from "../server-startup-contract.js";
 import { brokerProgramPath, validateExecutableCandidate } from "./service.js";
-import type { Config } from "./config.js";
+import type { Config } from "../config.js";
 import { APPLICATION_READY_TIMEOUT_MS, applicationReady } from "./readiness.js";
 
 const BROKER_START_TIMEOUT_MS = 5000;

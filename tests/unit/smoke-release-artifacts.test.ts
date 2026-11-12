@@ -140,7 +140,7 @@ function runSmoke(fixture: SmokeFixture, codesignFails = false, node = Bun.which
     cwd: fixture.root,
     env: {
       HOME: home,
-      // The unit process can import src/server/index.ts, which replaces its
+      // The unit process can start the server, which replaces its
       // mutable PATH from the login shell. Bind the startup-resolved Node
       // directory for this owned fixture so the public alias's shebang sees
       // the intended real Node executable.

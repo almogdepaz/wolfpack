@@ -1,61 +1,63 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import {
-  initBackend,
-  getBackend,
-  __resetBackend,
-  __setTestBackend,
-} from "../../src/server/backend";
+import { describe, test, expect } from "bun:test";
+import { createServerContext } from "../../src/server/context";
 import { MockBackend } from "../../src/server/mock-backend";
 
-describe("backend singleton", () => {
-  beforeEach(() => {
-    process.env.WOLFPACK_TEST = "1";
-    __resetBackend();
-  });
-
-  afterEach(() => {
-    process.env.WOLFPACK_TEST = "1";
-    __resetBackend();
-  });
-
-  test("initBackend() returns a backend instance", () => {
-    const backend = initBackend();
+describe("context-owned backend", () => {
+  test("default construction provides the backend contract", () => {
+    const { backend } = createServerContext({ startSupervisor: false });
     expect(backend).toBeDefined();
     expect(typeof backend.list).toBe("function");
     expect(typeof backend.createSession).toBe("function");
     expect(typeof backend.killSession).toBe("function");
   });
 
-  test("initBackend overwrites previous backend", () => {
-    const first = initBackend();
+  test("constructing another context does not replace an owned backend", () => {
+    const first = createServerContext({ startSupervisor: false });
     const mock = new MockBackend();
-    __setTestBackend(mock);
-    expect(getBackend()).toBe(mock);
-    const third = initBackend();
-    expect(getBackend()).toBe(third);
-    expect(getBackend()).not.toBe(mock);
-    expect(first).toBeDefined();
+    const second = createServerContext({ backend: mock });
+    const third = createServerContext({ startSupervisor: false });
+    expect(second.backend).toBe(mock);
+    expect(first.backend).not.toBe(third.backend);
+    expect(third.backend).not.toBe(mock);
+    expect(second.backend).toBe(mock);
   });
 
-  test("getBackend auto-initializes when no backend set", () => {
-    expect(getBackend()).toBeDefined();
+  test("default construction does not require prior global initialization", () => {
+    expect(createServerContext({ startSupervisor: false }).backend).toBeDefined();
   });
 
-  test("getBackend returns same instance after init", () => {
-    const backend = initBackend();
-    expect(getBackend()).toBe(backend);
-    expect(getBackend()).toBe(backend);
+  test("context retains the same backend instance", () => {
+    const context = createServerContext({ startSupervisor: false });
+    const backend = context.backend;
+    expect(context.backend).toBe(backend);
+    expect(context.backend).toBe(backend);
   });
 
-  test("__resetBackend throws outside test mode", () => {
+  test("an injected backend does not start a broker outside test mode", () => {
+    const priorTestMode = process.env.WOLFPACK_TEST;
     delete process.env.WOLFPACK_TEST;
-    expect(() => __resetBackend()).toThrow("only available in test mode");
-    process.env.WOLFPACK_TEST = "1";
+    try {
+      const backend = new MockBackend();
+      const context = createServerContext({ backend });
+      expect(context.backend).toBe(backend);
+      expect(context.supervisor).toBeUndefined();
+    } finally {
+      if (priorTestMode === undefined) delete process.env.WOLFPACK_TEST;
+      else process.env.WOLFPACK_TEST = priorTestMode;
+    }
   });
 
-  test("__setTestBackend throws outside test mode", () => {
+  test("backend injection is local even without a test-mode guard", async () => {
+    const priorTestMode = process.env.WOLFPACK_TEST;
     delete process.env.WOLFPACK_TEST;
-    expect(() => __setTestBackend(new MockBackend())).toThrow("only available in test mode");
-    process.env.WOLFPACK_TEST = "1";
+    try {
+      const first = createServerContext({ backend: new MockBackend({ sessions: ["first"] }) });
+      const second = createServerContext({ backend: new MockBackend({ sessions: ["second"] }) });
+      expect(await first.backend.list()).toEqual(["first"]);
+      expect(await second.backend.list()).toEqual(["second"]);
+    } finally {
+      if (priorTestMode === undefined) delete process.env.WOLFPACK_TEST;
+      else process.env.WOLFPACK_TEST = priorTestMode;
+    }
   });
 });

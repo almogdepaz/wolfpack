@@ -1,18 +1,15 @@
-import { afterAll, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 
-const prior = process.env.WOLFPACK_TEST;
-process.env.WOLFPACK_TEST = "1";
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
 const { createServerContext } = await import("../../src/server/context.ts");
 const { createSessionControlRoutes } = await import("../../src/server/session-control-routes.ts");
 const { createRoutes } = await import("../../src/server/routes.ts");
 const { SessionOrganizationService } = await import("../../src/server/session-organization.ts");
-afterAll(() => { if (prior === undefined) delete process.env.WOLFPACK_TEST; else process.env.WOLFPACK_TEST = prior; });
 
 const ID = "11111111-1111-4111-8111-111111111111";
 class Backend extends MockBackend {

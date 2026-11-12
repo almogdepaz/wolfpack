@@ -257,11 +257,21 @@ pub struct ControlResponse {
 
 impl ControlResponse {
     pub fn ok(id: u64, payload: ResponsePayload) -> Self {
-        Self { id, status: Status::Ok, payload: Some(payload), error: None }
+        Self {
+            id,
+            status: Status::Ok,
+            payload: Some(payload),
+            error: None,
+        }
     }
 
     pub fn err(id: u64, error: ProtocolError) -> Self {
-        Self { id, status: Status::Error, payload: None, error: Some(error) }
+        Self {
+            id,
+            status: Status::Error,
+            payload: None,
+            error: Some(error),
+        }
     }
 }
 
@@ -270,10 +280,19 @@ impl ControlResponse {
 pub enum ResponsePayload {
     /// `hello`: lets a client detect a broker built from a different release
     /// before relying on it. Brokers that predate it answer `unknown_method`.
-    Hello { protocol_version: u32, broker_version: String },
-    ListSessions { sessions: Vec<SessionInfo> },
-    CreateSession { session: SessionInfo },
-    KillSession { killed: bool },
+    Hello {
+        protocol_version: u32,
+        broker_version: String,
+    },
+    ListSessions {
+        sessions: Vec<SessionInfo>,
+    },
+    CreateSession {
+        session: SessionInfo,
+    },
+    KillSession {
+        killed: bool,
+    },
     SessionInfo {
         session: SessionInfo,
         /// Every program status record (root and children), sorted by id.
@@ -283,8 +302,14 @@ pub enum ResponsePayload {
     /// Snapshots are immutable and potentially history-sized. `Arc` avoids
     /// copying the cell graph from the per-session cache into a response;
     /// serde's `rc` support retains the exact Snapshot JSON shape.
-    Snapshot { snapshot: Arc<Snapshot> },
-    SnapshotSubscribe { snapshot: Arc<Snapshot>, current_seq: u64, replay_truncated: bool },
+    Snapshot {
+        snapshot: Arc<Snapshot>,
+    },
+    SnapshotSubscribe {
+        snapshot: Arc<Snapshot>,
+        current_seq: u64,
+        replay_truncated: bool,
+    },
     /// Atomic attach cut with the snapshot already rendered to ANSI prefill
     /// bytes (base64, standard alphabet, padded) instead of per-cell JSON.
     SnapshotSubscribeAnsi {
@@ -300,9 +325,17 @@ pub enum ResponsePayload {
         /// Oldest scrollback lines dropped to fit `max_bytes`.
         trimmed_lines: u64,
     },
-    Resize { ok: bool },
-    Subscribe { ok: bool, current_seq: u64, replay_truncated: bool },
-    Unsubscribe { ok: bool },
+    Resize {
+        ok: bool,
+    },
+    Subscribe {
+        ok: bool,
+        current_seq: u64,
+        replay_truncated: bool,
+    },
+    Unsubscribe {
+        ok: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -425,7 +458,9 @@ pub struct UnsubscribeParams {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
-    SessionStarted { session: SessionInfo },
+    SessionStarted {
+        session: SessionInfo,
+    },
     SessionExited {
         session_id: Uuid,
         #[serde(default)]
@@ -436,8 +471,14 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         final_seq: Option<String>,
     },
-    SessionResized { session_id: Uuid, cols: u16, rows: u16 },
-    SnapshotInvalidated { session_id: Uuid },
+    SessionResized {
+        session_id: Uuid,
+        cols: u16,
+        rows: u16,
+    },
+    SnapshotInvalidated {
+        session_id: Uuid,
+    },
     /// The session's program status records changed (paced: at most one event
     /// per 200ms per session, trailing event carries the latest root). Carries
     /// the current root record; absent when the root was cleared or never
@@ -452,7 +493,10 @@ pub enum Event {
     /// delivered seq. This event is NOT broadcast to all clients: it is queued
     /// on the affected connection's output stream after all accepted frames,
     /// making it an ordering barrier for safe replay recovery.
-    SubscriptionDropped { session_id: Uuid, lagged: u64 },
+    SubscriptionDropped {
+        session_id: Uuid,
+        lagged: u64,
+    },
 }
 
 #[cfg(test)]
@@ -502,11 +546,19 @@ mod tests {
             cols: 80,
             rows: 24,
             visible_screen: vec![StyledLine {
-                cells: vec![StyledCell { ch: "h".into(), attrs: CellAttrs::default() }],
+                cells: vec![StyledCell {
+                    ch: "h".into(),
+                    attrs: CellAttrs::default(),
+                }],
                 wrapped: false,
             }],
             scrollback: vec![],
-            cursor: CursorState { row: 0, col: 1, visible: true, shape: CursorShape::Block },
+            cursor: CursorState {
+                row: 0,
+                col: 1,
+                visible: true,
+                shape: CursorShape::Block,
+            },
             modes: TerminalModes::default(),
             scroll_region: ScrollRegion { top: 0, bottom: 23 },
             title: Some("ralph".into()),
@@ -516,12 +568,21 @@ mod tests {
 
     #[test]
     fn default_snapshot_cells_serialize_compactly_and_roundtrip() {
-        let cell = StyledCell { ch: "x".into(), attrs: CellAttrs::default() };
-        let line = StyledLine { cells: vec![cell], wrapped: false };
+        let cell = StyledCell {
+            ch: "x".into(),
+            attrs: CellAttrs::default(),
+        };
+        let line = StyledLine {
+            cells: vec![cell],
+            wrapped: false,
+        };
         let value = serde_json::to_value(&line).unwrap();
         assert_eq!(value, json!({ "cells": [{ "ch": "x" }] }));
         assert_eq!(serde_json::from_value::<StyledLine>(value).unwrap(), line);
-        assert_eq!(serde_json::to_value(StyledLine::default()).unwrap(), json!({}));
+        assert_eq!(
+            serde_json::to_value(StyledLine::default()).unwrap(),
+            json!({})
+        );
     }
 
     #[test]
@@ -561,7 +622,10 @@ mod tests {
 
     #[test]
     fn kill_session_params_roundtrip() {
-        let p = KillSessionParams { session_id: nil(), signal: Some(15) };
+        let p = KillSessionParams {
+            session_id: nil(),
+            signal: Some(15),
+        };
         let v = serde_json::to_value(&p).unwrap();
         let back: KillSessionParams = serde_json::from_value(v).unwrap();
         assert_eq!(p, back);
@@ -583,7 +647,8 @@ mod tests {
         assert_eq!(p.scrollback_lines, Some(500));
         assert_eq!(p.target_cols, Some(80));
         // Serialise and round-trip.
-        let back: SnapshotParams = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        let back: SnapshotParams =
+            serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
         assert_eq!(back.target_cols, Some(80));
     }
 
@@ -608,7 +673,10 @@ mod tests {
 
     #[test]
     fn prefill_too_large_error_code_wire_name() {
-        assert_eq!(serde_json::to_value(ErrorCode::PrefillTooLarge).unwrap(), json!("prefill_too_large"));
+        assert_eq!(
+            serde_json::to_value(ErrorCode::PrefillTooLarge).unwrap(),
+            json!("prefill_too_large")
+        );
     }
 
     #[test]
@@ -642,7 +710,10 @@ mod tests {
     fn response_ok_payload_kind_tag() {
         let resp = ControlResponse::ok(
             7,
-            ResponsePayload::SessionInfo { session: sample_session(), program_status_records: vec![] },
+            ResponsePayload::SessionInfo {
+                session: sample_session(),
+                program_status_records: vec![],
+            },
         );
         let v = serde_json::to_value(&resp).unwrap();
         assert_eq!(v["status"], "ok");
@@ -658,7 +729,10 @@ mod tests {
     fn response_hello_payload() {
         let resp = ControlResponse::ok(
             1,
-            ResponsePayload::Hello { protocol_version: PROTOCOL_VERSION, broker_version: "1.2.3".into() },
+            ResponsePayload::Hello {
+                protocol_version: PROTOCOL_VERSION,
+                broker_version: "1.2.3".into(),
+            },
         );
         let v = serde_json::to_value(&resp).unwrap();
         assert_eq!(v["status"], "ok");
@@ -673,7 +747,9 @@ mod tests {
     fn response_list_sessions_payload() {
         let resp = ControlResponse::ok(
             5,
-            ResponsePayload::ListSessions { sessions: vec![sample_session()] },
+            ResponsePayload::ListSessions {
+                sessions: vec![sample_session()],
+            },
         );
         let v = serde_json::to_value(&resp).unwrap();
         assert_eq!(v["status"], "ok");
@@ -706,7 +782,11 @@ mod tests {
     fn response_subscribe_payload() {
         let resp = ControlResponse::ok(
             12,
-            ResponsePayload::Subscribe { ok: true, current_seq: 99, replay_truncated: false },
+            ResponsePayload::Subscribe {
+                ok: true,
+                current_seq: 99,
+                replay_truncated: false,
+            },
         );
         let v = serde_json::to_value(&resp).unwrap();
         assert_eq!(v["payload"]["kind"], "subscribe");
@@ -744,17 +824,25 @@ mod tests {
         let snapshot = Arc::new(sample_snapshot());
         let resp = ControlResponse::ok(
             3,
-            ResponsePayload::Snapshot { snapshot: Arc::clone(&snapshot) },
+            ResponsePayload::Snapshot {
+                snapshot: Arc::clone(&snapshot),
+            },
         );
         let payload_snapshot = match resp.payload.as_ref().expect("snapshot payload") {
             ResponsePayload::Snapshot { snapshot } => snapshot,
             other => panic!("unexpected payload: {other:?}"),
         };
-        assert!(Arc::ptr_eq(&snapshot, payload_snapshot), "response must retain shared snapshot ownership");
+        assert!(
+            Arc::ptr_eq(&snapshot, payload_snapshot),
+            "response must retain shared snapshot ownership"
+        );
         let s = serde_json::to_string(&resp).unwrap();
         let back: ControlResponse = serde_json::from_str(&s).unwrap();
         assert_eq!(resp, back);
-        assert_eq!(serde_json::to_value(&snapshot).unwrap(), serde_json::to_value(sample_snapshot()).unwrap());
+        assert_eq!(
+            serde_json::to_value(&snapshot).unwrap(),
+            serde_json::to_value(sample_snapshot()).unwrap()
+        );
     }
 
     #[test]
@@ -773,7 +861,11 @@ mod tests {
 
     #[test]
     fn event_session_resized_roundtrip() {
-        let ev = Event::SessionResized { session_id: nil(), cols: 100, rows: 40 };
+        let ev = Event::SessionResized {
+            session_id: nil(),
+            cols: 100,
+            rows: 40,
+        };
         let v = serde_json::to_value(&ev).unwrap();
         assert_eq!(v["event"], "session_resized");
         let back: Event = serde_json::from_value(v).unwrap();
@@ -796,32 +888,56 @@ mod tests {
                 "updated_at_ms": 1_700_000_000_000u64
             })
         );
-        assert_eq!(serde_json::from_value::<ProgramStatusRecord>(v).unwrap(), record);
+        assert_eq!(
+            serde_json::from_value::<ProgramStatusRecord>(v).unwrap(),
+            record
+        );
     }
 
     #[test]
     fn session_info_carries_root_program_status_and_payload_carries_all_records() {
         let mut session = sample_session();
         session.program_status = Some(sample_program_status());
-        let child = ProgramStatusRecord { id: "build".into(), state: ProgramStatusState::Working, kind: None, progress: None, app: None, title: None, message: None, updated_at_ms: 1 };
+        let child = ProgramStatusRecord {
+            id: "build".into(),
+            state: ProgramStatusState::Working,
+            kind: None,
+            progress: None,
+            app: None,
+            title: None,
+            message: None,
+            updated_at_ms: 1,
+        };
         let resp = ControlResponse::ok(
             1,
-            ResponsePayload::SessionInfo { session, program_status_records: vec![sample_program_status(), child] },
+            ResponsePayload::SessionInfo {
+                session,
+                program_status_records: vec![sample_program_status(), child],
+            },
         );
         let v = serde_json::to_value(&resp).unwrap();
-        assert_eq!(v["payload"]["session"]["program_status"]["state"], "blocked");
+        assert_eq!(
+            v["payload"]["session"]["program_status"]["state"],
+            "blocked"
+        );
         assert_eq!(v["payload"]["program_status_records"][1]["id"], "build");
         assert_eq!(serde_json::from_value::<ControlResponse>(v).unwrap(), resp);
     }
 
     #[test]
     fn event_program_status_changed_roundtrip() {
-        let ev = Event::ProgramStatusChanged { session_id: nil(), program_status: Some(sample_program_status()) };
+        let ev = Event::ProgramStatusChanged {
+            session_id: nil(),
+            program_status: Some(sample_program_status()),
+        };
         let v = serde_json::to_value(&ev).unwrap();
         assert_eq!(v["event"], "program_status_changed");
         assert_eq!(v["program_status"]["kind"], "permission");
         assert_eq!(serde_json::from_value::<Event>(v).unwrap(), ev);
-        let cleared = Event::ProgramStatusChanged { session_id: nil(), program_status: None };
+        let cleared = Event::ProgramStatusChanged {
+            session_id: nil(),
+            program_status: None,
+        };
         let v = serde_json::to_value(&cleared).unwrap();
         assert!(v.get("program_status").is_none());
         assert_eq!(serde_json::from_value::<Event>(v).unwrap(), cleared);
@@ -835,7 +951,10 @@ mod tests {
     #[test]
     fn styled_line_wrapped_roundtrip() {
         let line = StyledLine {
-            cells: vec![StyledCell { ch: "x".into(), attrs: CellAttrs::default() }],
+            cells: vec![StyledCell {
+                ch: "x".into(),
+                attrs: CellAttrs::default(),
+            }],
             wrapped: true,
         };
         let v = serde_json::to_value(&line).unwrap();

@@ -10,12 +10,8 @@ import { join } from "node:path";
 import { validateRequestJwt, getCachedJwtAuthConfig, verifyJwtAuthAtStartup } from "../auth.js";
 import { SHELL } from "./shell.js";
 import { resolveLoginShellPath } from "./login-shell-path.js";
-import { createServerContext, defaultServerContext, setDefaultServerContext, type ServerContext } from "./context.js";
+import { createServerContext, setDefaultServerContext, type ServerContext, type ServerContextOptions } from "./context.js";
 import { createRoutes } from "./routes.js";
-import {
-  startSessionNotificationObserver,
-  stopSessionNotificationObserver,
-} from "./session-observation.js";
 import {
   json,
   serveFile,
@@ -24,51 +20,24 @@ import {
   isAllowedSession,
   createPerIpRateLimiter,
 } from "./http.js";
-import { handlePtyWs } from "./websocket.js";
-import { createLogger, errMsg } from "../log.js";
+import { createLogger, errMsg, writeFatalError } from "../log.js";
 import { isValidSessionName } from "../validation.js";
 import { PTY_WEBSOCKET_MAX_PAYLOAD_BYTES } from "../ws-constants.js";
-import { childEventTypedNotesEnabled, loadConfig, WOLFPACK_DIR } from "../config.js";
+import { childEventTypedNotesEnabled, WOLFPACK_DIR } from "../config.js";
 import {
   SESSION_SEND_DEFAULT_OBSERVE_MS, SESSION_SEND_DELIVERY, SESSION_SEND_FAILURE_REASON, SESSION_SEND_OUTCOME,
 } from "../session-send-contract.js";
-import { startChildEventDelivery } from "./child-event-delivery.js";
-import { startChildCleanupCascade } from "./session-cascade.js";
-import { lastViewerInputAt } from "./viewer-input.js";
 import { startLogRotationMonitor } from "../log-rotation.js";
 import { createTailnetOriginPolicy } from "./tailnet-origin-policy.js";
-import { consumeWebSocketTicket } from "./ws-ticket.js";
-import { classifyRequestClient, isLoopbackAddress } from "./operability.js";
+import { createHostPolicy } from "./host-policy.js";
+import { isLoopbackAddress } from "./client-address.js";
+import { classifyRequestClient } from "./operability.js";
 import { installShutdownSignalHandlers } from "./shutdown.js";
 
 const log = createLogger("server");
 
 const PORT =
   Number(process.env.WOLFPACK_PORT) || Number(process.argv[2]) || 18790;
-
-// inherit user's full PATH from login shell — launchd PATH is minimal
-const loginShellPath = resolveLoginShellPath({ shell: SHELL, currentPath: process.env.PATH || "", home: process.env.HOME });
-if (loginShellPath.path) process.env.PATH = loginShellPath.path;
-if (loginShellPath.source === "fallback") {
-  log.warn("login shell PATH unavailable; using fallback PATH", { shell: SHELL, reason: loginShellPath.reason });
-}
-
-// Cross-origin Tailnet access derives solely from the canonical hostname that
-// setup persisted after Serve verification. No forwarded/request header can
-// expand this authority.
-const configuredTailnetHostname = loadConfig()?.tailscaleHostname;
-const originPolicy = createTailnetOriginPolicy({
-  port: PORT,
-  tailscaleHostname: configuredTailnetHostname,
-  testMode: Boolean(process.env.WOLFPACK_TEST),
-});
-if (!configuredTailnetHostname) {
-  log.warn("no verified tailscaleHostname in config — remote browser access will be blocked by CORS", { hint: "run 'wolfpack setup' to fix" });
-}
-
-function isAllowedOrigin(origin: string): boolean {
-  return originPolicy.isAllowed(origin);
-}
 
 // ── Rate limiting ──
 
@@ -79,41 +48,62 @@ const POLL_HEAVY_PATHS = new Set([
   "/api/tailnet/v1/candidates",
   "/api/discover",
 ]);
-const pollRateLimiter = createPerIpRateLimiter(10);
-
-/** Global limit for all routes (120 req/s per IP). */
-const globalRateLimiter = createPerIpRateLimiter(120);
-/** WebSocket upgrade attempts per second per IP, before auth/backend work. */
-const wsUpgradeRateLimiter = createPerIpRateLimiter(20);
-const MAX_WS_CONNECTIONS_PER_IP = 32;
-const wsConnectionsByIp = new Map<string, number>();
-
-function reserveWsConnection(ip: string): boolean {
-  const current = wsConnectionsByIp.get(ip) ?? 0;
-  if (current >= MAX_WS_CONNECTIONS_PER_IP) return false;
-  wsConnectionsByIp.set(ip, current + 1);
-  return true;
-}
-
-function releaseWsConnection(ip: string): void {
-  const current = wsConnectionsByIp.get(ip) ?? 0;
-  if (current <= 1) wsConnectionsByIp.delete(ip);
-  else wsConnectionsByIp.set(ip, current - 1);
-}
-
-export {
-  pollRateLimiter as __pollRateLimiter,
-  globalRateLimiter as __globalRateLimiter,
-  wsUpgradeRateLimiter as __wsUpgradeRateLimiter,
-  wsConnectionsByIp as __wsConnectionsByIp,
-  reserveWsConnection as __reserveWsConnection,
-  MAX_WS_CONNECTIONS_PER_IP,
-};
+export const MAX_WS_CONNECTIONS_PER_IP = 32;
 
 // ── Server factory ──
 
-/** Create an isolated server + WebSocketServer pair. Used by tests for parallel isolation. */
-export function createServerInstance(ctx: ServerContext = defaultServerContext): { server: ReturnType<typeof createServer>; wss: InstanceType<typeof WebSocketServer> } {
+export interface ServerInstanceOptions {
+  readonly port?: number;
+  /** Also permit HTTP origins on 127.0.0.1 at arbitrary ports; production defaults to false. */
+  readonly allowLocalOrigins?: boolean;
+}
+
+/** Create an isolated server, WebSocketServer and request quotas. */
+export function createServerInstance(ctx: ServerContext, options: ServerInstanceOptions = {}) {
+  // Cross-origin Tailnet access derives solely from the canonical hostname that
+  // setup persisted after Serve verification. No forwarded/request header can
+  // expand this authority.
+  const configuredServer = ctx.config;
+  const configuredTailnetHostname = configuredServer?.tailscaleHostname;
+  const hostPolicy = createHostPolicy({
+    configuredHostname: configuredTailnetHostname,
+    extraHosts: configuredServer?.allowedHosts ?? [],
+    readSelfStatus: () => ctx.readTailscaleStatus(true),
+  });
+  const originPolicy = createTailnetOriginPolicy({
+    port: options.port ?? PORT,
+    tailscaleHostname: configuredTailnetHostname,
+    testMode: options.allowLocalOrigins ?? false,
+  });
+  if (!configuredTailnetHostname) {
+    log.warn("no verified tailscaleHostname in config — remote browser access will be blocked by CORS", { hint: "run 'wolfpack setup' to fix" });
+  }
+
+  function isAllowedOrigin(origin: string): boolean {
+    return originPolicy.isAllowed(origin);
+  }
+
+  const pollRateLimiter = createPerIpRateLimiter(10);
+
+  /** Global limit for all routes (120 req/s per IP). */
+  const globalRateLimiter = createPerIpRateLimiter(120);
+  /** WebSocket upgrade attempts per second per IP, before auth/backend work. */
+  const wsUpgradeRateLimiter = createPerIpRateLimiter(20);
+  const wsConnectionsByIp = new Map<string, number>();
+
+  function reserveWsConnection(ip: string): boolean {
+    const current = wsConnectionsByIp.get(ip) ?? 0;
+    if (current >= MAX_WS_CONNECTIONS_PER_IP) return false;
+    wsConnectionsByIp.set(ip, current + 1);
+    return true;
+  }
+
+  function releaseWsConnection(ip: string): void {
+    const current = wsConnectionsByIp.get(ip) ?? 0;
+    if (current <= 1) wsConnectionsByIp.delete(ip);
+    else wsConnectionsByIp.set(ip, current - 1);
+  }
+
   const routes = createRoutes(ctx);
   const wss = new WebSocketServer({
     noServer: true,
@@ -122,6 +112,13 @@ export function createServerInstance(ctx: ServerContext = defaultServerContext):
 
   const server = createServer(async (req, res) => {
     try {
+      if (!(await hostPolicy.isAllowed(req.headers.host))) {
+        const sanitizedHost = (req.headers.host ?? "").slice(0, 255).replace(/[\x00-\x1f\x7f-\x9f]/g, "");
+        log.warn("host not allowed", { host: sanitizedHost });
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "host not allowed" }));
+        return;
+      }
       const directOrigin = req.headers.origin;
       const recoveredServeOrigin = directOrigin
         ? undefined
@@ -164,7 +161,7 @@ export function createServerInstance(ctx: ServerContext = defaultServerContext):
       const operationalPath = url.pathname === "/api/health" || url.pathname === "/api/metrics" || url.pathname === "/metrics";
       const localOperationalRequest = operationalPath && client.isDirectLoopback;
       if ((shouldAuthenticateApiPath(url.pathname) || url.pathname === "/metrics") && !localOperationalRequest) {
-        const auth = validateRequestJwt(req.headers, url, false);
+        const auth = validateRequestJwt(req.headers, url, false, ctx.jwtAuthConfig);
         if (!auth.ok) {
           log.debug("jwt auth failed", { path: url.pathname, reason: auth.error });
           writeUnauthorized(res);
@@ -210,6 +207,10 @@ export function createServerInstance(ctx: ServerContext = defaultServerContext):
         socket.end("HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n");
         return;
       }
+      if (!(await hostPolicy.isAllowed(req.headers.host))) {
+        socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+        return;
+      }
       if (!reserveWsConnection(client.clientKey)) {
         socket.end("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
         return;
@@ -223,8 +224,8 @@ export function createServerInstance(ctx: ServerContext = defaultServerContext):
       const url = new URL(req.url ?? "/", "http://localhost");
 
       const ticket = url.searchParams.get("ticket");
-      const ticketOk = ticket ? consumeWebSocketTicket(ticket, client.clientKey) : false;
-      const auth = ticketOk ? { ok: true } : validateRequestJwt(req.headers, url, true);
+      const ticketOk = ticket ? ctx.webSocketTickets.consumeWebSocketTicket(ticket, client.clientKey) : false;
+      const auth = ticketOk ? { ok: true } : validateRequestJwt(req.headers, url, true, ctx.jwtAuthConfig);
       if (!auth.ok) {
         log.debug("jwt auth failed (ws upgrade)", { path: url.pathname, reason: auth.error });
         socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
@@ -250,7 +251,7 @@ export function createServerInstance(ctx: ServerContext = defaultServerContext):
         const activeClientKey = client.clientKey;
         reservedIp = null;
         ws.once("close", () => releaseWsConnection(activeClientKey));
-        handlePtyWs(ws, session, reset, ctx);
+        ctx.terminals.handlePtyWs(ws, session, reset);
       });
     } catch (e: unknown) {
       log.error("ws upgrade error", { error: errMsg(e) });
@@ -263,21 +264,48 @@ export function createServerInstance(ctx: ServerContext = defaultServerContext):
     }
   });
 
-  return { server, wss };
+  return { server, wss, pollRateLimiter, globalRateLimiter, wsUpgradeRateLimiter, wsConnectionsByIp, reserveWsConnection };
 }
 
-// Stable exports also support embedders that attach listeners before startup.
-// Handlers use the lazy default context view, bound by startServer below.
-const { server, wss } = createServerInstance(defaultServerContext);
+function onUnhandledRejection(reason: unknown): void {
+  try {
+    writeFatalError("server", "unhandled rejection", { error: errMsg(reason), stack: reason instanceof Error ? reason.stack : undefined });
+  } finally {
+    process.exit(1);
+  }
+}
 
-export async function startServer(port = PORT, host = "127.0.0.1", overrides: Partial<ServerContext> = {}): Promise<void> {
+function onUncaughtException(error: unknown): void {
+  try {
+    writeFatalError("server", "uncaught exception", { error: errMsg(error), stack: error instanceof Error ? error.stack : undefined });
+  } finally {
+    process.exit(1);
+  }
+}
+
+export async function startServer(port = PORT, host = "127.0.0.1", overrides: ServerContextOptions & ServerInstanceOptions = {}): Promise<ReturnType<typeof createServerInstance>> {
   assertSupportedBunRuntime();
+  // inherit user's full PATH from login shell — launchd PATH is minimal
+  const loginShellPath = resolveLoginShellPath({ shell: SHELL, currentPath: process.env.PATH || "", home: process.env.HOME });
+  if (loginShellPath.path) process.env.PATH = loginShellPath.path;
+  if (loginShellPath.source === "fallback") {
+    log.warn("login shell PATH unavailable; using fallback PATH", { shell: SHELL, reason: loginShellPath.reason });
+  }
+
+  // Bun already exits 1; add structured diagnostics without installing on import.
+  // Stable listeners avoid duplicate registration if an embedder restarts the server.
+  if (!process.listeners("unhandledRejection").includes(onUnhandledRejection)) {
+    process.once("unhandledRejection", onUnhandledRejection);
+  }
+  if (!process.listeners("uncaughtException").includes(onUncaughtException)) {
+    process.once("uncaughtException", onUncaughtException);
+  }
   // Verify JWT auth configuration BEFORE any listeners are bound. We fail
   // hard on misconfiguration (secret set but rejected) so a typo can never
   // silently disable authentication. A missing secret is surfaced as a
   // warning (not an error: Tailscale is the default remote-access boundary, and
   // doctor treats logged errors as unhealthy).
-  const authCfg = getCachedJwtAuthConfig();
+  const authCfg = overrides.jwtAuthConfig ?? getCachedJwtAuthConfig();
   const authStatus = verifyJwtAuthAtStartup(authCfg);
   if (authStatus === "invalid") {
     log.error("refusing to start: WOLFPACK_JWT_SECRET is set but invalid", {
@@ -294,8 +322,10 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Pa
 
   // Initialize session backend (broker is the only supported backend; the
   // WOLFPACK_BACKEND env var is accepted for back-compat but ignored).
-  const ctx = createServerContext(overrides);
+  const ctx = createServerContext({ ...overrides, jwtAuthConfig: authCfg });
   setDefaultServerContext(ctx);
+  const instance = createServerInstance(ctx, { ...overrides, port });
+  const { server, wss } = instance;
   log.info("backend initialized", { type: "broker" });
 
   // Verify the broker handshake before listening so we surface a clear error
@@ -323,8 +353,8 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Pa
   await ctx.taskGateway.initialize();
   const taskRelay = ctx.taskRelayGateway;
   await taskRelay.initialize();
-  ctx.backend.cleanupOrphans();
-  const stopChildEventDelivery = startChildEventDelivery({
+  void ctx.backend.cleanupOrphans();
+  const stopChildEventDelivery = ctx.childEventDelivery.startChildEventDelivery({
     hostEnvelope: input => taskRelay.hostEnvelope(input),
     send: async (sessionId, sessionName, text, writeGuard) => {
       const streaming = ctx.supervisor ? ctx.supervisor.backend() : ctx.backend;
@@ -337,18 +367,18 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Pa
       });
     },
     typedNotesEnabled: childEventTypedNotesEnabled,
-    lastViewerInputAt,
+    lastViewerInputAt: ctx.viewerInput.lastViewerInputAt,
     now: Date.now,
   });
-  startSessionNotificationObserver(ctx);
+  ctx.sessionObservation.startSessionNotificationObserver();
   // Parent death kills cascade children. The first table after this start is a
   // baseline, so sessions that died while the server was down do not cascade.
-  const stopChildCleanupCascade = startChildCleanupCascade(() => ctx.backend);
+  const stopChildCleanupCascade = ctx.sessionCascade.startChildCleanupCascade();
   server.once("close", () => {
     stopChildCleanupCascade();
     stopChildEventDelivery();
-    taskRelay.close();
-    stopSessionNotificationObserver();
+    void taskRelay.close();
+    void ctx.sessionObservation.dispose();
   });
 
   server.on("error", (err: NodeJS.ErrnoException) => {
@@ -366,14 +396,5 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Pa
     log.info("server started", { url: `http://localhost:${port}/` });
     process.send?.({ type: SERVER_LISTENING, port });
   });
-}
-
-export { server, wss };
-
-// Auto-start unless in test mode
-if (!process.env.WOLFPACK_TEST) {
-  startServer().catch((err: unknown) => {
-    log.error("server start failed", { error: err instanceof Error ? err.message : String(err) });
-    process.exit(1);
-  });
+  return instance;
 }

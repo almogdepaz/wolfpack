@@ -6,6 +6,8 @@
  * Controlled by WOLFPACK_LOG_LEVEL env var (default: info).
  */
 
+import { writeSync } from "node:fs";
+
 export type LogLevel = "debug" | "info" | "warn" | "error";
 export type Component = "pty" | "pty-backend" | "ws" | "http" | "auth" | "service" | "config" | "setup" | "broker-backend" | "backend" | "server" | "routes" | "doctor" | "push" | "session-observation" | "peer-notifications" | "task-relay" | "session-cascade" | "remote-ops";
 
@@ -40,16 +42,6 @@ try {
   // Ignore if signals are unavailable in this runtime.
 }
 
-/** Test-only helper to clear cached log level after env mutation. */
-export function __resetLogLevelCache(): void {
-  if (!process.env.WOLFPACK_TEST) throw new Error("__resetLogLevelCache() is only available in test mode");
-  _cachedLevel = null;
-}
-
-function shouldLog(level: LogLevel): boolean {
-  return LEVEL_ORDER[level] >= LEVEL_ORDER[currentLevel()];
-}
-
 interface LogEntry {
   ts: string;
   level: LogLevel;
@@ -61,8 +53,7 @@ interface LogEntry {
 
 const RESERVED_KEYS = new Set(["ts", "level", "component", "msg"]);
 
-function emit(level: LogLevel, component: Component, msg: string, extra?: Record<string, unknown>): void {
-  if (!shouldLog(level)) return;
+function formatRecord(level: LogLevel, component: Component, msg: string, extra?: Record<string, unknown>): string {
   const ts = new Date().toISOString();
   // Spread extra first, then override with reserved fields so callers
   // can't accidentally corrupt structured log entries (ISS-13).
@@ -74,20 +65,51 @@ function emit(level: LogLevel, component: Component, msg: string, extra?: Record
     component,
     msg,
   };
-  const line = JSON.stringify(entry);
+  return JSON.stringify(entry) + "\n";
+}
+
+function emit(level: LogLevel, component: Component, msg: string, extra: Record<string, unknown> | undefined, threshold: LogLevel): void {
+  if (LEVEL_ORDER[level] < LEVEL_ORDER[threshold]) return;
+  const line = formatRecord(level, component, msg, extra);
   if (level === "error") {
-    process.stderr.write(line + "\n");
+    process.stderr.write(line);
   } else {
-    process.stdout.write(line + "\n");
+    process.stdout.write(line);
   }
 }
 
-export function createLogger(component: Component) {
+const FATAL_WRITE_TIMEOUT_MS = 2_000;
+
+/** Complete the fatal record within the retry budget, or let the caller exit. */
+export function writeFatalError(component: Component, msg: string, extra?: Record<string, unknown>): void {
+  const deadline = performance.now() + FATAL_WRITE_TIMEOUT_MS;
+  const bytes = Buffer.from(formatRecord("error", component, msg, extra));
+  let offset = 0;
+  while (offset < bytes.length) {
+    if (performance.now() >= deadline) throw new Error("fatal log write deadline exceeded");
+    try {
+      const written = writeSync(2, bytes, offset, bytes.length - offset);
+      if (written === 0) throw new Error("fatal log write made no progress");
+      offset += written;
+    } catch (error) {
+      // Bun can leave stderr nonblocking after server startup. Wait only
+      // within the deadline; a stalled reader must not prevent server exit.
+      if (error instanceof Error && "code" in error && error.code === "EAGAIN") {
+        Bun.sleepSync(Math.max(0, Math.min(10, deadline - performance.now())));
+        continue;
+      }
+      throw error;
+    }
+  }
+}
+
+export function createLogger(component: Component, options: { readonly level?: () => LogLevel } = {}) {
+  const level = options.level ?? currentLevel;
   return {
-    debug: (msg: string, extra?: Record<string, unknown>) => emit("debug", component, msg, extra),
-    info: (msg: string, extra?: Record<string, unknown>) => emit("info", component, msg, extra),
-    warn: (msg: string, extra?: Record<string, unknown>) => emit("warn", component, msg, extra),
-    error: (msg: string, extra?: Record<string, unknown>) => emit("error", component, msg, extra),
+    debug: (msg: string, extra?: Record<string, unknown>) => emit("debug", component, msg, extra, level()),
+    info: (msg: string, extra?: Record<string, unknown>) => emit("info", component, msg, extra, level()),
+    warn: (msg: string, extra?: Record<string, unknown>) => emit("warn", component, msg, extra, level()),
+    error: (msg: string, extra?: Record<string, unknown>) => emit("error", component, msg, extra, level()),
   };
 }
 

@@ -11,7 +11,6 @@ import {
   toPublicSessionIdentity,
 } from "../../src/server/session-identity";
 
-process.env.WOLFPACK_TEST = "1";
 
 const SUITE_ROOT = mkdtempSync(join(tmpdir(), "wolfpack-session-identity-test-"));
 

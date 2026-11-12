@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-process.env.WOLFPACK_TEST = "1";
 
 import {
   AGENT_STATUS_AUTHORITY,
@@ -14,18 +13,8 @@ import { CHILD_EVENT_PAYLOAD_KIND } from "../../src/child-event-contract.ts";
 import { WOLFPACK_EVENT_KIND, type WolfpackEventBody } from "../../src/events-contract.ts";
 import { PROGRAM_STATUS_KIND } from "../../src/program-status-contract.ts";
 import type { AgentRuntimeState } from "../../src/server/agent-status.ts";
-import {
-  __resetChildEventsForTests,
-  childMessageEvent,
-  childSessionExited,
-  CHILD_EXIT_MEMORY,
-  childTrackingMark,
-  noteChildCreated,
-  noteChildInputDelivered,
-  observeChildSession,
-  onChildEvent,
-  reconcileChildEvents,
-} from "../../src/server/child-events.ts";
+import { createChildEvents, CHILD_EXIT_MEMORY } from "../../src/server/child-events.ts";
+let service = createChildEvents();
 import { clearParentInbox, listParentNotifications, PARENT_INBOX_BOOT_ID } from "../../src/server/parent-inbox.ts";
 
 const PARENT = { wolfpackSessionId: "parent-id", wolfpackSessionName: "lead" };
@@ -55,7 +44,7 @@ let published: WolfpackEventBody[] = [];
 const publish = (body: WolfpackEventBody) => { published.push(body); };
 
 function observe(state: AgentStatusState, authority?: AgentStatusAuthority, extra: Partial<AgentRuntimeState> = {}, options: { alive?: boolean; rendered?: string; parent?: typeof PARENT | undefined; id?: string; name?: string } = {}) {
-  observeChildSession({
+  service.observeChildSession({
     sessionId: options.id ?? CHILD,
     name: options.name ?? "worker",
     parentSession: "parent" in options ? options.parent : PARENT,
@@ -70,13 +59,13 @@ function events() {
 }
 
 beforeEach(() => {
-  __resetChildEventsForTests();
+  service = createChildEvents();
   clearParentInbox(PARENT.wolfpackSessionId);
   published = [];
 });
 
 afterEach(() => {
-  __resetChildEventsForTests();
+  service = createChildEvents();
 });
 
 describe("child events", () => {
@@ -109,9 +98,9 @@ describe("child events", () => {
   });
 
   test("a child created in this boot reports its first event state exactly once", () => {
-    noteChildCreated("blocked-id", "blocked", PARENT);
-    noteChildCreated("failed-id", "failed", PARENT);
-    noteChildCreated("done-id", "done", PARENT);
+    service.noteChildCreated("blocked-id", "blocked", PARENT);
+    service.noteChildCreated("failed-id", "failed", PARENT);
+    service.noteChildCreated("done-id", "done", PARENT);
     for (let pass = 0; pass < 2; pass++) {
       observe(AGENT_STATUS_STATE.NEEDS_INPUT, AGENT_STATUS_AUTHORITY.PROGRAM, { inputKind: PROGRAM_STATUS_KIND.PERMISSION }, { id: "blocked-id", name: "blocked" });
       observe(AGENT_STATUS_STATE.FAILED, AGENT_STATUS_AUTHORITY.MANIFEST, {}, { id: "failed-id", name: "failed" });
@@ -130,7 +119,7 @@ describe("child events", () => {
   });
 
   test("a created child that starts idle or working emits nothing until an event state", () => {
-    noteChildCreated(CHILD, "worker", PARENT);
+    service.noteChildCreated(CHILD, "worker", PARENT);
     observe(AGENT_STATUS_STATE.IDLE);
     observe(AGENT_STATUS_STATE.WORKING);
     expect(published).toEqual([]);
@@ -176,7 +165,7 @@ describe("child events", () => {
     observe(AGENT_STATUS_STATE.WORKING, AGENT_STATUS_AUTHORITY.FALLBACK);
     observe(AGENT_STATUS_STATE.IDLE, AGENT_STATUS_AUTHORITY.FALLBACK);
     expect(published).toEqual([]);
-    noteChildInputDelivered(CHILD, "worker", PARENT);
+    service.noteChildInputDelivered(CHILD, "worker", PARENT);
     observe(AGENT_STATUS_STATE.WORKING, AGENT_STATUS_AUTHORITY.FALLBACK);
     observe(AGENT_STATUS_STATE.IDLE, AGENT_STATUS_AUTHORITY.FALLBACK);
     observe(AGENT_STATUS_STATE.WORKING, AGENT_STATUS_AUTHORITY.FALLBACK);
@@ -197,34 +186,34 @@ describe("child events", () => {
 
   test("exit emits once with the last screen lines, then the child is forgotten", () => {
     observe(AGENT_STATUS_STATE.WORKING, AGENT_STATUS_AUTHORITY.PROGRAM, {}, { rendered: "one\n\ntwo\x1b\nthree\nfour\nfive\nsix\n" });
-    const exited = childSessionExited(CHILD, { reason: "exit", exitCode: 2 }, publish);
+    const exited = service.childSessionExited(CHILD, { reason: "exit", exitCode: 2 }, publish);
     expect(exited).toMatchObject({ event: "exited", state: AGENT_STATUS_STATE.WORKING, reason: "exit", exitCode: 2, lastLines: ["two", "three", "four", "five", "six"] });
     expect(listParentNotifications(PARENT.wolfpackSessionId).at(-1)?.message).toBe("exited (exit code 2)");
-    expect(childSessionExited(CHILD, { reason: "exit", exitCode: 2 }, publish)).toBeUndefined();
-    expect(childSessionExited("unknown", { reason: "killed" }, publish)).toBeUndefined();
+    expect(service.childSessionExited(CHILD, { reason: "exit", exitCode: 2 }, publish)).toBeUndefined();
+    expect(service.childSessionExited("unknown", { reason: "killed" }, publish)).toBeUndefined();
     expect(events()).toHaveLength(1);
   });
 
   test("a notify message from a known child name becomes a message event", () => {
     observe(AGENT_STATUS_STATE.WORKING);
-    expect(childMessageEvent(PARENT.wolfpackSessionId, "stranger", "hi", publish)).toBeUndefined();
-    expect(childMessageEvent("other-parent", "worker", "hi", publish)).toBeUndefined();
-    expect(childMessageEvent(PARENT.wolfpackSessionId, undefined, "hi", publish)).toBeUndefined();
-    const event = childMessageEvent(PARENT.wolfpackSessionId, "worker", "phase 1 done", publish);
+    expect(service.childMessageEvent(PARENT.wolfpackSessionId, "stranger", "hi", publish)).toBeUndefined();
+    expect(service.childMessageEvent("other-parent", "worker", "hi", publish)).toBeUndefined();
+    expect(service.childMessageEvent(PARENT.wolfpackSessionId, undefined, "hi", publish)).toBeUndefined();
+    const event = service.childMessageEvent(PARENT.wolfpackSessionId, "worker", "phase 1 done", publish);
     expect(event).toMatchObject({ event: "message", message: "phase 1 done", state: AGENT_STATUS_STATE.WORKING, childSessionId: CHILD });
     expect(listParentNotifications(PARENT.wolfpackSessionId)).toEqual([expect.objectContaining({ message: "phase 1 done", from: "worker", childEvent: event })]);
   });
 
   test("listeners see every event, and reconcile forgets absent children", () => {
     const seen: string[] = [];
-    const stop = onChildEvent(({ parentSessionName, childEvent }) => seen.push(`${parentSessionName}:${childEvent.event}`));
+    const stop = service.onChildEvent(({ parentSessionName, childEvent }) => seen.push(`${parentSessionName}:${childEvent.event}`));
     observe(AGENT_STATUS_STATE.WORKING);
     observe(AGENT_STATUS_STATE.FAILED);
     stop();
     observe(AGENT_STATUS_STATE.WORKING);
     observe(AGENT_STATUS_STATE.FAILED);
     expect(seen).toEqual(["lead:error"]);
-    reconcileChildEvents(new Set(), { trackedBefore: childTrackingMark(), exitReason: () => "exit", publish });
+    service.reconcileChildEvents(new Set(), { trackedBefore: service.childTrackingMark(), exitReason: () => "exit", publish });
     expect(events().map(event => event.event)).toEqual(["error", "error", "exited"]);
     // An exited child is not tracked again.
     observe(AGENT_STATUS_STATE.DONE);
@@ -237,40 +226,40 @@ describe("child events", () => {
     observe(AGENT_STATUS_STATE.WORKING, AGENT_STATUS_AUTHORITY.PROGRAM, {}, { id: "killing", name: "killing" });
     // A dead first sight is not tracked: there is no live child to report.
     observe(AGENT_STATUS_STATE.DONE, AGENT_STATUS_AUTHORITY.PROGRAM, {}, { alive: false, id: "ghost", name: "ghost" });
-    const mark = childTrackingMark();
+    const mark = service.childTrackingMark();
     // Created while that table read was in flight: absent from it, but not gone.
-    noteChildCreated("new-id", "new", PARENT);
+    service.noteChildCreated("new-id", "new", PARENT);
     const exitReason = (id: string) => (id === "killing" ? undefined : "exit" as const);
-    reconcileChildEvents(new Set(["live"]), { trackedBefore: mark, exitReason, publish });
+    service.reconcileChildEvents(new Set(["live"]), { trackedBefore: mark, exitReason, publish });
     expect(events().map(event => [event.childName, event.event, event.reason])).toEqual([["worker", "exited", "exit"]]);
     expect(events()[0]).toMatchObject({ state: AGENT_STATUS_STATE.WORKING, lastLines: ["compiling", "failed"] });
     // The lifecycle callback that arrives later finds nothing to report.
-    expect(childSessionExited(CHILD, { reason: "exit", exitCode: 1 }, publish)).toBeUndefined();
+    expect(service.childSessionExited(CHILD, { reason: "exit", exitCode: 1 }, publish)).toBeUndefined();
 
     // The kill reply came back: the deferred child is reported with its reason.
-    reconcileChildEvents(new Set(["live", "new-id"]), { trackedBefore: childTrackingMark(), exitReason: () => "killed", publish });
+    service.reconcileChildEvents(new Set(["live", "new-id"]), { trackedBefore: service.childTrackingMark(), exitReason: () => "killed", publish });
     expect(events().map(event => [event.childName, event.event, event.reason])).toEqual([["worker", "exited", "exit"], ["killing", "exited", "killed"]]);
-    reconcileChildEvents(new Set(["live", "new-id"]), { trackedBefore: childTrackingMark(), exitReason: () => "exit", publish });
+    service.reconcileChildEvents(new Set(["live", "new-id"]), { trackedBefore: service.childTrackingMark(), exitReason: () => "exit", publish });
     expect(events()).toHaveLength(2);
   });
 
   test("an exited child is not tracked again by a late live observation, send or create (review A3-1)", () => {
     observe(AGENT_STATUS_STATE.WORKING);
-    childSessionExited(CHILD, { reason: "exit", exitCode: 3 }, publish);
+    service.childSessionExited(CHILD, { reason: "exit", exitCode: 3 }, publish);
     // An observation that read the child as live before the exit arrives late.
     observe(AGENT_STATUS_STATE.WORKING);
     observe(AGENT_STATUS_STATE.NEEDS_INPUT);
-    noteChildInputDelivered(CHILD, "worker", PARENT);
-    noteChildCreated(CHILD, "worker", PARENT);
-    reconcileChildEvents(new Set(), { trackedBefore: childTrackingMark(), exitReason: () => "exit", publish });
-    expect(childSessionExited(CHILD, { reason: "exit" }, publish)).toBeUndefined();
+    service.noteChildInputDelivered(CHILD, "worker", PARENT);
+    service.noteChildCreated(CHILD, "worker", PARENT);
+    service.reconcileChildEvents(new Set(), { trackedBefore: service.childTrackingMark(), exitReason: () => "exit", publish });
+    expect(service.childSessionExited(CHILD, { reason: "exit" }, publish)).toBeUndefined();
     expect(events().map(event => event.event)).toEqual(["exited"]);
   });
 
   test("the exited-child memory is bounded and forgets the oldest exit first", () => {
     for (let n = 0; n <= CHILD_EXIT_MEMORY; n += 1) {
-      noteChildCreated(`gone-${n}`, `gone-${n}`, PARENT);
-      childSessionExited(`gone-${n}`, { reason: "exit" }, publish);
+      service.noteChildCreated(`gone-${n}`, `gone-${n}`, PARENT);
+      service.childSessionExited(`gone-${n}`, { reason: "exit" }, publish);
     }
     observe(AGENT_STATUS_STATE.WORKING, AGENT_STATUS_AUTHORITY.PROGRAM, {}, { id: "gone-0", name: "gone-0" });
     observe(AGENT_STATUS_STATE.FAILED, AGENT_STATUS_AUTHORITY.PROGRAM, {}, { id: "gone-0", name: "gone-0" });

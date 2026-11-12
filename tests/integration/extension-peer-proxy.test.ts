@@ -11,6 +11,11 @@ function route(index: number, suffix = "catalog"): string { return `${fixture.ba
 function headers(index: number): Record<string, string> { return { Authorization: `Bearer ${fixture.localToken}`, "X-Wolfpack-Extension-Peer-Authorization": `Bearer ${fixture.peers[index]!.token}`, Cookie: "local-secret=must-not-cross", "X-Private": "must-not-cross" }; }
 
 describe("authenticated installed selected-peer extension proxy", () => {
+  test("local identity uses the fixture's explicit Tailnet status", async () => {
+    const response = await fetch(`${fixture.base}/api/machine`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ machine: { tailnetNodeId: "node-local" } });
+  });
   test("requires local owner auth and forwards only the separately selected peer credential", async () => {
     const peer = fixture.peers[0]!;
     expect((await fetch(route(0), { headers: { "X-Wolfpack-Extension-Peer-Authorization": `Bearer ${peer.token}` } })).status).toBe(401);

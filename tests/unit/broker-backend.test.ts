@@ -25,18 +25,17 @@ import {
   UnsupportedTerminalKeyError,
   type SessionLifecycleEvent,
 } from "../../src/server/backend";
-import { sessionIdentityStorePath } from "../../src/server/session-identity";
+import { createServerContext } from "../../src/server/context";
+import { MockBackend } from "../../src/server/mock-backend";
+import { SessionIdentityStore, sessionIdentityStorePath } from "../../src/server/session-identity";
 import { SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS } from "../../src/session-prompt-contract";
 import { SHELL } from "../../src/server/shell";
 import { claudeChannelDropInContent } from "../../src/claude-integration";
-import { __setClaudeManagedSettingsDropInDirectory } from "../../src/test-hooks";
 import { renderSnapshotToAnsi } from "../../src/broker/snapshot-render";
-import { __resetEventBusForTests, subscribeEvents } from "../../src/server/event-bus";
+import { EventBus } from "../../src/event-bus";
 import type { WolfpackEvent } from "../../src/events-contract";
 import { onProgramStatusChanged } from "../../src/server/program-status-signal";
 import { appendParentNotification, clearParentInbox, listParentNotifications } from "../../src/server/parent-inbox";
-import { __resetChildEventsForTests, observeChildSession } from "../../src/server/child-events";
-import { __resetViewerInputForTests, lastViewerInputAt } from "../../src/server/viewer-input";
 
 const SESSION_UUID_1 = "550e8400-e29b-41d4-a716-446655440000";
 const SESSION_UUID_2 = "11111111-1111-1111-1111-111111111111";
@@ -316,7 +315,6 @@ let client: FakeBrokerClient;
 let backend: BrokerBackend;
 
 beforeEach(() => {
-  process.env.WOLFPACK_TEST = "1";
   process.env.WOLFPACK_SESSION_IDENTITY_PATH = TEST_SESSION_IDENTITY_PATH;
   rmSync(sessionIdentityStorePath(), { force: true });
   client = new FakeBrokerClient();
@@ -327,6 +325,37 @@ afterAll(() => {
   rmSync(SUITE_ROOT, { recursive: true, force: true });
   if (PRIOR_SESSION_IDENTITY_PATH === undefined) delete process.env.WOLFPACK_SESSION_IDENTITY_PATH;
   else process.env.WOLFPACK_SESSION_IDENTITY_PATH = PRIOR_SESSION_IDENTITY_PATH;
+});
+
+test("replacement backends retain their context's memory identity store without sharing another context", async () => {
+  const first = createServerContext({
+    backend: new MockBackend(), config: null,
+    sessionIdentityStore: new SessionIdentityStore(join(SUITE_ROOT, "first"), "memory"),
+  });
+  const second = createServerContext({
+    backend: new MockBackend(), config: null,
+    sessionIdentityStore: new SessionIdentityStore(join(SUITE_ROOT, "second"), "memory"),
+  });
+  const createdAt = "2026-01-01T00:00:00.000Z";
+  first.sessionIdentityStore.capture({
+    wolfpackSessionId: SESSION_UUID_1, wolfpackSessionName: "alpha",
+    projectPath: "/tmp/work", agentKind: "shell", now: new Date(createdAt),
+  });
+  client.setHandler("list_sessions", () => okResp({
+    sessions: [sessionInfo({ name: "alpha", id: SESSION_UUID_1 })],
+  }));
+  try {
+    for (let connection = 0; connection < 2; connection++) {
+      const replacement = new BrokerBackend(client, undefined, {
+        sessionIdentityStore: () => first.sessionIdentityStore,
+      });
+      expect((await replacement.listSessionFacts())[0]?.identity?.createdAt).toBe(createdAt);
+      expect(second.sessionIdentityStore.list()).toEqual([]);
+    }
+  } finally {
+    await first.close();
+    await second.close();
+  }
 });
 
 describe("BrokerBackend.list", () => {
@@ -498,7 +527,7 @@ describe("child exits from the lifecycle and the session table", () => {
   let exactBackend: BrokerBackend;
 
   function track(id = SESSION_UUID_1, name = "worker"): void {
-    observeChildSession({
+    exactBackend.childEvents.observeChildSession({
       sessionId: id,
       name,
       parentSession,
@@ -519,8 +548,7 @@ describe("child exits from the lifecycle and the session table", () => {
 
   beforeEach(() => {
     clearParentInbox(parentId);
-    __resetChildEventsForTests();
-    kinds = [];
+      kinds = [];
     childEvents = [];
     exactBackend = new BrokerBackend(client, event => {
       kinds.push(event.kind);
@@ -530,8 +558,7 @@ describe("child exits from the lifecycle and the session table", () => {
 
   afterEach(() => {
     clearParentInbox(parentId);
-    __resetChildEventsForTests();
-  });
+    });
 
   test("lifecycle before the table read: one exited with the exit code, then the dead and absent table add nothing", async () => {
     track();
@@ -613,7 +640,6 @@ describe("child exits from the lifecycle and the session table", () => {
 test("a child created through the backend reports its first event state, but a restored child does not", async () => {
   const parentId = "22222222-2222-4222-8222-222222222222";
   clearParentInbox(parentId);
-  __resetChildEventsForTests();
   const parentSession = { wolfpackSessionId: parentId, wolfpackSessionName: "lead" };
   const blocked = {
     state: "needs-input", authority: "program", freshness: "fresh", source: "program-status", label: "needs input",
@@ -622,14 +648,13 @@ test("a child created through the backend reports its first event state, but a r
   try {
     client.setHandler("create_session", () => okResp({ session: sessionInfo({ name: "fresh-child", id: SESSION_UUID_1 }) }));
     await backend.createSession("fresh-child", "/tmp/proj", "claude", loadSettings, { agentKind: "claude", parentSession });
-    observeChildSession({ sessionId: SESSION_UUID_1, name: "fresh-child", parentSession, alive: true, runtimeState: blocked }, () => {});
+    backend.childEvents.observeChildSession({ sessionId: SESSION_UUID_1, name: "fresh-child", parentSession, alive: true, runtimeState: blocked }, () => {});
     // Not created by this process (restart recovery): the first sight is a baseline.
-    observeChildSession({ sessionId: SESSION_UUID_2, name: "restored-child", parentSession, alive: true, runtimeState: blocked }, () => {});
+    backend.childEvents.observeChildSession({ sessionId: SESSION_UUID_2, name: "restored-child", parentSession, alive: true, runtimeState: blocked }, () => {});
     expect(listParentNotifications(parentId)).toEqual([expect.objectContaining({ from: "fresh-child", message: expect.stringContaining("blocked") })]);
   } finally {
     clearParentInbox(parentId);
-    __resetChildEventsForTests();
-  }
+    }
 });
 
 describe("BrokerBackend.inspectSession", () => {
@@ -834,18 +859,16 @@ describe("BrokerBackend.createSession", () => {
       let dropInRoot = "";
       beforeEach(() => {
         dropInRoot = mkdtempSync(join(tmpdir(), "wolfpack-claude-dropin-"));
-        __setClaudeManagedSettingsDropInDirectory({ directory: dropInRoot });
         writeFileSync(configPath, JSON.stringify({ devDir: "/tmp", port: 18790, claudeTaskIntegration: true }));
       });
       afterEach(() => {
-        __setClaudeManagedSettingsDropInDirectory(undefined);
         rmSync(configPath, { force: true });
         rmSync(dropInRoot, { recursive: true, force: true });
       });
 
       test("a valid drop-in adds --channels", async () => {
         writeFileSync(join(dropInRoot, "wolfpack.json"), claudeChannelDropInContent());
-        await new BrokerBackend(client).createSession("claude-one", "/tmp/proj", "claude", loadSettings);
+        await new BrokerBackend(client, undefined, { claudeManagedSettingsDropIn: { directory: dropInRoot } }).createSession("claude-one", "/tmp/proj", "claude", loadSettings);
         expect(createParams().command.slice(3)).toEqual(["wolfpack-agent", channelSpec]);
         expect(createParams().env).toContainEqual(["WOLFPACK_PORT", "18790"]);
       });
@@ -858,7 +881,7 @@ describe("BrokerBackend.createSession", () => {
       ] as const) {
         test(`a ${name} drop-in launches claude without --channels`, async () => {
           if (content !== undefined) writeFileSync(join(dropInRoot, "wolfpack.json"), content);
-          await new BrokerBackend(client).createSession("claude-one", "/tmp/proj", "claude", loadSettings);
+          await new BrokerBackend(client, undefined, { claudeManagedSettingsDropIn: { directory: dropInRoot } }).createSession("claude-one", "/tmp/proj", "claude", loadSettings);
           const params = createParams();
           expect(params.command).toHaveLength(3);
           expect(params.command[2]).toContain("; claude; exec");
@@ -1315,16 +1338,14 @@ describe("BrokerBackend send/sendKey/writeToTerminal route through input_binary"
   });
 
   test("writeToTerminal records viewer input for the session id; a failed write records nothing", () => {
-    __resetViewerInputForTests();
     const before = Date.now();
     client.inputError = new Error("input plane down");
     expect(backend.writeToTerminal("live", "x")).toBe(false);
-    expect(lastViewerInputAt(SESSION_UUID_1)).toBeUndefined();
+    expect(backend.viewerInput.lastViewerInputAt(SESSION_UUID_1)).toBeUndefined();
     client.inputError = null;
     expect(backend.writeToTerminal("live", "x")).toBe(true);
-    expect(lastViewerInputAt(SESSION_UUID_1)).toBeGreaterThanOrEqual(before);
+    expect(backend.viewerInput.lastViewerInputAt(SESSION_UUID_1)).toBeGreaterThanOrEqual(before);
     expect(backend.writeToTerminal("ghost", "x")).toBe(false);
-    __resetViewerInputForTests();
   });
 
   test("writeToTerminal reports false for unknown sessions", () => {
@@ -3453,9 +3474,10 @@ describe("BrokerBackend lifecycle → event bus", () => {
   let unsubscribe: () => void;
 
   beforeEach(() => {
-    __resetEventBusForTests();
+    const events = new EventBus();
+    backend = new BrokerBackend(client, body => events.publishEvent(body));
     seen = [];
-    unsubscribe = subscribeEvents({}, (event) => seen.push(event));
+    unsubscribe = events.subscribeEvents({}, (event) => seen.push(event));
   });
 
   afterEach(() => unsubscribe());

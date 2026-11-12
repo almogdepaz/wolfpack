@@ -3,7 +3,6 @@
  */
 import type { VerifiedMachineTarget } from "./machine-target.js";
 
-export { shouldUseColor, print, printError, yellow } from "../terminal-output.js";
 
 export function printJson(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);

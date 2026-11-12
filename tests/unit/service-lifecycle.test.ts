@@ -71,10 +71,15 @@ await mock.module("node:child_process", () => ({
   spawnSync: mock((command: string) => ({ status: 0, stdout: command === "curl" ? JSON.stringify({ status: "ready", broker: { state: "ready" } }) : "", stderr: command === "curl" ? "200" : "" })),
 }));
 
-await mock.module("../../src/cli/config.js", () => ({
+const rootConfig = await import("../../src/config.ts");
+await mock.module("../../src/config.js", () => ({
+  ...rootConfig,
   WOLFPACK_DIR: join(homedir(), ".wolfpack"),
   IS_MACOS: false,
   IS_LINUX: true,
+  loadConfig: mock(() => currentConfig),
+}));
+await mock.module("../../src/cli/config.js", () => ({
   ask: mock((prompt: string) => {
     askPrompts.push(prompt);
     ownerEvents.push("prompt:" + prompt);
@@ -82,7 +87,6 @@ await mock.module("../../src/cli/config.js", () => ({
   }),
   isPortInUse: mock(() => true),
   killPortHolder: mock(() => undefined),
-  loadConfig: mock(() => currentConfig),
   sleepSync: mock(() => undefined),
   waitForPortFree: mock(() => undefined),
 }));
@@ -462,14 +466,18 @@ await mock.module("node:child_process", () => ({
   spawnSync: mock((command: string) => ({ status: 0, stdout: command === "curl" ? JSON.stringify({ status: "ready", broker: { state: "ready" } }) : "", stderr: command === "curl" ? "200" : "" })),
 }));
 
-await mock.module("../../src/cli/config.js", () => ({
+const rootConfig = await import("../../src/config.ts");
+await mock.module("../../src/config.js", () => ({
+  ...rootConfig,
   WOLFPACK_DIR: join(homedir(), ".wolfpack"),
   IS_MACOS: true,
   IS_LINUX: false,
+  loadConfig: mock(() => ({ devDir: "/tmp/new dev", port: 24444 })),
+}));
+await mock.module("../../src/cli/config.js", () => ({
   ask: mock(() => "y"),
   isPortInUse: mock(() => true),
   killPortHolder: mock(() => undefined),
-  loadConfig: mock(() => ({ devDir: "/tmp/new dev", port: 24444 })),
   sleepSync: mock(() => undefined),
   waitForPortFree: mock(() => undefined),
 }));

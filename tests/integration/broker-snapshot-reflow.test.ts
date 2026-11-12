@@ -13,7 +13,6 @@
  *
  * Skips cleanly when the broker binary is not built.
  */
-process.env.WOLFPACK_TEST = "1";
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn, type ChildProcess } from "node:child_process";
