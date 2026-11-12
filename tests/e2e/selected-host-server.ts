@@ -5,7 +5,8 @@ import type { AddressInfo } from "node:net";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { writeSelectedHostPackage } from "../fixtures/selected-host-package.ts";
 
-const readTailscaleStatus = async () => JSON.parse(process.env.WOLFPACK_TAILSCALE_STATUS_JSON ?? "{}");
+const readTailscaleStatus = async (selfOnly?: boolean) => process.env.WOLFPACK_TAILSCALE_STATUS_JSON === undefined
+  ? readLocalTailscaleStatus(selfOnly) : JSON.parse(process.env.WOLFPACK_TAILSCALE_STATUS_JSON);
 const socketPath = process.env.WOLFPACK_BROKER_SOCKET, home = process.env.HOME;
 const kind = process.env.WOLFPACK_SELECTED_HOST_FIXTURE;
 if (!socketPath || !home || (kind !== "local" && kind !== "a" && kind !== "b")) throw new Error("owned selected-host fixture configuration unavailable");
@@ -15,6 +16,7 @@ const { BrokerClient } = await import("../../src/broker/client.ts");
 const { BrokerBackend } = await import("../../src/server/broker-backend.ts");
 const { createServerContext } = await import("../../src/server/context.ts");
 const { SessionIdentityStore } = await import("../../src/server/session-identity.ts");
+const { readLocalTailscaleStatus } = await import("../../src/server/tailscale-status.ts");
 const sessionIdentityStore = new SessionIdentityStore(process.env.WOLFPACK_SESSION_IDENTITY_PATH
   ? undefined : join(home, `session-identities-test-${process.pid}`));
 let backend: InstanceType<typeof BrokerBackend>;
