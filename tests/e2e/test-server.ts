@@ -78,6 +78,7 @@ const tailscaleStatus = {
 };
 
 const { createServerContext } = await import("../../src/server/context.ts");
+const { SessionIdentityStore } = await import("../../src/server/session-identity.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
 
 // ── Mock backend ──
@@ -112,7 +113,13 @@ if (process.env.WOLFPACK_E2E_CANONICAL_SESSION_IDS === "1") {
     return identities;
   };
 }
-const context = createServerContext({ backend: mock, readTailscaleStatus: async () => tailscaleStatus });
+const sessionIdentityStore = new SessionIdentityStore(process.env.WOLFPACK_SESSION_IDENTITY_PATH
+  ? undefined : join(isolatedHome!, `session-identities-test-${process.pid}`));
+const context = createServerContext({
+  backend: mock, sessionIdentityStore, startSupervisor: false, observationCacheTtlMs: 0,
+  readTailscaleStatus: async () => tailscaleStatus,
+  terminalPrefillDelayMs: Number(process.env.WOLFPACK_TEST_PREFILL_DELAY_MS),
+});
 
 // Only the dedicated lifecycle fixture emits a completed mock-backend exit.
 // Keep the real /api/kill, event bus, filtered SSE route and /api/sessions path;

@@ -8,6 +8,7 @@
  * listening.
  */
 import type { AddressInfo } from "node:net";
+import { dirname, join } from "node:path";
 
 const socketPath = process.env.WOLFPACK_BROKER_SOCKET;
 if (!socketPath) {
@@ -16,6 +17,8 @@ if (!socketPath) {
 }
 
 const { createServerContext } = await import("../../src/server/context.ts");
+const { SessionIdentityStore } = await import("../../src/server/session-identity.ts");
+const { readLocalTailscaleStatus } = await import("../../src/server/tailscale-status.ts");
 const { BrokerClient } = await import("../../src/broker/client.ts");
 const { BrokerBackend } = await import("../../src/server/broker-backend.ts");
 
@@ -54,8 +57,15 @@ if (!brokerReady) {
   throw new Error("broker readiness failed: list_sessions did not return ok");
 }
 
-const backend = new BrokerBackend(brokerClient);
-const context = createServerContext({ backend, readTailscaleStatus: async () => JSON.parse(process.env.WOLFPACK_TAILSCALE_STATUS_JSON ?? "{}"), terminalPrefillDelayMs: Number(process.env.WOLFPACK_TEST_PREFILL_DELAY_MS) });
+const sessionIdentityStore = new SessionIdentityStore(process.env.WOLFPACK_SESSION_IDENTITY_PATH
+  ? undefined : join(dirname(socketPath), `session-identities-test-${process.pid}`));
+const backend = new BrokerBackend(brokerClient, undefined, { sessionIdentityStore: () => sessionIdentityStore });
+const context = createServerContext({
+  backend, sessionIdentityStore, startSupervisor: false, observationCacheTtlMs: 0,
+  readTailscaleStatus: async selfOnly => process.env.WOLFPACK_TAILSCALE_STATUS_JSON === undefined
+    ? readLocalTailscaleStatus(selfOnly) : JSON.parse(process.env.WOLFPACK_TAILSCALE_STATUS_JSON),
+  terminalPrefillDelayMs: Number(process.env.WOLFPACK_TEST_PREFILL_DELAY_MS),
+});
 
 const { createServerInstance } = await import("../../src/server/index.ts");
 const { server } = createServerInstance(context, { allowLocalOrigins: true });

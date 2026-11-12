@@ -12,6 +12,7 @@ import { ExtensionRouteService } from "../../src/server/extension-routes.ts";
 import { enumerateLocalTailnetCandidates } from "../../src/server/http.ts";
 import { createServerContext } from "../../src/server/context.ts";
 import { MockBackend } from "../../src/server/mock-backend.ts";
+import { SessionIdentityStore } from "../../src/server/session-identity.ts";
 import type { ExtensionPeerFetch } from "../../src/server/extension-peer-proxy.ts";
 import type { SessionBackend } from "../../src/server/backend-contract.ts";
 
@@ -134,7 +135,15 @@ export async function createSelectedHostFixture(options: { readonly timeoutMs?: 
       return super.handle(req, res, url);
     }
   }
-  const context = createServerContext({ readTailscaleStatus: async () => JSON.parse(process.env.WOLFPACK_TAILSCALE_STATUS_JSON ?? "{}"), jwtAuthConfig: getJwtAuthConfig(), backend: new MockBackend({ sessions: [] }), extensionRouteService: new FixtureLocalRoutes(serviceOptions) });
+  const sessionIdentityStore = new SessionIdentityStore(process.env.WOLFPACK_SESSION_IDENTITY_PATH
+    ? undefined : join(root, `session-identities-test-${process.pid}`));
+  const context = createServerContext({
+    readTailscaleStatus: async () => JSON.parse(process.env.WOLFPACK_TAILSCALE_STATUS_JSON ?? "{}"),
+    jwtAuthConfig: getJwtAuthConfig(), backend: new MockBackend({ sessions: [] }),
+    extensionRouteService: new FixtureLocalRoutes(serviceOptions), sessionIdentityStore,
+    startSupervisor: false, observationCacheTtlMs: 0,
+    terminalPrefillDelayMs: Number(process.env.WOLFPACK_TEST_PREFILL_DELAY_MS),
+  });
   const { createServerInstance } = await import("../../src/server/index.ts");
   const { server } = createServerInstance(context, { allowLocalOrigins: true }); const base = await listen(server);
   return {
