@@ -319,7 +319,8 @@ test("enable requires login confirmation, seeds only focus skill, resumes by pat
     expect(readFileSync(skill, "utf8")).toContain("options with a recommendation → `suggest`");
     expect(readFileSync(skill, "utf8")).toContain("wolfpack focus next next.json");
     expect(readFileSync(skill, "utf8")).toContain("never use `wolfpack session read` for triage");
-    expect(readFileSync(skill, "utf8")).toContain("session creation are forbidden");
+    expect(readFileSync(skill, "utf8")).toContain("`wolfpack session send` and kill remain forbidden");
+    expect(readFileSync(skill, "utf8")).toContain("session creation is forbidden except only inside a plan conversation the user opened, after the user explicitly confirms the exact proposed");
     expect(readFileSync(skill, "utf8")).toContain("5–8 bullets total");
     expect(readFileSync(skill, "utf8")).toContain("### done");
     expect(readFileSync(skill, "utf8")).toContain("### still open");
