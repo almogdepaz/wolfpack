@@ -19,17 +19,17 @@ wolfpack session create <project> --harness <pi|claude|codex|gemini|cursor> --pr
 A **child** of the current agent (same harness by default; full-startup assignment):
 
 ```bash
-# Pi child: resolve the role model explicitly; use the reviewer setting for review.
-IMPLEMENTER_MODEL="${WOLFPACK_IMPLEMENTER_MODEL:-openai-codex/gpt-6.1-sol:high}"
-REVIEWER_MODEL="${WOLFPACK_REVIEWER_MODEL:-openai-codex/gpt-6.1-sol:high}"
-wolfpack agent spawn <project> --harness pi --name 200-implementation --model "$IMPLEMENTER_MODEL" --plan .plans/000-task.md --notify-parent --json
-# --model requires a pi child, not a pi parent. Omit it for other child harnesses.
+# Pi child. Add the role --model only when its variable is set (see "Role models" below).
+wolfpack agent spawn <project> --harness pi --name 200-implementation --plan .plans/000-task.md --notify-parent --json
+# --model requires a pi child. Omit it for other child harnesses.
 wolfpack agent spawn <project> --harness claude --name 200-review --plan .plans/000-task.md --notify-parent --json
 ```
 
 `wolfpack session open` is only a deprecated child-spawn alias. Never use it for a top-level request.
 Replace `<project>` with `--project-dir <path>` when the user selects an existing directory outside the configured projects root; never pass both selectors. The CLI resolves relative paths and the server validates/canonicalizes the directory.
-Both creation commands perform one server-owned request and pass startup instructions without inheriting parent transcript/context. `--harness <pi|claude|codex|gemini|cursor>` overrides the inherited child harness while preserving parent lineage; `shell` is not a child harness. `--model` is child-only and requires a Pi child; an explicit user/project model overrides the role environment/default.
+Both creation commands perform one server-owned request and pass startup instructions without inheriting parent transcript/context. `--harness <pi|claude|codex|gemini|cursor>` overrides the inherited child harness while preserving parent lineage; `shell` is not a child harness. `--model` is child-only and requires a Pi child.
+
+**Role models.** This skill names no models; the user's configuration does. For a Pi role child, pass `--model "$WOLFPACK_IMPLEMENTER_MODEL"` for the editing implementer or `--model "$WOLFPACK_REVIEWER_MODEL"` for the read-only reviewer when that variable is set; otherwise omit `--model`, so the child uses `defaultModel` and `defaultThinkingLevel` from the user's Pi settings (`~/.pi/agent/settings.json`). An explicit user or project model choice overrides both. Pi accepts a `provider/id:<thinking>` selector, and Wolfpack forwards it unchanged. Never infer role or model from the session name.
 
 Use `--name <session>` for child agents and choose a short meaningful issue/role slug, for example `200-implementation`, `200-delivery-review`, or `auth-boundary-audit`. Avoid generic `*-sub-agent` names when the task purpose is known; Wolfpack will allocate a numbered suffix if the requested name is already taken. Prefer `--plan <file>` for plan work: Wolfpack generates the compact handoff prompt and verifies the file exists without copying plan contents into the parent transcript. Use `--prompt-file <file>` for long bespoke instructions. Use raw `--prompt` only for one short prompt sentence. Do NOT paste repository policy, architecture context, or full plans into the launch command.
 
@@ -39,7 +39,7 @@ Choose exactly one initial-assignment mode:
 - endpoint mode: use explicit-root Pi task-worker readiness without startup assignment flags, then send the complete assignment once with `agent_task_send`. Use a timeout of at least one hour for coding work.
 
 ```bash
-wolfpack agent spawn --project-dir /absolute/worktree --harness pi --name task-implementation --model "$IMPLEMENTER_MODEL" --task-worker --readiness-timeout-ms 30000 --json
+wolfpack agent spawn --project-dir /absolute/worktree --harness pi --name task-implementation --task-worker --readiness-timeout-ms 30000 --json
 
 # inspect a target host's effective policy without creating a worker
 wolfpack agent spawn --project-dir /absolute/worktree --harness pi --task-worker --task-worker-dry-run --json

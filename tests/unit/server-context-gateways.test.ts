@@ -104,7 +104,8 @@ test("context relay workers retain their own inspectors after another context se
       expect(await a!.taskRelayGateway.volatile({ profile: "volatile-v1", operation: "connect", callerSession: "a", generation: "generation", protocolVersions: [2] })).toMatchObject({ ok: true, value: { kind: "connected" } });
       const replacement = createServerContext({ backend: backends[1]!, taskRelayRoot: join(root, "b", "relay") });
       try {
-        expect(await replacement.taskRelayGateway.volatile({ profile: "volatile-v1", operation: "connect", callerSession: "b", generation: "replacement", protocolVersions: [2] })).toMatchObject({ ok: true, value: { kind: "connected" } });
+        expect(await replacement.taskRelayGateway.volatile({ profile: "volatile-v1", operation: "connect", callerSession: "b", generation: "replacement", protocolVersions: [2] })).toMatchObject({ ok: false, error: { code: "SESSION_ALREADY_REGISTERED", retryable: true } });
+        expect(await replacement.taskRelayGateway.volatile({ profile: "volatile-v1", operation: "connect", callerSession: "b", generation: "generation", protocolVersions: [2] })).toMatchObject({ ok: true, value: { kind: "connected" } });
       } finally { await replacement.close(); }
     } finally {
       await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });
