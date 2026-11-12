@@ -157,6 +157,23 @@ describe("activity journal corrections", () => {
     journal.close();
   });
 
+  test("a read never reports rows held back by a failed flush as an empty, complete page", () => {
+    const dir = join(root(), "activity");
+    const now = Date.parse("2026-11-07T10:00:00.000Z");
+    const journal = new ActivityJournal({ dir, now: () => now, flushMs: 60_000 });
+    journal.append(task("on-disk"));
+    expect(journal.read(0, 10).rows.map(r => r.seq)).toEqual([1]);
+    // A real storage failure: the day file path is a directory, so appends fail and rows stay in memory.
+    rmSync(join(dir, "2026-11-07.jsonl"));
+    mkdirSync(join(dir, "2026-11-07.jsonl"));
+    journal.append(task("held"));
+    expect(() => journal.read(1, 10)).toThrow();
+    expect(journal.status().headSeq).toBe(2);
+    rmSync(join(dir, "2026-11-07.jsonl"), { recursive: true });
+    expect(journal.read(1, 10).rows.map(r => r.seq)).toEqual([2]);
+    journal.close();
+  });
+
   test("reads stay sorted and complete when a clock step put a higher seq in an earlier-named file", () => {
     const dir = join(root(), "activity");
     mkdirSync(dir, { recursive: true });

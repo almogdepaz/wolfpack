@@ -376,7 +376,9 @@ export class FocusRoutines {
         }
         if (!blocks.length) {
           for (const [id, seq] of Object.entries(through)) coverage.catchUpCursors[id] = { ...coverage.catchUpCursors[id]!, seq: Math.max(coverage.catchUpCursors[id]!.seq, seq) };
-          if (manual) this.notice = "nothing new to catch up on";
+          // A source whose read failed this tick (tryPull dropped it from `reached`) may still hold activity.
+          const failed = reachable.filter(s => !this.reached.has(s.id)).map(s => s.name);
+          if (manual) this.notice = failed.length ? `could not read activity from ${failed.join(", ")}; try again later` : "nothing new to catch up on";
           return coverage;
         }
         return this.writeInbox(coverage, ROUTINE.CATCH_UP, { machines: [...blocks, ...this.unreachedBlocks(coverage)] }, through, undefined, undefined, action.reason === "urgent");
