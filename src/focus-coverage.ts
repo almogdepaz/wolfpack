@@ -3,6 +3,7 @@
  * coverage (`reviewedThrough`, per-machine catch-up cursors, last run per
  * routine), the one outstanding inbox file, and generated day-note facts.
  */
+import { randomUUID } from "node:crypto";
 import { AGENT_STATUS_STATE } from "./agent-status-contract.js";
 import { ACTIVITY_KIND, type ActivityRow, type ActivityGitRepo } from "./activity-journal.js";
 import { ROUTINE, type Routine, type NeedsInputSnapshot } from "./focus-scheduler.js";
@@ -62,7 +63,9 @@ export interface FocusCoverage {
 /** The assistant's own terminal; its rows never feed or trigger routines. */
 export const ASSISTANT_SESSION_NAME = "assistant";
 const ROUTINES = Object.values(ROUTINE) as string[];
-const INBOX_FILE = new RegExp(`^(${ROUTINES.join("|")})-\\d{8}T\\d{6}Z\\.json$`);
+// The optional `-<8 hex>` generation id keeps two inboxes from one clock second (or a clock step) apart;
+// legacy names without it stay valid for an inbox that was already outstanding.
+const INBOX_FILE = new RegExp(`^(${ROUTINES.join("|")})-\\d{8}T\\d{6}Z(-[0-9a-f]{8})?\\.json$`);
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const iso = (v: unknown) => typeof v === "string" && /^\d{4}-\d\d-\d\dT/.test(v) && Number.isFinite(Date.parse(v));
 const isoOrNull = (v: unknown) => v === null || iso(v);
@@ -74,8 +77,8 @@ export function emptyCoverage(): FocusCoverage {
   return { version: 1, reviewedThrough: null, catchUpCursors: {}, lastRun: {}, lastAckAt: null, inbox: null, provisional: null };
 }
 export function isInboxFileName(file: string): boolean { return INBOX_FILE.test(file); }
-export function inboxFileName(routine: Routine, nowMs: number): string {
-  return `${routine}-${new Date(nowMs).toISOString().replace(/[-:]/g, "").slice(0, 15)}Z.json`;
+export function inboxFileName(routine: Routine, nowMs: number, id = randomUUID().slice(0, 8)): string {
+  return `${routine}-${new Date(nowMs).toISOString().replace(/[-:]/g, "").slice(0, 15)}Z-${id}.json`;
 }
 export function inboxPrompt(file: string): string { return `process inbox inbox/${file}`; }
 
