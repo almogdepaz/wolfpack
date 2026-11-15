@@ -20,7 +20,7 @@ for (const reading of [false, true]) test(`QA-13: the sidebar name separates ${r
   });
   await page.addInitScript(() => localStorage.setItem("wolfpack-sidebar-pinned", "1"));
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   await page.getByRole("button", { name: "Talk to assistant" }).click();
   const tile = page.locator('#sidebar-assistant [data-focus-action="view"]');
   await expect(tile).toBeVisible();
@@ -52,7 +52,7 @@ test("N3: a resize burst coalesces assistant renders to animation frames", async
     await route.fulfill({ response, json: body });
   });
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   await expect(page.locator("#focus-status")).toHaveText("1 queued");
   const changes = await page.evaluate(async () => {
     let count = 0;
@@ -78,7 +78,7 @@ test("QA-5: the sidebar assistant remains reachable with no other sessions", asy
     await route.fulfill({ response, json: body });
   });
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   await page.setViewportSize({ width: 1279, height: 900 });
   await page.getByRole("button", { name: "Talk to assistant" }).click();
   await expect(page.locator("#assistant-terminal-header")).toBeVisible();

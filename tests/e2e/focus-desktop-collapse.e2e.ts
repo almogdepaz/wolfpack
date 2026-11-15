@@ -64,7 +64,8 @@ for (const width of [1440, 1280]) test(`desktop disclosure shares main/sidebar s
   await toggle.focus(); await page.keyboard.press("Enter");
   await expect(toggle).toBeFocused();
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
-  await expect(toggle).toContainText("1 needs you · 1 reply ready");
+  await expect(toggle).toContainText("1 needs you");
+  await expect(toggle).toHaveAccessibleName(/1 needs you · 1 reply ready/);
   await expect(page.locator("#dashboard-focus-details")).toBeHidden();
   const target = (await toggle.boundingBox())!;
   expect(target.width).toBeGreaterThanOrEqual(44); expect(target.height).toBeGreaterThanOrEqual(44);

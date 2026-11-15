@@ -110,7 +110,7 @@ test("a tap that opens a card stays open when a poll renders before its toggle e
   await page.waitForTimeout(300);
   await page.evaluate(() => (window as unknown as { heldToggle: EventTarget }).heldToggle.dispatchEvent(new Event("toggle")));
   await expect(card).toHaveAttribute("open", "");
-  await expect(card.locator(".focus-card-body")).toBeVisible();
+  await expect(card.locator(".focus-draft")).toBeVisible();
   await expect(card.locator(".focus-card-body")).toContainText("Do you want to continue? (y/n)");
   // and a poll after that keeps it open
   await page.waitForTimeout(6000);
@@ -120,7 +120,7 @@ test("a tap that opens a card stays open when a poll renders before its toggle e
 
 test("today intentions expand to their details; the checkbox and chips work without toggling the card", async ({ page }) => {
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-view");
   const item = view.locator(".focus-today li").filter({ hasText: "fix broker leak" });
   const card = item.locator("details.focus-card");
@@ -215,7 +215,7 @@ test("no document is no block; another schema version is one line", async ({ pag
 test("open cards refreshing their context do not drop a half-typed intention", async ({ page }) => {
   await withContext(page, v3);
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-view");
   await view.locator(".focus-next li").filter({ hasText: "prompt-project" }).locator(".focus-card > summary").click();
   await view.locator(".focus-today li").filter({ hasText: "fix broker leak" }).locator(".focus-card > summary").click();
@@ -233,7 +233,7 @@ test("open cards refreshing their context do not drop a half-typed intention", a
 
 test("a poll answered before a tick lands after it without reverting the tick (S2)", async ({ page }) => {
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-view");
   await expect(view).toContainText("1 of 3 done");
   let hold = false;
@@ -304,7 +304,7 @@ test("a machine that answers not installed is not asked again every poll (N2)", 
 
 test("disclosure markers are not the action's glyph and are silent to screen readers (C1, N5)", async ({ page }) => {
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-view");
   await expect(view.locator(".focus-next details.focus-card").first()).toBeVisible();
   const marker = (selector: string, pseudo: string) => view.locator(selector).first().evaluate((el, p) => getComputedStyle(el, p).content, pseudo);

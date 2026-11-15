@@ -30,7 +30,7 @@ for (const kind of ["question", "permission"] as const) test(`phone row time: ${
     await expect(row.locator("span.focus-meta")).toContainText("12m");
     await expect(title.locator("small")).toHaveCount(0);
     const size = await title.evaluate(el => {
-      const range = document.createRange(); range.selectNode(el.firstChild!);
+      const range = document.createRange(); range.selectNodeContents(el.querySelector("strong")!);
       return { available: el.clientWidth, label: range.getBoundingClientRect().width };
     });
     expect(size.available, `${surface}: the kind word is readable`).toBeGreaterThanOrEqual(size.label);
@@ -59,16 +59,17 @@ for (const [state, inputKind, label, verb] of [
   });
   await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");
-  const row = block.locator(".focus-next li").filter({ hasText: "prompt-project" });
-  const tag = state === "needs-input" ? inputKind === "permission" ? "approve" : inputKind === "auth" ? "log in" : inputKind === "question" ? "answer" : "needs you" : state === "done" ? "done" : label;
-  await expect(row.locator("summary .focus-tag")).toHaveText(tag);
-  await expect(row.locator("summary span.focus-meta")).toContainText(state === "done" || state === "idle" ? /prompt-project · \d{2}:\d{2}/ : "prompt-project · 12m");
+  const stopped = state === "done" || state === "idle";
+  const row = block.locator(stopped ? ".focus-finished li" : ".focus-next li").filter({ hasText: "prompt-project" });
+  const tag = state === "needs-input" ? inputKind === "permission" ? "approve" : inputKind === "auth" ? "log in" : inputKind === "question" ? "reply" : "decide" : "look";
+  if (!stopped) await expect(row.locator("summary .focus-tag")).toHaveText(tag);
+  await expect(row.locator(stopped ? ":scope > .focus-card > summary" : "summary span.focus-meta")).toContainText(stopped ? /prompt-project · \d{2}:\d{2}/ : "prompt-project · 12m");
   await expandFocusCard(row);
   await expect(row.getByRole("button", { name: "Open prompt-project", exact: true })).toHaveText("open ›");
-  await block.getByRole("button", { name: "Open assistant", exact: true }).click();
+  await block.getByRole("button", { name: "Open assistant page", exact: true }).click();
   const action = page.locator("#assistant-content").getByRole("button", { name: "Open prompt-project", exact: true });
   await expect(action).toHaveText("open ›");
-  await expect(page.locator("#sidebar-assistant .assistant-tile-next")).toContainText(await row.locator("summary .focus-title").innerText());
+  await expect(page.locator("#sidebar-assistant .assistant-tile-next")).toContainText("prompt-project");
   // All verbs navigate through the existing session opener, including retry (not a restart).
   const socket = page.waitForEvent("websocket", { predicate: ws => new URL(ws.url()).searchParams.get("session") === "prompt-project" });
   await action.click();
@@ -97,7 +98,7 @@ test("row context: next and remote targets stay visible; compact today context y
   await expect(block.locator(".focus-next li").filter({ hasText: "prompt-project" }).locator("summary span.focus-meta")).toContainText("focus-ui");
   await expect(block.locator(".focus-next li").filter({ hasText: "fix broker leak" })).toHaveCount(0);
   for (const context of await block.locator("summary .focus-for").all()) await expect(context).toBeVisible();
-  await block.getByRole("button", { name: "Open assistant", exact: true }).click();
+  await block.getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-content");
   await expect(view.locator(".focus-today li").filter({ hasText: "fix broker leak" }).locator("summary .focus-for")).toHaveText("broker · remote-box");
   const shipToday = view.locator(".focus-today li").filter({ hasText: "ship the focus assistant" });
@@ -148,8 +149,8 @@ test("row context: local starts omit redundant machine names when only the assis
   await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");
   await expect(block.locator(".focus-next > li")).toHaveCount(0);
-  await expect(block.locator(".focus-quiet")).toHaveText("nothing needs you");
-  await block.getByRole("button", { name: "Open assistant", exact: true }).click();
+  await expect(block.locator(".focus-count")).toHaveText("nothing needs you");
+  await block.getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-content");
   for (const list of [".focus-today"]) {
     const meta = list === ".focus-next" ? ".focus-meta" : ".focus-for";
@@ -179,9 +180,9 @@ test("QA-25: phone next count is reachable with one show-more action, including 
     await route.fulfill({ response, json: body });
   });
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-content");
-  await expect(view.getByRole("heading", { name: "next 7 need you", exact: true })).toBeVisible();
+  await expect(view.getByRole("heading", { name: "7 needs you", exact: true })).toBeVisible();
   await expect(view.locator(".focus-next > li:visible")).toHaveCount(3);
   await page.screenshot({ path: info.outputPath("phone-next-more.png"), animations: "disabled" });
   await view.getByRole("button", { name: "show 4 more", exact: true }).click();
@@ -216,11 +217,11 @@ test("counts: validated needs-you population and uncapped next totals agree", as
   await expect(page.locator('#sidebar-session-filter [data-session-card-view="need"] .n')).toHaveAttribute("data-count", "7");
   await expect(page.locator('#sidebar-session-filter [data-session-card-view="fail"] .n')).toHaveAttribute("data-count", "1");
   await expect(page.locator("#assistant-content .focus-next")).not.toContainText("count-6");
-  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("8 need you:");
-  await expect(page.locator("#dashboard-focus > .focus-dashboard-body > small").last()).toContainText("8 need you");
+  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("8 needs you:");
+  await expect(page.locator("#dashboard-focus .focus-count")).toHaveText("8 needs you");
   await expect(page.locator("#dashboard-focus .focus-next > li")).toHaveCount(3);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
-  await expect(page.locator("#assistant-content > h2").first()).toHaveText("next 8 need you");
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  await expect(page.locator("#assistant-content .focus-count")).toHaveText("8 needs you");
   await expect(page.locator("#assistant-content .focus-next > li")).toHaveCount(5);
 });
 
@@ -246,21 +247,21 @@ test("counts: sessions claimed only by done intentions fall through to unlinked 
   });
   await page.goto(server.baseUrl);
   await expect(page.locator('#sidebar-session-filter [data-session-card-view="need"] .n')).toHaveAttribute("data-count", "3");
-  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("3 need you:");
+  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("3 needs you:");
   const block = page.locator("#dashboard-focus");
   await expect(block.locator(".focus-next > li")).toHaveCount(3);
-  await expect(block.locator(":scope > .focus-dashboard-body > small").last()).toContainText("3 need you");
+  await expect(block.locator(".focus-count")).toHaveText("3 needs you");
   for (const name of ["prompt-project", "blocked-explicit", "blocked-unlinked"]) {
     const row = block.locator(".focus-next > li").filter({ hasText: name });
     await expandFocusCard(row);
     await expect(row.getByRole("button", { name: `Open ${name}`, exact: true })).toBeVisible();
   }
-  await block.getByRole("button", { name: "Open assistant", exact: true }).click();
+  await block.getByRole("button", { name: "Open assistant page", exact: true }).click();
   await expect(page.locator("#assistant-content .focus-next > li")).toHaveCount(3);
-  await expect(page.locator("#assistant-content > h2").first()).toHaveText("next 3 need you");
+  await expect(page.locator("#assistant-content .focus-count")).toHaveText("3 needs you");
 });
 
-test("many stops: twelve unseen episodes remain capped without an hours cutoff", async ({ page }, info) => {
+test("many stops: twelve unseen episodes stay compact without an hours cutoff", async ({ page }, info) => {
   const width = info.project.name === "desktop" ? 1440 : 390;
   await page.setViewportSize({ width, height: 900 });
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -286,20 +287,20 @@ test("many stops: twelve unseen episodes remain capped without an hours cutoff",
   });
   await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");
-  await expect(block.locator(".focus-next > li")).toHaveCount(3);
-  await expect(block.locator(".focus-next .focus-title")).toHaveText(names.slice(0, 3).map((name, i) => `${name} ${i % 2 ? "stopped" : "is done"}`));
-  await expect(block.locator(".focus-next span.focus-meta")).toHaveText(names.slice(0, 3).map((name, i) => new RegExp(`${name} · \\d{2}:\\d{2} · research-${i % 3 + 1}`)));
+  await expect(block.locator(".focus-next > li")).toHaveCount(0);
+  await expect(block.locator(".focus-finished > li")).toHaveCount(12);
+  await expect(block.locator(".focus-finished .focus-title")).toHaveText(names.map(name => new RegExp(`✓ ${name} · \\d{2}:\\d{2}`)));
   const shots = process.env.WOLFPACK_FOCUS_SHOTS;
   if (shots) {
     mkdirSync(shots, { recursive: true });
     await page.screenshot({ path: join(shots, `old-stops-dashboard-${width}.png`), fullPage: true });
   }
-  await block.getByRole("button", { name: "Open assistant", exact: true }).click();
+  await block.getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-content");
-  await expect(view.locator(".focus-next > li")).toHaveCount(5);
-  await expect(view.locator(".focus-next > li:visible")).toHaveCount(width === 390 ? 3 : 5);
-  await expect(view.locator(".focus-next .focus-title")).toHaveText(names.slice(0, 5).map((name, i) => `${name} ${i % 2 ? "stopped" : "is done"}`));
-  expect(await view.locator(".focus-next summary .focus-meta span").first().evaluate(el => el.getClientRects().length), "project name stays readable in metadata").toBe(1);
+  await expect(view.locator(".focus-finished > li")).toHaveCount(12);
+  await expect(view.locator(".focus-finished > li:visible")).toHaveCount(12);
+  await expect(view.locator(".focus-finished .focus-title")).toHaveText(names.map(name => new RegExp(`✓ ${name} · \\d{2}:\\d{2}`)));
+  await expect(view.getByRole("button", { name: "show 7 more", exact: true })).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   if (shots) await page.screenshot({ path: join(shots, `old-stops-assistant-${width}.png`), fullPage: true });
 });

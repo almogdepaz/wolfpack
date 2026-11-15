@@ -67,7 +67,8 @@ test("today excludes every earlier-day completion, even with linked work finishi
   await expect(view.locator(".focus-today > li")).toHaveCount(3);
   await expect(view).not.toContainText("older task");
   await expect(view).not.toContainText("undated finished task");
-  await expect(view.getByRole("heading", { name: "today 1 of 4 done", exact: true })).toBeVisible();
+  await expect(view.getByRole("heading", { name: "today", exact: true })).toBeVisible();
+  await expect(view.locator(".focus-quiet")).toContainText("today 1 of 4 done");
   await expect(view.getByRole("button", { name: "Undo done: finished task", exact: true })).toBeVisible();
   await expect(view.getByText("reorder or reword: tell the assistant", { exact: true })).toBeVisible();
 });
@@ -233,7 +234,9 @@ test("historical-only documents have no today header or empty disclosure and ret
   await open(page);
   await expect(page.locator("#assistant-content .focus-today")).toHaveCount(0);
   await expect(page.locator("#assistant-content .focus-done")).toHaveCount(0);
-  await expect(page.locator("#assistant-content").getByText("why this order", { exact: true })).toHaveCount(0);
+  const why = page.locator("#assistant-content > details").filter({ hasText: "why this order" });
+  // Session attention can still explain its order; historical intentions must not create empty sections.
+  await expect(why.locator("ol > li")).not.toHaveCount(0);
   await expect(page.getByRole("textbox", { name: "Add an intention", exact: true })).toBeVisible();
-  await expect(page.locator("#dashboard-focus-details > small").last()).not.toContainText("today");
+  await expect(page.locator("#dashboard-focus-details > small")).toHaveCount(0);
 });

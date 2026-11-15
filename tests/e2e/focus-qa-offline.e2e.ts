@@ -18,8 +18,8 @@ test("row truth: broker outage has one page-voice notice, not a raw transport er
     await route.fulfill({ response, json: body });
   });
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
-  await expect(page.locator("#assistant-content .focus-header")).toContainText("sessions unavailable · focus is saved here");
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  await expect(page.locator("#assistant-content > .focus-notes").first()).toHaveText("sessions unavailable · focus is saved here");
   await expect(page.locator("#assistant-content")).not.toContainText("broker not connected");
   await expect(page.locator("#focus-status")).toHaveText("3 queued · sends when the broker is back");
   if (process.env.WOLFPACK_FOCUS_SHOTS) {
@@ -45,7 +45,7 @@ for (const mode of ["catching", "stale", "cached"] as const) for (const today of
     });
     await page.goto(server.baseUrl);
     const opened = page.waitForResponse(response => new URL(response.url()).pathname === "/api/focus");
-    await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+    await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
     // Opening refreshes focus; finish that healthy read before simulating a later outage.
     await (await opened).finished();
     if (mode === "cached") {
@@ -152,7 +152,7 @@ for (const state of ["idle", "needs-input"]) test(`SF1: focus writes and ${state
   await expect(view.locator(".focus-done")).toContainText(title);
   await page.setViewportSize({ width: Math.min(page.viewportSize()!.width, 1279), height: 900 });
   if (state === "idle") await view.getByRole("button", { name: "Talk to assistant" }).click();
-  else await view.getByRole("button", { name: /needs you · answer/ }).click();
+  else await view.getByRole("button", { name: /assistant needs you/ }).click();
   await expect(page.locator("#assistant-terminal-header")).toBeVisible({ timeout: 2_000 });
   await page.locator("#assistant-terminal-focus").click();
   localDown = false;
@@ -254,10 +254,10 @@ test("S2: a retired peer installation leaves the offline snapshot before local r
   }] })));
   await page.route(`${server.baseUrl}/api/sessions`, route => localDown ? route.fulfill(json({ error: "local unavailable" }, 503)) : route.continue());
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   const next = page.locator("#assistant-content .focus-next");
   await expect(next).toContainText("retired-worker", { timeout: 10_000 });
-  await expect(next.locator("li").filter({ hasText: "retired-worker" }).locator("summary span.focus-meta")).toContainText("peer · focus peer");
+  await expect(next.locator("li").filter({ hasText: "retired-worker" }).locator("summary span.focus-meta")).toContainText("peer · focus-peer");
   if (process.env.WOLFPACK_FOCUS_SHOTS) await page.screenshot({ path: join(process.env.WOLFPACK_FOCUS_SHOTS, `row-peer-${width}.png`), fullPage: true });
   localDown = true;
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
@@ -280,7 +280,7 @@ test("S2: a retired peer installation leaves the offline snapshot before local r
 test("QA-26: assistant settings explain offline state without a bare transport error", async ({ page, context }) => {
   await page.goto(server.baseUrl);
   const opened = page.waitForResponse(response => new URL(response.url()).pathname === "/api/focus");
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   await (await opened).finished();
   await context.setOffline(true);
   // Match QA's sequence: go offline, then open settings. Mobile settings do not poll focus.
@@ -304,7 +304,7 @@ for (const failure of ["HTTP 500", "invalid document"] as const) test(`S1: setti
   });
   await page.goto(server.baseUrl);
   const opened = page.waitForResponse(response => new URL(response.url()).pathname === "/api/focus");
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   await (await opened).finished();
   failed = true;
   await page.getByRole("button", { name: "Assistant settings", exact: true }).click();
@@ -488,7 +488,7 @@ for (const change of ["removed", "replaced", "broker unavailable"] as const) tes
 
 test("QA-14: self-offline keeps last known next rows, disabled, then recovers", async ({ page, context }) => {
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-content");
   await expect(view.locator(".focus-next")).toContainText("prompt-project asks a question");
   await expandFocusCard(view.locator(".focus-next > li").first());

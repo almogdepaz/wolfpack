@@ -145,7 +145,7 @@ for (const state of ["idle", "done"]) test(`opening an acknowledged ${state} sto
   const card = view.locator('.focus-next > li').filter({ hasText: "The approved plan is ready to continue" });
   await expect(card).toHaveAttribute("data-kind", "suggest");
   await expandFocusCard(card);
-  await expect(card.locator(".focus-tag")).toHaveText("reply ready · edited");
+  await expect(card.locator(".focus-tag")).toHaveText("reply · edited");
   await expect(card.getByRole("textbox", { name: "reply to prompt-project", exact: true })).toHaveValue(edited);
   await expect(card.locator(".focus-card-body")).toContainText("Ship the focus assistant");
   await expect(card.getByRole("button", { name: "mark seen", exact: true })).toHaveCount(0);
@@ -162,7 +162,7 @@ for (const state of ["idle", "done"]) test(`opening an acknowledged ${state} sto
   runtime.stoppedAt = "2026-11-09T12:01:00Z";
   runtime.unseen = true; runtime.stoppedSequence = runtime.transitionSequence = 6;
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
-  const nextStop = view.locator('.focus-next > li').filter({ hasText: "prompt-project" });
+  const nextStop = view.locator('.focus-finished > li').filter({ hasText: "prompt-project" });
   await expect(nextStop).toHaveAttribute("data-kind", "done");
   await expandFocusCard(nextStop);
   await expect(nextStop.getByRole("textbox", { name: "reply to prompt-project", exact: true })).toHaveValue("");
@@ -175,11 +175,11 @@ test("two-line reply card discloses its editor and keeps open last", async ({ pa
   await page.goto(server.baseUrl);
   const row = page.locator("#dashboard-focus .focus-next > li").first();
   await expect(row).toHaveAttribute("data-kind", "suggest");
-  await expect(row.locator("summary .focus-tag")).toHaveText("reply ready");
+  await expect(row.locator("summary .focus-tag")).toHaveText("reply");
   await expect(row.locator("summary .focus-title")).toHaveText("The approved plan is ready to continue");
   await expect(row.locator("summary .focus-meta")).toContainText("prompt-project");
   await expect(row.getByRole("textbox", { name: "reply to prompt-project" })).not.toBeVisible();
-  await row.locator("summary").click();
+  await expandFocusCard(row);
   await expect(row.getByRole("textbox", { name: "reply to prompt-project" })).toBeVisible();
   await expect(row.locator("details button").last()).toHaveAccessibleName("Open prompt-project");
   await expect(row.getByRole("button", { name: "Send to prompt-project", exact: true })).toHaveText("send to prompt-project ›");
@@ -201,15 +201,15 @@ for (const width of [1440, 1280, 390]) test(`triage ${width}: exact draft, reaso
   await expect(block.getByRole("textbox", { name: "reply to prompt-project", exact: true })).toHaveValue(draft);
   await expect(block.locator(".focus-next")).not.toContainText("another-project");
   await expect(block).toContainText(/ordered (just now|\d+m ago)/);
-  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("1 reply ready:");
+  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("nothing needs you +1:");
   await expect(page.locator("#sidebar-assistant .assistant-tile-next")).toContainText("The approved plan is ready to continue");
   expect(sends).toEqual([]);
   await block.getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-content");
-  await expect(view.locator(":scope > h2").first()).toHaveText("next 1 reply ready");
+  await expect(view.locator(".focus-count")).toHaveText("nothing needs you");
   const row = view.locator(".focus-next > li").first();
   await expandFocusCard(row);
-  await expect(row.locator("summary")).toContainText("The approved plan is ready to continue");
+  await expect(row.locator(":scope > .focus-card > summary")).toContainText("The approved plan is ready to continue");
   await expect(row.locator(".focus-card-body")).toContainText("last lineStep 2 done. Continue with step 3?");
   const send = row.locator(".focus-draft").getByRole("button", { name: "Send to prompt-project", exact: true });
   await expect(send).toHaveText("send to prompt-project ›");
@@ -328,7 +328,7 @@ test("done suggestion uses the existing done/undo operations, never sends", asyn
   await expandFocusCard(view.locator(".focus-next > li").filter({ hasText: "Looks finished" }));
   await view.getByRole("button", { name: "Mark done: Ship the focus assistant", exact: true }).click();
   await expect(view.locator(".focus-done")).toContainText("Ship the focus assistant");
-  await expect(view.locator(".focus-next")).not.toContainText("Looks finished — mark the intention done?");
+  await expect(view.locator(".focus-next > li").filter({ hasText: "Looks finished — mark the intention done?" })).toHaveCount(0);
   await view.getByRole("button", { name: "Undo done: Ship the focus assistant", exact: true }).click();
   const saved = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
   expect(saved.document.intentions.find((i: { id: string }) => i.id === "ship").done).toBe(false);
@@ -343,7 +343,7 @@ test("intention-ref suggestions put the reason on the row and the intention insi
   const row = page.locator("#assistant-content .focus-next > li").filter({ hasText: "Tomorrow is ready" });
   await expect(row.locator("summary")).not.toContainText("Plan tomorrow");
   await expect(row.locator("textarea")).toHaveCount(0);
-  await row.locator("summary").click();
+  await expandFocusCard(row);
   await expect(row.locator(".focus-card-body")).toContainText("Plan tomorrow");
   await row.getByRole("button", { name: "Mark done: Plan tomorrow", exact: true }).click();
   await expect(page.locator("#assistant-content .focus-done")).toContainText("Plan tomorrow");
@@ -375,7 +375,7 @@ test("editable reply stays shared across hosts and live renders without replacin
   const edited = "Review my edited reply; keep the scope unchanged.";
   await dashboard.fill(edited);
   await expect(page.locator("#dashboard-focus .focus-next > li").first().locator(".focus-draft button").last()).toHaveAccessibleName("Open prompt-project");
-  await expect(page.locator("#dashboard-focus .focus-next > li").first().locator(".focus-tag")).toHaveText("reply ready · edited");
+  await expect(page.locator("#dashboard-focus .focus-next > li").first().locator(".focus-tag")).toHaveText("reply · edited");
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   const reply = field("#assistant-content");
   await expect(reply).toHaveValue(edited);
@@ -390,7 +390,7 @@ test("editable reply stays shared across hosts and live renders without replacin
   expect(await reply.evaluate(el => { const field = el as HTMLTextAreaElement; return [field.selectionStart, field.selectionEnd, field.selectionDirection]; })).toEqual([7, 15, "backward"]);
   await expect(reply).toHaveValue(edited);
   await expect(page.locator("#assistant-content .focus-next > li").first().locator(".focus-draft button").last()).toHaveAccessibleName("Open prompt-project");
-  await expect(page.locator("#assistant-content .focus-next > li").first().locator(".focus-tag")).toHaveText("reply ready · edited");
+  await expect(page.locator("#assistant-content .focus-next > li").first().locator(".focus-tag")).toHaveText("reply · edited");
   await expect(dashboard).toHaveValue(edited);
   await expect(page.locator("#assistant-content").getByRole("button", { name: "Send to prompt-project", exact: true })).toHaveAccessibleDescription(edited);
   expect(saved.revision).toBeGreaterThan(0);
@@ -727,7 +727,7 @@ test("L4: actual list --json facts and the ui agree on the episode without sessi
   await page.goto(server.baseUrl);
   const row = page.locator("#dashboard-focus .focus-next > li").filter({ hasText: "Bounded list episode agrees" });
   await expect(row).toBeVisible();
-  await row.locator("summary").click();
+  await expandFocusCard(row);
   await expect(row.locator(".focus-card-body")).toContainText(target.lastLine);
   await expect(row).not.toContainText("new · by rules");
 });
@@ -742,7 +742,7 @@ test("expired triage returns quiet stops to rules and names the expiry", async (
   });
   await page.goto(server.baseUrl);
   await expect(page.locator("#dashboard-focus")).toContainText("by rules · order expired");
-  await expect(page.locator("#dashboard-focus .focus-next")).toContainText("another-project");
+  await expect(page.locator("#dashboard-focus .focus-finished")).toContainText("another-project");
   await expect(page.locator("#dashboard-focus .focus-next")).not.toContainText(draft);
   await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("1 needs you +1:");
 });
@@ -826,7 +826,8 @@ test("focus-only lastLine stripping preserves the normal session preview", async
   await page.goto(server.baseUrl);
   await expect(page.locator('#session-list .card').filter({ has: page.locator('.card-open[data-session="prompt-project"]') }).first().locator('.card-preview')).toHaveText(preview);
   const row = page.locator("#dashboard-focus .focus-next > li").filter({ hasText: "The approved plan" });
-  await row.locator("summary").click();
+  await expandFocusCard(row);
+  await row.locator(".focus-context-more > summary").click();
   const line = row.locator(".focus-card-body code");
   await expect(line).toHaveText("👩💻 ✔ review now");
 });

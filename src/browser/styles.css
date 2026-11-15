@@ -3119,7 +3119,7 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
   .focus-notes button { min-height: 0; }
   .focus-take { flex-direction: column; align-items: start; gap: 0; }
   .focus-take button { min-width: 44px; }
-  .focus-done button, .focus-yesterday button, .assistant-column summary { min-height: 44px; }
+  .focus-done button, .focus-yesterday button, .assistant-column summary, details.focus-context-more > summary { min-height: 44px; }
   .focus-chips button { position: relative; min-height: 26px; min-width: 44px; }
   .focus-chips button::after { content: ""; position: absolute; inset: -9px 0; }
   .focus-done button, .focus-yesterday button { min-width: 44px; }

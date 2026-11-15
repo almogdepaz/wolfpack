@@ -91,8 +91,7 @@ test("QA-22/23: narrow pane rows yield context before kind text and pane control
   await expect(title).toContainText("broker-leak needs approval");
   const measure = await title.evaluate(el => {
     const range = document.createRange();
-    range.setStart(el.firstChild!, 0);
-    range.setEnd(el.firstChild!, "broker-leak needs approval".length);
+    range.selectNodeContents(el.querySelector("strong")!);
     return { available: el.getBoundingClientRect().width, label: range.getBoundingClientRect().width };
   });
   await page.screenshot({ path: info.outputPath("pane-1280.png"), animations: "disabled" });

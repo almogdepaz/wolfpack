@@ -425,8 +425,10 @@ export function createAssistantView(deps: {
     requireOwner(owner, OLD_HOME_DELIVERY);
   }
   const cardTag = (row: FocusAction) => row.triage?.suggestion ? "reply" : row.session?.state === "failed" ? "look"
-    : row.session?.state === "needs-input" ? ({ permission: "approve", auth: "log in", question: "reply" }[row.session.inputKind ?? ""] ?? "decide")
+    : row.session?.state === "needs-input" && row.session.inputKind === "permission" ? "approve"
+    : row.session?.state === "needs-input" && row.session.inputKind === "auth" ? "log in"
     : row.triage?.verdict === "needs-you" || doneSuggestion(row) ? "decide"
+    : row.session?.state === "needs-input" ? row.session.inputKind === "question" ? "reply" : "decide"
     : stoppedUnseen(row.session ?? { state: "" }) ? "done" : row.kind === "start" ? "start" : "decide";
   const cardHeadline = (row: FocusAction) => row.triage?.reason ?? (row.session ? `${row.session.name} ${row.session.state === "needs-input"
     ? row.session.inputKind === "permission" ? "needs approval" : row.session.inputKind === "auth" ? "needs you to log in" : "asks a question"
@@ -725,7 +727,7 @@ export function createAssistantView(deps: {
     if (block) { block.hidden = !enabled; block.dataset.mobileCollapsed = String(!dashboardExpanded); }
     const assistantState = `<span title="${escAttr(info)}">${tone}<span class="visually-hidden">assistant ${esc(info)}</span></span>`;
     const attn = state === "needs you" ? `<button type="button" class="focus-attn" data-focus-action="talk" data-focus-key="action:attn">assistant needs you ›</button>` : assistantState;
-    const whyOrder = next.length ? `<details><summary>why this order</summary><p>${esc(orderLabel())}</p><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details>` : "";
+    const whyOrder = next.length ? `<details class="focus-context-more" data-focus-card="order"${openCards.has("order") ? ' open=""' : ""}><summary data-focus-key="card:order">why this order</summary><p>${esc(orderLabel())}</p><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details>` : "";
     if (enabled && block && !block.firstElementChild) replace("dashboard-focus", `${disclosureFrame("dashboard-focus-toggle")}<div id="dashboard-focus-details" class="focus-dashboard-body"></div>`);
     if (!enabled) replace("dashboard-focus", "");
     else {
@@ -735,7 +737,7 @@ export function createAssistantView(deps: {
     }
     const dashboardBody = !enabled ? "" : `<div class="focus-header"><h2 class="focus-count">${esc(needsLabel)}</h2>${attn}${sessionNotice}${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${focus?.document ? nextHtml("d", 3) + takeHtml() + whyOrder : `<p>Set your focus</p>${addForm(true)}`}${error && !focusUnavailable ? `<p role="status">${esc(error)}</p>` : ""}`;
     replace("dashboard-focus-details", dashboardBody);
-    replace("assistant-content", !enabled ? "" : `<div class="focus-header"><h2 class="focus-count">${esc(needsLabel)}</h2>${attn}${sessionNotice}<span class="focus-header-actions"><button type="button" class="focus-talk" data-focus-action="talk" data-focus-key="action:talk" aria-label="Talk to assistant"${terminalUnavailable() ? ` title="${escAttr(terminalUnavailable()!)}"` : ""}${!terminalTarget() ? " disabled" : ""}>talk<span aria-hidden="true"> ›</span></button>${button("settings", "settings", "Assistant settings")}</span></div>${notes}${nextHtml("p", pageNextCap(), showAllNext, todayCount ? `today ${summary}` : "")}${moreNext}${takeHtml()}${whyOrder}${todayCount ? `<h2>today <small>${summary}</small></h2>${todayHtml(open)}` : ""}${addForm(!focus?.document)}<small>reorder or reword: tell the assistant</small>${removed ? `<p class="focus-caption" role="status">removed “${esc(removed.intention.title)}” · <button type="button" data-focus-action="restore-removed" data-focus-key="action:restore-removed" aria-label="Undo remove: ${escAttr(removed.intention.title)}"${locked() ? " disabled" : ""}>undo</button></p>` : ""}${doneHtml}${yesterday}`);
+    replace("assistant-content", !enabled ? "" : `<div class="focus-header"><h2 class="focus-count">${esc(needsLabel)}</h2>${attn}${sessionNotice}<span class="focus-header-actions"><button type="button" class="focus-talk" data-focus-action="talk" data-focus-key="action:talk" aria-label="Talk to assistant"${terminalUnavailable() ? ` title="${escAttr(terminalUnavailable()!)}"` : ""}${!terminalTarget() ? " disabled" : ""}>talk<span aria-hidden="true"> ›</span></button>${button("settings", "settings", "Assistant settings")}</span></div>${notes}${nextHtml("p", pageNextCap(), showAllNext, todayCount ? `today ${summary}` : "")}${moreNext}${takeHtml()}${whyOrder}${todayCount ? `<h2>today</h2>${todayHtml(open)}` : ""}${addForm(!focus?.document)}<small>reorder or reword: tell the assistant</small>${removed ? `<p class="focus-caption" role="status">removed “${esc(removed.intention.title)}” · <button type="button" data-focus-action="restore-removed" data-focus-key="action:restore-removed" aria-label="Undo remove: ${escAttr(removed.intention.title)}"${locked() ? " disabled" : ""}>undo</button></p>` : ""}${doneHtml}${yesterday}`);
     // Initial session/peer lists can arrive separately. Latch the oversized default
     // from rendered content; a stored/in-memory user preference still wins.
     if (!isDesktop() && mobileDefaultPending && !mobileOverCap && dashboardExpanded && answered && deps.sessionsAvailable() && block?.clientHeight) {

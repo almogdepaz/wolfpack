@@ -17,11 +17,11 @@ test("needs-you state header opens the assistant terminal while the tile opens t
     await route.fulfill({ response, json: body });
   });
   await page.goto(server.baseUrl);
-  // the dashboard block carries the same amber "needs you · answer ›" control, straight to the terminal
-  await expect(page.locator("#dashboard-focus .focus-header").getByRole("button", { name: /needs you · answer/ })).toBeVisible();
+  // the dashboard block carries the same amber "assistant needs you ›" control, straight to the terminal
+  await expect(page.locator("#dashboard-focus .focus-header").getByRole("button", { name: /assistant needs you/ })).toBeVisible();
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   await expect(page.locator("#assistant-view")).toBeVisible();
-  await page.locator("#assistant-content .focus-header").getByRole("button", { name: /needs you · answer/ }).click();
+  await page.locator("#assistant-content .focus-header").getByRole("button", { name: /assistant needs you/ }).click();
   await expect(page.locator("#terminal-view")).toBeVisible();
   await expect(page.locator("#assistant-terminal-header")).toBeVisible();
 });
@@ -40,7 +40,7 @@ test("focus screenshot and layout evidence", async ({ page }, info) => {
   const screenshots = join(process.cwd(), process.env.WOLFPACK_FOCUS_SHOTS ?? ".plans/screenshots");
   mkdirSync(screenshots, { recursive: true });
   await page.screenshot({ path: join(screenshots, `focus-dashboard-${desktop ? 1440 : 390}.png`), fullPage: true });
-  await block.getByRole("button", { name: "Open assistant", exact: true }).click();
+  await block.getByRole("button", { name: "Open assistant page", exact: true }).click();
   await expect(page.locator("#assistant-view")).toBeVisible();
   await expect(page.locator("#assistant-view")).toContainText("1 of 3 done");
   expect((await new AxeBuilder({ page }).include("#assistant-view").analyze()).violations).toEqual([]);
@@ -93,15 +93,17 @@ test("QA layout: fixed disclosure/action columns, full-width bodies, shared cont
   });
   await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");
-  await expect(block.locator(".focus-next > li")).toHaveCount(2);
+  await expect(block.locator(".focus-next > li")).toHaveCount(1);
+  await expect(block.locator(".focus-finished > li")).toHaveCount(1);
   if (!desktop) {
     await expect.poll(async () => {
-      const box = await block.getByRole("button", { name: "Open assistant", exact: true }).boundingBox();
+      const box = await block.getByRole("button", { name: "Open assistant page", exact: true }).boundingBox();
       return box?.height ?? 0;
     }, { message: "QA-8 dashboard assistant target" }).toBeGreaterThanOrEqual(44);
   }
   const row = block.locator(".focus-next > li").first();
-  await row.locator("summary").click();
+  await expandFocusCard(row);
+  await row.locator(".focus-context-more > summary").first().click();
   const edges = await row.evaluate(el => {
     const rect = el.getBoundingClientRect();
     return { body: el.querySelector(".focus-card-body")!.getBoundingClientRect().right, right: rect.right - parseFloat(getComputedStyle(el).paddingRight) };
@@ -110,8 +112,8 @@ test("QA layout: fixed disclosure/action columns, full-width bodies, shared cont
   const shots = join(process.cwd(), process.env.WOLFPACK_FOCUS_SHOTS ?? ".plans/screenshots");
   mkdirSync(shots, { recursive: true });
   await page.screenshot({ path: join(shots, `qa-layout-dashboard-open-${width}.png`), fullPage: true });
-  await row.locator("summary").click();
-  await block.getByRole("button", { name: "Open assistant", exact: true }).click();
+  await row.locator(":scope > .focus-card > summary").click();
+  await block.getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-content");
   await expect(view.locator(".focus-today > li")).toHaveCount(3);
   const aligned = (values: number[]) => Math.max(...values) - Math.min(...values);
@@ -124,7 +126,7 @@ test("QA layout: fixed disclosure/action columns, full-width bodies, shared cont
   await expect(permission.getByRole("button", { name: "Open prompt-project", exact: true })).not.toBeVisible();
   await expandFocusCard(permission);
   await expect(permission.getByRole("button", { name: "Open prompt-project", exact: true })).toHaveText("open ›");
-  await permission.locator("summary").click();
+  await permission.locator(":scope > .focus-card > summary").click();
   const next = await view.locator(".focus-next > li > .focus-card > summary").evaluateAll(els => els.map(el => el.getBoundingClientRect().right));
   expect.soft(aligned(next), "QA-7 open and start share a disclosure column").toBeLessThanOrEqual(1);
   expect.soft(next.length, "next cards keep their own disclosure column").toBeGreaterThan(0);
@@ -202,7 +204,7 @@ test("R-N1: compact chips keep attention first and hide the least urgent session
     await route.fulfill({ response, json: body });
   });
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   const row = page.locator("#assistant-content .focus-today > li");
   const chips = row.locator(":scope > .focus-chips");
   await expect(chips.locator("[data-focus-session]")).toHaveText(["f", "n", "w", "x", "i", "r"]);
@@ -245,7 +247,7 @@ test("S1: long session chips stay inside their column; six chips keep a compact 
   for (const width of desktop ? [1024, 1280, 1440] : [390]) {
     await page.setViewportSize({ width, height: desktop ? 900 : 844 });
     await page.goto(server.baseUrl);
-    await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+    await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
     const today = page.locator("#assistant-content .focus-today");
     await expect(today.locator("li")).toHaveCount(2);
     const measurements = await today.locator("li").evaluateAll(rows => rows.map(row => {
@@ -312,7 +314,7 @@ test("SF2: the phone pill has a 44px hit area beyond its visual box", async ({ p
   test.skip(info.project.name === "desktop", "phone extended chip target");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   const chip = page.locator("#assistant-content .focus-today > li > .focus-chips").getByRole("button", { name: "another-project", exact: true });
   // Trial click scrolls and retries a node replaced by a startup refresh, without activating it.
   await chip.click({ trial: true });
@@ -353,7 +355,7 @@ for (const change of ["resize", "linked sessions"] as const) test(`R1: revealed 
   });
   try {
     await page.goto(server.baseUrl);
-    await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+    await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
     const row = page.locator("#assistant-content .focus-today > li");
     const summary = row.locator("summary");
     if (change === "resize") await expect(row.getByRole("button")).toHaveCount(6);
@@ -403,7 +405,7 @@ test("focus card captures: a session card open with and without the agent's cont
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
   await page.screenshot({ path: join(screenshots, `focus-card-context-dashboard-${width}.png`), fullPage: true });
-  await block.getByRole("button", { name: "Open assistant", exact: true }).click();
+  await block.getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-view");
   // open state is per card, shared by the dashboard block and the page: the card opened above is open here too
   await expect(view.locator(".focus-next li").filter({ hasText: "prompt-project" }).locator("details.focus-card")).toHaveAttribute("open", "");

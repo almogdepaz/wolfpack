@@ -63,8 +63,8 @@ test("take sits below cards on both hosts; dismissal persists and a newer order 
   await expect(block.locator(".focus-next > li")).toHaveCount(2);
   await expect(take).toContainText(text);
   await expect(take.locator(".focus-take-label")).toHaveText(/assistant's take · (now|\d+m) ago/);
-  await expect.poll(() => take.evaluate(el => el.previousElementSibling?.className)).toBe("focus-quiet");
-  await expect.poll(() => take.evaluate(el => el.nextElementSibling?.tagName)).toBe("SMALL");
+  await expect.poll(() => take.evaluate(el => el.previousElementSibling?.className)).toBe("focus-next");
+  await expect.poll(() => take.evaluate(el => el.nextElementSibling?.tagName)).toBe("DETAILS");
   await take.scrollIntoViewIfNeeded();
   await page.screenshot({ path: join(shots, `${info.project.name}-dashboard-visible.png`), fullPage: true });
   await block.getByRole("button", { name: "Open assistant page", exact: true }).click();
