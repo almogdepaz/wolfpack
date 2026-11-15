@@ -2965,7 +2965,7 @@ body > header { height: 52px; min-height: 52px; }
 .focus-today > li { display: grid; grid-template-columns: minmax(0, 1fr) var(--a); align-items: start; column-gap: var(--g); padding: 0 12px; font-size: 13px; color: var(--text-2); }
 .focus-today > li { grid-template-columns: auto minmax(0, 1fr) var(--f-chips) 12px var(--a); }
 .focus-today > li:has(> .focus-card:not([open]) > summary:hover) { background: var(--surface-3); }
-.focus-next .focus-card, .focus-today .focus-card { min-width: 0; margin: 0; color: inherit; font-size: inherit; grid-row: 1; }
+.focus-next .focus-card, .focus-finished .focus-card, .focus-today .focus-card { min-width: 0; margin: 0; color: inherit; font-size: inherit; grid-row: 1; }
 .focus-today .focus-card > summary { width: calc(100% - var(--a) - var(--g)); }
 .focus-today .focus-card { grid-column: 2 / -1; }
 .focus-today .focus-card > summary { display: grid; grid-template-columns: minmax(0, 1fr) var(--f-chips) 12px; }
@@ -3010,7 +3010,8 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 .focus-next { display: grid; gap: 8px; list-style: none; margin: 8px 0 0; padding: 0; }
 .focus-next > li { --t: var(--attn); min-width: 0; padding: 0 12px; border: 1px solid var(--hairline); border-left: 2px solid var(--t); border-radius: var(--r-card); background: var(--surface-2); }
 .focus-next > [data-kind=suggest] { --t: var(--accent); }
-.focus-next > [data-kind=done] { --t: var(--text-4); }
+.focus-finished { list-style: none; margin: 12px 0 4px; padding: 0; }
+.focus-finished > li { min-width: 0; border-bottom: 1px solid var(--hairline); }
 .focus-next .focus-card > summary { display: grid; grid-template-columns: auto minmax(0, 1fr) 12px; gap: 4px 12px; padding: 12px 0; }
 .focus-next .focus-card > summary::after { grid-column: 3; grid-row: 1 / 3; }
 .focus-next .focus-title { font: 500 14px/1.35 var(--font-ui); }
