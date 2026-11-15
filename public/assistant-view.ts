@@ -69,6 +69,10 @@ export function createAssistantView(deps: {
   let notice = "";
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
   const NOTICE_MS = 5_000;
+  let removed: { intention: FocusIntention; index: number; owner: HomeOwner } | undefined;
+  let removalTimer: ReturnType<typeof setTimeout> | undefined;
+  const REMOVE_UNDO_MS = 10_000;
+  function clearRemoval() { clearTimeout(removalTimer); removed = undefined; }
   function announce(text: string) {
     clearTimeout(noticeTimer);
     notice = text;
@@ -108,6 +112,7 @@ export function createAssistantView(deps: {
     localOwner = next;
     const changed = previous !== undefined && previous !== next.home;
     if (changed) {
+      clearRemoval();
       homeGeneration++;
       timingOwner = undefined; timingSave = undefined; timingLoad++;
       timingForm?.reset(); syncTimingControls();
@@ -567,8 +572,9 @@ export function createAssistantView(deps: {
     }
     return changed;
   }
+  const removeButton = (i: FocusIntention) => `<button type="button" data-focus-remove="${escAttr(i.id)}" data-focus-key="${escAttr(`remove:${i.id}`)}" aria-label="Remove: ${escAttr(i.title)}"${locked() ? " disabled" : ""}>remove</button>`;
   function todayHtml(items: FocusIntention[]) {
-    return `<ul class="focus-today" aria-label="Intentions">${items.map(i => `<li style="--f-chips:${compactChips.get(i.id)?.width ?? 0}px"${i.done ? ' class="done"' : ""}><label class="focus-check"><input type="checkbox" data-focus-done="${escAttr(i.id)}" data-focus-key="${escAttr(i.id)}" aria-label="Done: ${escAttr(i.title)}"${i.done ? " checked" : ""}${locked() ? " disabled" : ""}></label>${card(`intention:${i.id}`, `<span class="focus-title">${esc(i.title)}${rowContext(i, undefined, undefined, isDesktop() && compactChips.get(i.id)?.showContext === false)}</span>`, intentionBody(i, `intention:${i.id}`))}${chipsHtml(i)}${!i.done && !linkedFocusSessions(i, sessions()).length ? `<button type="button" class="focus-action" data-focus-plan="${escAttr(i.id)}" data-focus-key="${escAttr(`plan:${i.id}`)}" ${planAttributes(i)}>plan ›</button>` : ""}</li>`).join("")}</ul>`;
+    return `<ul class="focus-today" aria-label="Intentions">${items.map(i => `<li style="--f-chips:${compactChips.get(i.id)?.width ?? 0}px"${i.done ? ' class="done"' : ""}><label class="focus-check"><input type="checkbox" data-focus-done="${escAttr(i.id)}" data-focus-key="${escAttr(i.id)}" aria-label="Done: ${escAttr(i.title)}"${i.done ? " checked" : ""}${locked() ? " disabled" : ""}></label>${card(`intention:${i.id}`, `<span class="focus-title">${esc(i.title)}${rowContext(i, undefined, undefined, isDesktop() && compactChips.get(i.id)?.showContext === false)}</span>`, intentionBody(i, `intention:${i.id}`) + field("manage", removeButton(i)))}${chipsHtml(i)}${!i.done && !linkedFocusSessions(i, sessions()).length ? `<button type="button" class="focus-action" data-focus-plan="${escAttr(i.id)}" data-focus-key="${escAttr(`plan:${i.id}`)}" ${planAttributes(i)}>plan ›</button>` : ""}</li>`).join("")}</ul>`;
   }
   // The live dom holds the newest open state: a tap sets `open` at once, but the browser queues its toggle event, and a
   // render in between would rebuild the card from `openCards` and the toggle would then fire on the detached node (N6).
@@ -613,17 +619,19 @@ export function createAssistantView(deps: {
     const tileSummary = firstCount ? `${firstCount.text}${remainingCards ? ` +${remainingCards}` : ""}` : "0";
     const visibleNext = isDesktop() ? 5 : 3;
     const moreNext = !showAllNext && nextCount > visibleNext ? `<p>${button("more-next", `show ${nextCount - visibleNext} more`)}</p>` : "";
-    const summary = `${current.intentions.filter(i => i.done).length} of ${current.intentions.length} done`;
-    // "know when items are done": today's ticks and finishes carry a time; the rest of the list stays as it was.
-    const done = doneToday(current, sessions(), Date.now(), doneDay);
+    const open = current.intentions.filter(i => !i.done);
+    const finishedToday = current.intentions.filter(i => i.done && i.doneAt && doneDay(i.doneAt) === localDay(Date.now()));
+    const todayCount = open.length + finishedToday.length;
+    const summary = `${finishedToday.length} of ${todayCount} done`;
+    // Historical completions stay out even when a linked session finishes again today.
+    const done = doneToday({ ...current, intentions: [...open, ...finishedToday] }, sessions(), Date.now(), doneDay);
     const grouped = groupFocusDone(done);
     const doneGroupHtml = (groups: FocusDoneGroup[], finished: boolean) => groups.length ? `<h3>${finished ? "finished" : "work finished, intention still open"}</h3><ul aria-label="${finished ? "Finished intentions" : "Finished work still open"}">${groups.map(group => {
       const i = group.intention;
-      return `<li><div><span class="focus-what">${finished ? "✓" : "○"} ${esc(i.title)}</span>${finished ? `<span class="focus-time">${clock(group.at)}</span><button type="button" data-focus-undo="${escAttr(i.id)}" data-focus-key="${escAttr(`undo:${i.id}`)}" aria-label="Undo done: ${escAttr(i.title)}"${locked() ? " disabled" : ""}>undo</button>`
+      return `<li><div><span class="focus-what">${finished ? "✓" : "○"} ${esc(i.title)}</span>${finished ? `<span class="focus-time">${clock(group.at)}</span><button type="button" data-focus-undo="${escAttr(i.id)}" data-focus-key="${escAttr(`undo:${i.id}`)}" aria-label="Undo done: ${escAttr(i.title)}"${locked() ? " disabled" : ""}>undo</button>${removeButton(i)}`
         : `<button type="button" data-focus-complete="${escAttr(i.id)}" data-focus-key="${escAttr(`complete:${i.id}`)}" aria-label="Mark done: ${escAttr(i.title)}"${locked() ? " disabled" : ""}>done ›</button>`}</div>${group.sessions.length ? `<ul>${group.sessions.map(({ session, at }) => `<li><span class="focus-what">· ${esc(session.name)}${session.machine ? ` · ${esc(session.machine)}` : ""} · <span class="focus-time">${clock(at)}</span></span>${!finished ? `<button type="button" data-focus-session="${escAttr(session.id)}" data-focus-key="${escAttr(`done:${i.id}:${session.id}`)}" aria-label="Open ${escAttr(session.name)}"${sessionLocked() ? " disabled" : ""}>open ›</button>` : ""}</li>`).join("")}</ul>` : ""}</li>`;
     }).join("")}</ul>` : "";
     const doneHtml = done.length ? `<h2>done today <small>${grouped.finished.length} finished · ${grouped.open.length} finished work still open</small></h2><div class="focus-done">${doneGroupHtml(grouped.finished, true)}${doneGroupHtml(grouped.open, false)}</div>` : "";
-    const open = current.intentions.filter(i => !(i.done && i.doneAt && doneDay(i.doneAt) === localDay(Date.now())));
     const r = routines();
     const catching = r?.catchingUp;
     // Every state names the user's move: answer, catch up now, look at its terminal; never only what the system is doing.
@@ -708,9 +716,9 @@ export function createAssistantView(deps: {
       const details = document.getElementById("dashboard-focus-details");
       if (details) details.hidden = !dashboardExpanded;
     }
-    const dashboardBody = !enabled ? "" : `<div class="focus-header">${attn || `${tone}${button("view", "assistant", "Open assistant", false, "view-title")}<small${catching ? ' class="focus-spin"' : ""}>${esc(info)}</small>`}${sessionNotice}<small>${esc(orderLabel())}</small>${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${focus?.document ? nextHtml("d", 3) + takeHtml() + `<small>${esc(nextSummary)}${current.intentions.length ? ` · today ${summary}` : ""}</small>` : `<p>Set your focus</p>${addForm(true)}`}${error && !focusUnavailable ? `<p role="status">${esc(error)}</p>` : ""}`;
+    const dashboardBody = !enabled ? "" : `<div class="focus-header">${attn || `${tone}${button("view", "assistant", "Open assistant", false, "view-title")}<small${catching ? ' class="focus-spin"' : ""}>${esc(info)}</small>`}${sessionNotice}<small>${esc(orderLabel())}</small>${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${focus?.document ? nextHtml("d", 3) + takeHtml() + `<small>${esc(nextSummary)}${todayCount ? ` · today ${summary}` : ""}</small>` : `<p>Set your focus</p>${addForm(true)}`}${error && !focusUnavailable ? `<p role="status">${esc(error)}</p>` : ""}`;
     replace("dashboard-focus-details", dashboardBody);
-    replace("assistant-content", !enabled ? "" : `<div class="focus-header">${attn || `<span title="${escAttr(info)}"${catching ? ' class="focus-spin"' : ""}>${tone} ${esc(info)}</span>`}${sessionNotice}<small>${esc(orderLabel())}</small><span class="focus-header-actions"><button type="button" class="focus-talk" data-focus-action="talk" data-focus-key="action:talk" aria-label="Talk to assistant"${terminalUnavailable() ? ` title="${escAttr(terminalUnavailable()!)}"` : ""}${!terminalTarget() ? " disabled" : ""}>talk<span aria-hidden="true"> ›</span></button>${button("settings", "settings", "Assistant settings")}</span></div>${notes}<h2>next <small>${esc(nextSummary)}</small></h2>${nextHtml("p", pageNextCap(), showAllNext)}${moreNext}${takeHtml()}${current.intentions.length && next.length ? `<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details>` : ""}${current.intentions.length ? `<h2>today <small>${summary}</small></h2>${todayHtml(open)}` : ""}${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>${doneHtml}${yesterday}`);
+    replace("assistant-content", !enabled ? "" : `<div class="focus-header">${attn || `<span title="${escAttr(info)}"${catching ? ' class="focus-spin"' : ""}>${tone} ${esc(info)}</span>`}${sessionNotice}<small>${esc(orderLabel())}</small><span class="focus-header-actions"><button type="button" class="focus-talk" data-focus-action="talk" data-focus-key="action:talk" aria-label="Talk to assistant"${terminalUnavailable() ? ` title="${escAttr(terminalUnavailable()!)}"` : ""}${!terminalTarget() ? " disabled" : ""}>talk<span aria-hidden="true"> ›</span></button>${button("settings", "settings", "Assistant settings")}</span></div>${notes}<h2>next <small>${esc(nextSummary)}</small></h2>${nextHtml("p", pageNextCap(), showAllNext)}${moreNext}${takeHtml()}${todayCount && next.length ? `<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details>` : ""}${todayCount ? `<h2>today <small>${summary}</small></h2>${todayHtml(open)}` : ""}${addForm(!focus?.document)}<small>reorder or reword: tell the assistant</small>${removed ? `<p class="focus-caption" role="status">removed “${esc(removed.intention.title)}” · <button type="button" data-focus-action="restore-removed" data-focus-key="action:restore-removed" aria-label="Undo remove: ${escAttr(removed.intention.title)}"${locked() ? " disabled" : ""}>undo</button></p>` : ""}${doneHtml}${yesterday}`);
     // Initial session/peer lists can arrive separately. Latch the oversized default
     // from rendered content; a stored/in-memory user preference still wins.
     if (!isDesktop() && mobileDefaultPending && !mobileOverCap && dashboardExpanded && answered && deps.sessionsAvailable() && block?.clientHeight) {
@@ -803,13 +811,14 @@ export function createAssistantView(deps: {
     })().finally(() => { flight = undefined; });
     return flight;
   }
-  async function write(op: FocusOp | (() => FocusOp), owner = captureOwner()) {
+  async function write(op: FocusOp | readonly FocusOp[] | (() => FocusOp | readonly FocusOp[]), owner = captureOwner()) {
     for (let attempt = 0; attempt < 2; attempt++) {
       requireOwner(owner);
       if (focusUnavailable) throw new Error("focus is unavailable; changes were not saved");
       if (!answered) throw new Error("focus is still loading; changes were not saved");
       try {
-        const saved = await deps.request<FocusResponse>("/focus", { method: "POST", body: JSON.stringify({ expectedRevision: doc().revision, ops: [typeof op === "function" ? op() : op] }) }, owner.machine);
+        const next = typeof op === "function" ? op() : op;
+        const saved = await deps.request<FocusResponse>("/focus", { method: "POST", body: JSON.stringify({ expectedRevision: doc().revision, ops: Array.isArray(next) ? next : [next] }) }, owner.machine);
         requireOwner(owner, OLD_HOME_COMPLETED);
         if (saved.home !== owner.home) throw new FocusHomeChanged();
         focus = { ...focus, ...saved, assistant: focus?.assistant };
@@ -832,6 +841,48 @@ export function createAssistantView(deps: {
         await refresh(); requireOwner(owner);
       }
     }
+  }
+  async function removeIntention(id: string, host: HTMLElement) {
+    let saved: typeof removed;
+    await run(async () => {
+      const owner = captureOwner();
+      let snapshot: typeof removed;
+      await write(() => {
+        // Each CAS attempt must snapshot the document that its drop actually targets.
+        const index = doc().intentions.findIndex(i => i.id === id);
+        if (index < 0) throw new Error(`intention not found: ${id}`);
+        snapshot = { intention: structuredClone(doc().intentions[index]!), index, owner };
+        return { type: "drop", id };
+      }, owner);
+      clearRemoval();
+      removed = saved = snapshot;
+      removalTimer = setTimeout(() => { clearRemoval(); render(); }, REMOVE_UNDO_MS);
+    });
+    if (saved && removed === saved) {
+      const undo = host.querySelector<HTMLElement>('[data-focus-action="restore-removed"]');
+      if (undo && restoreFocus(undo)) undo.scrollIntoView({ block: "center" });
+    }
+  }
+  async function restoreRemoved(host: HTMLElement) {
+    const saved = removed;
+    if (!saved) return;
+    let restored = false;
+    await run(async () => {
+      await write(() => {
+        const { id, title, project, machine, sessions } = saved.intention;
+        if (doc().intentions.some(i => i.id === id)) throw new Error("duplicate intention id");
+        const ids = doc().intentions.map(i => i.id);
+        ids.splice(Math.min(saved.index, ids.length), 0, id);
+        // Existing add/done ops deliberately re-stamp createdAt and, for a finished item, doneAt.
+        return [
+          { type: "add", intention: { id, title, project, machine, sessions } },
+          { type: "reorder", ids },
+          ...(saved.intention.done ? [{ type: "done" as const, id }] : []),
+        ];
+      }, saved.owner);
+      clearRemoval(); restored = true;
+    });
+    if (restored) restoreFocus(host.querySelector(`[data-focus-key="${CSS.escape(saved.intention.done ? `undo:${saved.intention.id}` : saved.intention.id)}"]`));
   }
   async function readDayNote() {
     const owner = captureOwner();
@@ -1045,6 +1096,8 @@ export function createAssistantView(deps: {
       }
       if (action === "talk") { talk(); return; }
       if (locked()) return;
+      if (target.dataset.focusRemove) { void removeIntention(target.dataset.focusRemove, host); return; }
+      if (action === "restore-removed") { void restoreRemoved(host); return; }
       if (target.dataset.focusReset) {
         const action = currentAction(target.dataset.focusReset);
         if (action?.kind === "reply") { drafts.delete(action.key); render(); }
