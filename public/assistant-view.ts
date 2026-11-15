@@ -846,12 +846,16 @@ export function createAssistantView(deps: {
     let saved: typeof removed;
     await run(async () => {
       const owner = captureOwner();
-      const index = doc().intentions.findIndex(i => i.id === id);
-      if (index < 0) throw new Error(`intention not found: ${id}`);
-      const intention = structuredClone(doc().intentions[index]!);
-      await write({ type: "drop", id }, owner);
+      let snapshot: typeof removed;
+      await write(() => {
+        // Each CAS attempt must snapshot the document that its drop actually targets.
+        const index = doc().intentions.findIndex(i => i.id === id);
+        if (index < 0) throw new Error(`intention not found: ${id}`);
+        snapshot = { intention: structuredClone(doc().intentions[index]!), index, owner };
+        return { type: "drop", id };
+      }, owner);
       clearRemoval();
-      removed = saved = { intention, index, owner };
+      removed = saved = snapshot;
       removalTimer = setTimeout(() => { clearRemoval(); render(); }, REMOVE_UNDO_MS);
     });
     if (saved && removed === saved) restoreFocus(host.querySelector('[data-focus-action="restore-removed"]'));

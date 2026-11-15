@@ -90,6 +90,54 @@ test("remove + undo restores the old index against latest ids, project and sessi
   await page.screenshot({ path: info.outputPath("cleanup-restored.png"), fullPage: true });
 });
 
+test("drop CAS retry snapshots the latest edited, finished and reordered intention for undo", async ({ page }) => {
+  await open(page);
+  const latest = { title: "latest release title", project: "/work/latest", machine: "updated-machine", sessions: ["mock:error-project"] };
+  const order = ["last", "finished", "first", "older", "target"];
+  const responses: number[] = [];
+  await page.route(url => url.pathname === "/api/focus", async route => {
+    const request = route.request();
+    if (request.method() !== "POST" || !request.postDataJSON().ops.some((op: FocusOp) => op.type === "drop" && op.id === "target")) return route.continue();
+    if (!responses.length) await update(page, [
+      { type: "edit", id: "target", patch: latest }, { type: "done", id: "target" }, { type: "reorder", ids: order },
+    ]);
+    const response = await route.fetch();
+    responses.push(response.status());
+    await route.fulfill({ response });
+  });
+  const card = page.locator('#assistant-content [data-focus-card="intention:target"]');
+  await card.locator("summary").click();
+  await card.getByRole("button", { name: `Remove: ${title}`, exact: true }).click();
+  const receipt = page.locator("#assistant-content").getByRole("status");
+  await expect(receipt.getByRole("button", { name: "undo", exact: true })).toBeFocused();
+  expect(responses).toEqual([409, 200]);
+  expect((await document(page)).intentions.some(i => i.id === "target")).toBe(false);
+  await receipt.getByRole("button", { name: "undo", exact: true }).click();
+  await expect.poll(async () => (await document(page)).intentions.find(i => i.id === "target")).toMatchObject({ id: "target", ...latest, done: true });
+  expect((await document(page)).intentions.map(i => i.id)).toEqual(order);
+  await expect(page.getByRole("button", { name: `Undo done: ${latest.title}`, exact: true })).toBeFocused();
+});
+
+test("a target dropped concurrently reports the normal action error without an undo receipt", async ({ page }) => {
+  await open(page);
+  let raced = false;
+  await page.route(url => url.pathname === "/api/focus", async route => {
+    const request = route.request();
+    if (!raced && request.method() === "POST" && request.postDataJSON().ops.some((op: FocusOp) => op.type === "drop" && op.id === "target")) {
+      raced = true;
+      await update(page, [{ type: "drop", id: "target" }]);
+    }
+    await route.continue();
+  });
+  const card = page.locator('#assistant-content [data-focus-card="intention:target"]');
+  await card.locator("summary").click();
+  await card.getByRole("button", { name: `Remove: ${title}`, exact: true }).click();
+  await expect(page.locator("#focus-status")).toHaveText("intention not found: target");
+  expect(raced).toBe(true);
+  await expect(status(page)).toHaveCount(0);
+  expect((await document(page)).intentions.some(i => i.id === "target")).toBe(false);
+});
+
 test("finished remove + undo restores done in one batch and focuses its done undo", async ({ page }, info) => {
   const original = (await document(page)).intentions.find(i => i.id === "finished")!;
   await open(page);
