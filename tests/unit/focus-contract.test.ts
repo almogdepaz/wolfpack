@@ -74,6 +74,14 @@ describe("focus document", () => {
     }
     expect(() => reduceFocus(initial, [{ ...next, rows: [{ ...rows[0], ref: { intentionId: "unknown" } }], take: undefined }], now)).toThrow("intention not found: unknown");
   });
+  test("next may reference an id re-added after its old completion was pruned", () => {
+    const initial = reduceFocus(emptyFocus(), [add, { type: "done", id: "ship" }], "2026-10-01T12:00:00.000Z");
+    const rows: FocusTriage[] = [{ ref: { intentionId: "ship" }, verdict: "needs-you", reason: "new work" }];
+    const saved = reduceFocus(initial, [add, { type: "next", author: "assistant", rows, take: { text: "New priority", about: [rows[0]!.ref] } }], now);
+    expect(saved.intentions[0]?.done).toBeUndefined();
+    expect(saved.next?.rows).toEqual(rows);
+    expect(saved.next?.take?.about).toEqual([rows[0]!.ref]);
+  });
   test("bounded assistant data and shared day-note acknowledgement", () => {
     const doc = reduceFocus(emptyFocus(), [{ type: "nudge", text: "ship first", author: "assistant" }, { type: "note", text: "durable memory" }, { type: "day-summary", summary: { date: "2026-11-05", done: 4, carried: 2, questions: 1 } }, { type: "seen-day-note", at: now }], now);
     expect(doc.nudge).toEqual({ text: "ship first", author: "assistant", updatedAt: now });

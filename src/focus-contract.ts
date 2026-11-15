@@ -159,7 +159,8 @@ export function reduceFocus(current: FocusDocument, ops: unknown, now: string): 
     switch (op.type) {
       case "add":
         if (doc.intentions.some(i => i.id === op.intention.id)) throw new Error("duplicate intention id");
-        doc.intentions.push({ ...op.intention, createdAt: now }); break;
+        doc.intentions.push({ ...op.intention, createdAt: now });
+        pruned.delete(op.intention.id); break;
       case "edit": case "done": case "undo": case "drop": {
         const index = doc.intentions.findIndex(i => i.id === op.id);
         if (index < 0) throw new Error(`intention not found: ${op.id}`);
