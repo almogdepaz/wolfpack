@@ -24,8 +24,10 @@ for (const reading of [false, true]) test(`QA-13: the sidebar name separates ${r
   await page.getByRole("button", { name: "Talk to assistant" }).click();
   const tile = page.locator('#sidebar-assistant [data-focus-action="view"]');
   await expect(tile).toBeVisible();
-  await expect(tile).toHaveAccessibleName(reading ? /^assistant\s*, reading · 1 needs you next\s*: Do you want to continue\? \(y\/n\)$/ : /^assistant\s*, 1 needs you\s*: Do you want to continue\? \(y\/n\)$/);
-  // S3: punctuation is spoken-only, and the original small visual label remains.
+  await expect(tile).toHaveAccessibleName(reading ? /^assistant\s*, reading · 1 needs you next\s*: prompt-project · Do you want to continue\? \(y\/n\)$/ : /^assistant\s*, 1 needs you\s*: prompt-project · Do you want to continue\? \(y\/n\)$/);
+  await expect(tile.locator(".assistant-tile-next")).toHaveAttribute("title", "prompt-project · Do you want to continue? (y/n)");
+  await expect(tile.locator(".assistant-tile-next")).toHaveCSS("text-overflow", "ellipsis");
+  // S3: status punctuation is spoken-only, and the original small visual label remains.
   const visibleText = await tile.evaluate(el => {
     const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
     const parts: string[] = [];

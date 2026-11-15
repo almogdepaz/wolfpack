@@ -720,11 +720,15 @@ export function createAssistantView(deps: {
       // The tile's tone drives its glow: amber when the user's move is due, a pulse while it reads or works, red offline.
       tile.dataset.tone = focusUnavailable || terminalUnavailable() || state === "failed" ? "failed" : state === "needs you" || r?.surfaced ? "attn" : catching || state === "working" ? "busy" : "rest";
       const countedNext = tileState === null;
-      const upNext = next[0] ? `<i aria-hidden="true">next</i> ${countedNext ? "" : '<span class="visually-hidden">next:</span> '}${esc(cardHeadline(next[0]))}` : esc(focus?.document ? "nothing queued" : "set your focus");
+      const first = next[0];
+      const headline = first ? cardHeadline(first) : focus?.document ? "nothing queued" : "set your focus";
+      // The tile has no card meta line: name the session when its ask does not use the rule-based label.
+      const nextText = first?.session && (first.triage || first.session.state === "needs-input" && cardPreview(first)) ? `${first.session.name} · ${headline}` : headline;
+      const upNext = first ? `<i aria-hidden="true">next</i> ${countedNext ? "" : '<span class="visually-hidden">next:</span> '}${esc(nextText)}` : esc(nextText);
       const head = sidebarExpanded ? `${TILE_MARK}<b>assistant<span class="visually-hidden">,</span></b><span class="assistant-tile-state" title="${escAttr(fullTileStatus)}">${tone}${esc(tileStatus)}${countedNext && next[0] ? '<span class="visually-hidden">:</span>' : ""}</span>`
         : `<span class="visually-hidden">assistant</span>${tone}<span class="focus-title">${esc(tileState ?? state)}</span><span>${esc(tileSummary)}</span>`;
       if (!tile.firstElementChild) replace("sidebar-assistant", `<button id="sidebar-assistant-nav" type="button" aria-describedby="sidebar-assistant-summary" data-focus-action="view" data-focus-key="action:sidebar-view"></button>${disclosureFrame("sidebar-assistant-toggle")}`);
-      replace("sidebar-assistant-nav", `<span class="assistant-tile-head">${head}</span><span id="sidebar-assistant-details" class="assistant-tile-next"${sidebarExpanded ? "" : ' hidden=""'}>${upNext}</span><span id="sidebar-assistant-summary" hidden>${esc(fullTileStatus)}</span>`);
+      replace("sidebar-assistant-nav", `<span class="assistant-tile-head">${head}</span><span id="sidebar-assistant-details" class="assistant-tile-next" title="${escAttr(nextText)}"${sidebarExpanded ? "" : ' hidden=""'}>${upNext}</span><span id="sidebar-assistant-summary" hidden>${esc(fullTileStatus)}</span>`);
       disclosure("sidebar-assistant-toggle", "sidebar-assistant-details", sidebarExpanded, false);
       tile.title = fullTileStatus;
     }
