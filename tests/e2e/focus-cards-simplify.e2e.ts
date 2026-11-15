@@ -10,12 +10,13 @@ test.afterEach(async ({ page }) => { await page.unrouteAll({ behavior: "wait" })
 async function seed(page: Page, asks = 4, inputKind = "question") {
   await page.addInitScript(() => { localStorage.setItem("wolfpack-sidebar-pinned", "1"); localStorage.setItem("wolfpack-focus-mobile-expanded-v1", "1"); });
   const now = new Date().toISOString();
+  const firstAsk = inputKind === "permission" ? "Approve the smoke test." : inputKind === "auth" ? "Log in to the smoke-test account." : "Choose the smoke-test scope.";
   const current = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
   await page.route(url => url.pathname === "/api/focus", async route => {
     const response = await route.fetch(); const body = await response.json(); delete body.routines;
     body.document.intentions = [];
     body.document.next = { updatedAt: now, author: "assistant", rows: Array.from({ length: asks }, (_, i) => (
-      { ref: { machine: current.installationId, sessionId: `mock:ask-${i}` }, stoppedAt: now, verdict: "needs-you", reason: i === 0 ? "Approve the smoke test. It contacts a paid endpoint." : `Choose the next step for ask-${i}. Both options are ready.` }
+      { ref: { machine: current.installationId, sessionId: `mock:ask-${i}` }, stoppedAt: now, verdict: "needs-you", reason: i === 0 ? `${firstAsk} It contacts a paid endpoint.` : `Choose the next step for ask-${i}. Both options are ready.` }
     )) };
     await route.fulfill({ response, json: body });
   });
@@ -86,11 +87,11 @@ test("visual evidence: dashboard and assistant collapsed and expanded", async ({
   const block = page.locator("#dashboard-focus");
   await expect(block.locator(".focus-next > li").first()).toBeVisible();
   await capture(page, `dashboard-${suffix}-collapsed`);
-  const ask = block.locator(".focus-next > li").filter({ hasText: "Approve the smoke test." });
+  const ask = block.locator(".focus-next > li").filter({ hasText: "Choose the smoke-test scope." });
   await expandFocusCard(ask);
   await capture(page, `dashboard-${suffix}-expanded`);
   await block.getByRole("button", { name: "Open assistant page", exact: true }).click();
-  const card = page.locator("#assistant-content .focus-next > li").filter({ hasText: "Approve the smoke test." });
+  const card = page.locator("#assistant-content .focus-next > li").filter({ hasText: "Choose the smoke-test scope." });
   await expect(card.locator("details.focus-card")).toHaveAttribute("open", "");
   await capture(page, `assistant-${suffix}-expanded`);
   await card.locator("summary").click();
@@ -139,9 +140,10 @@ test("header, page heading and sidebar agree on attention without duplicate dash
   await expect(view.locator(":scope > details")).toContainText("ordered just now");
 });
 
-for (const [inputKind, tag] of [["question", "decide"], ["permission", "approve"], ["auth", "log in"]] as const) test(`assistant needs-you: ${inputKind} labels the next move as ${tag}`, async ({ page }) => {
+for (const [inputKind, tag, ask] of [["question", "decide", "Choose the smoke-test scope."], ["permission", "approve", "Approve the smoke test."], ["auth", "log in", "Log in to the smoke-test account."]] as const) test(`assistant needs-you: ${inputKind} labels the next move as ${tag}`, async ({ page }) => {
   await seed(page, 1, inputKind); await page.goto(server.baseUrl);
   await expect(page.locator("#dashboard-focus .focus-next .focus-tag")).toHaveText(tag);
+  await expect(page.locator("#dashboard-focus .focus-next summary strong")).toHaveText(ask);
 });
 
 for (const [inputKind, line, headline, tag] of [
@@ -179,7 +181,7 @@ test("the assistant page reports today's count only once, in the working footer"
 
 test("duplicate projects and terminal status bars do not add noise", async ({ page }) => {
   await seed(page); await page.goto(server.baseUrl);
-  const row = page.locator("#dashboard-focus .focus-next > li").filter({ hasText: "Approve the smoke test." });
+  const row = page.locator("#dashboard-focus .focus-next > li").filter({ hasText: "Choose the smoke-test scope." });
   await expect(row.locator("summary [title='/work/ask-0']")).toHaveCount(0);
   await expandFocusCard(row);
   await expect(row.locator("dt").filter({ hasText: /^last line$/ })).toHaveCount(0);
