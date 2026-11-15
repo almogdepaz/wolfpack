@@ -3126,9 +3126,9 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
   .focus-header > small { flex-basis: 100%; order: 1; }
   .focus-header > span:not(.dot) { flex: 1 1 auto; min-width: 0; }
   .focus-header > span.focus-header-actions { flex: none; }
-  /* Status yields width, never the actions' first row; notices wrap below both. */
+  /* Keep the count whole; controls may wrap, and notices follow both. */
   .assistant-column .focus-header { flex-wrap: wrap; min-height: 44px; }
-  .assistant-column .focus-header > :first-child { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .assistant-column .focus-header > .focus-count { flex: 1 0 auto; white-space: nowrap; }
   .focus-next > .focus-extra { display: none; }
   .focus-next .focus-card > summary { grid-template-columns: minmax(0, 1fr) 12px; }
   .focus-next .focus-card > summary::after { grid-column: 2; grid-row: 1; }

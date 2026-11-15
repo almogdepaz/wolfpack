@@ -40,6 +40,19 @@ async function capture(page: Page, name: string) {
   await page.screenshot({ path: join(root, name + ".png"), fullPage: true });
 }
 
+for (const asks of [0, 1]) test(`390px assistant header keeps the ${asks ? "needs-you" : "nothing-needs-you"} title whole`, async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await seed(page, asks); await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  await expect(page.locator(".view.swiping")).toHaveCount(0);
+  await page.evaluate(() => document.fonts.ready);
+  const title = page.locator("#assistant-content .focus-count");
+  await expect(title).toHaveText(asks ? "1 needs you" : "nothing needs you");
+  expect(await title.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await expect(page.getByRole("button", { name: "Talk to assistant", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Assistant settings", exact: true })).toBeVisible();
+});
+
 test("visual evidence: dashboard and assistant collapsed and expanded", async ({ page }, info) => {
   await seed(page, 1);
   const suffix = info.project.name === "desktop" ? "desktop" : "390";
