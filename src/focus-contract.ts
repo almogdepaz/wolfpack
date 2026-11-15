@@ -134,10 +134,28 @@ export function isFocusOp(v: unknown): v is FocusOp {
     default: return false;
   }
 }
+export const FOCUS_DONE_RETENTION_DAYS = 7;
+/** Remove only refs retired by this write; unknown ids still fail normal operation validation. */
+function pruneNextIntentions<T extends Pick<FocusNext, "rows" | "take">>(next: T, pruned: ReadonlySet<string>): T {
+  const rows = next.rows.flatMap(row => {
+    if ("intentionId" in row.ref && pruned.has(row.ref.intentionId)) return [];
+    if (!row.doneIntention || !pruned.has(row.doneIntention)) return [row];
+    if (!row.suggestion) return [];
+    const { doneIntention, ...reply } = row;
+    return [reply];
+  });
+  const refs = new Set(rows.map(row => focusNextRefKey(row.ref)));
+  return { ...next, rows, ...(next.take && { take: { ...next.take, about: next.take.about.filter(ref => refs.has(focusNextRefKey(ref))) } }) };
+}
 export function reduceFocus(current: FocusDocument, ops: unknown, now: string): FocusDocument {
   if (!Array.isArray(ops) || ops.length < 1 || ops.length > 100 || !ops.every(isFocusOp) || !timestamp(now)) throw new Error("invalid focus operations");
   const doc = structuredClone(current);
-  for (const op of ops) {
+  const cutoff = Date.parse(now) - FOCUS_DONE_RETENTION_DAYS * 864e5;
+  const pruned = new Set(doc.intentions.filter(i => i.done && i.doneAt && Date.parse(i.doneAt) <= cutoff).map(i => i.id));
+  doc.intentions = doc.intentions.filter(i => !pruned.has(i.id));
+  if (pruned.size && doc.next) doc.next = pruneNextIntentions(doc.next, pruned);
+  for (const raw of ops) {
+    const op = raw.type === "next" && pruned.size ? pruneNextIntentions(raw, pruned) : raw;
     switch (op.type) {
       case "add":
         if (doc.intentions.some(i => i.id === op.intention.id)) throw new Error("duplicate intention id");
@@ -153,8 +171,10 @@ export function reduceFocus(current: FocusDocument, ops: unknown, now: string): 
         break;
       }
       case "reorder": {
-        if (op.ids.length !== doc.intentions.length || !op.ids.every(key => doc.intentions.some(i => i.id === key))) throw new Error("reorder requires every intention id exactly once");
-        doc.intentions = op.ids.map(key => doc.intentions.find(i => i.id === key)!); break;
+        // Clients computed their order from the pre-prune document; keep every surviving id mandatory.
+        const ids = op.ids.filter(key => !pruned.has(key) || doc.intentions.some(i => i.id === key));
+        if (ids.length !== doc.intentions.length || !ids.every(key => doc.intentions.some(i => i.id === key))) throw new Error("reorder requires every intention id exactly once");
+        doc.intentions = ids.map(key => doc.intentions.find(i => i.id === key)!); break;
       }
       case "nudge": doc.nudge = { text: op.text, author: op.author, updatedAt: now }; break;
       case "next":

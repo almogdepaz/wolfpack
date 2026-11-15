@@ -28,6 +28,52 @@ describe("focus document", () => {
     delete legacy.intentions[0]!.doneAt;
     expect(reduceFocus(legacy, [{ type: "done", id: "ship" }], later).intentions[0]?.doneAt).toBe(later);
   });
+  test("prunes done intentions at seven days, retaining recent, open and undated legacy items", () => {
+    const atAge = (age: number) => new Date(Date.parse(now) - age).toISOString();
+    const week = 7 * 864e5;
+    const initial = { ...emptyFocus(), intentions: [
+      { id: "older", title: "older", createdAt: now, done: true, doneAt: atAge(week + 1) },
+      { id: "boundary", title: "boundary", createdAt: now, done: true, doneAt: atAge(week) },
+      { id: "recent", title: "recent", createdAt: now, done: true, doneAt: atAge(week - 1) },
+      { id: "open", title: "open", createdAt: now, done: false, doneAt: atAge(week + 1) },
+      { id: "legacy", title: "legacy", createdAt: now, done: true },
+    ] };
+    const saved = reduceFocus(initial, [{ type: "note", text: "trigger a write" }], now);
+    expect(saved.intentions.map(i => i.id)).toEqual(["recent", "open", "legacy"]);
+    expect(initial.intentions).toHaveLength(5);
+    expect(saved.revision).toBe(1);
+  });
+  test("prunes before add at the cap, including a reorder computed from the current ids", () => {
+    const initial = { ...emptyFocus(), intentions: Array.from({ length: 200 }, (_, n) => ({
+      id: `item-${n}`, title: `item ${n}`, createdAt: now,
+      ...(n === 0 && { done: true, doneAt: "2026-10-01T12:00:00.000Z" }),
+    })) };
+    expect(isFocusDocument(initial)).toBe(true);
+    const saved = reduceFocus(initial, [add], now);
+    expect(saved.intentions).toHaveLength(200);
+    expect(saved.intentions.at(-1)?.id).toBe("ship");
+    expect(saved.intentions.some(i => i.id === "item-0")).toBe(false);
+    const smaller = { ...initial, intentions: initial.intentions.slice(0, 3) };
+    expect(reduceFocus(smaller, [add, { type: "reorder", ids: ["ship", ...smaller.intentions.map(i => i.id)] }], now).intentions.map(i => i.id)).toEqual(["ship", "item-1", "item-2"]);
+  });
+  test("pruned next, take and doneIntention refs do not poison this or later writes", () => {
+    const initial = reduceFocus(emptyFocus(), [add, { type: "done", id: "ship" }], "2026-10-01T12:00:00.000Z");
+    const rows: FocusTriage[] = [
+      { ref: { intentionId: "ship" }, verdict: "needs-you", reason: "old task" },
+      { ref: { machine: "peer", sessionId: "hint-only" }, stoppedAt: now, verdict: "suggest", reason: "done hint", doneIntention: "ship" },
+      { ref: { machine: "peer", sessionId: "reply" }, stoppedAt: now, verdict: "suggest", reason: "reply too", doneIntention: "ship", suggestion: "Continue." },
+    ];
+    const next = { type: "next", author: "assistant", rows, take: { text: "Priorities", about: rows.map(row => row.ref) } } as const;
+    const withNext = reduceFocus(initial, [next], "2026-10-01T13:00:00.000Z");
+    for (const saved of [reduceFocus(withNext, [{ type: "note", text: "later" }], now), reduceFocus(initial, [next], now)]) {
+      expect(saved.intentions).toEqual([]);
+      expect(saved.next?.rows).toEqual([{ ref: rows[2]!.ref, stoppedAt: now, verdict: "suggest", reason: "reply too", suggestion: "Continue." }]);
+      expect(saved.next?.take?.about).toEqual([rows[2]!.ref]);
+      expect(isFocusDocument(saved)).toBe(true);
+      expect(() => reduceFocus(saved, [{ type: "next", rows: saved.next!.rows, take: saved.next!.take, author: "assistant" }, { type: "note", text: "another write" }], now)).not.toThrow();
+    }
+    expect(() => reduceFocus(initial, [{ ...next, rows: [{ ...rows[0], ref: { intentionId: "unknown" } }], take: undefined }], now)).toThrow("intention not found: unknown");
+  });
   test("bounded assistant data and shared day-note acknowledgement", () => {
     const doc = reduceFocus(emptyFocus(), [{ type: "nudge", text: "ship first", author: "assistant" }, { type: "note", text: "durable memory" }, { type: "day-summary", summary: { date: "2026-11-05", done: 4, carried: 2, questions: 1 } }, { type: "seen-day-note", at: now }], now);
     expect(doc.nudge).toEqual({ text: "ship first", author: "assistant", updatedAt: now });
