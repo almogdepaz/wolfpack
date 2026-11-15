@@ -439,13 +439,13 @@ export function createAssistantView(deps: {
     return `<div class="focus-take"><div><div class="focus-take-label">assistant's take · ${esc(age(next.updatedAt))} ago</div>${esc(next.take!.text)}</div><div class="focus-take-actions"><button type="button" data-focus-action="seen-take" data-focus-at="${escAttr(next.updatedAt)}" data-focus-key="action:seen-take" aria-label="Got it: dismiss the assistant's take"${locked() ? " disabled" : ""}>got it</button>${button("talk", "reply ›", "Reply to assistant", locked() || !terminalTarget(), "take-reply")}</div></div>`;
   }
   const renderedDone = new Map<string, string[]>();
-  function nextHtml(host: "d" | "p", cap: number, expanded = false) {
+  function nextHtml(host: "d" | "p", cap: number, expanded = false, footer = "") {
     const classified = cardOrder();
     const parts = [...classified.waiting.slice(0, 2).map(s => `${s.name} waiting on ${plural(s.children!.total, "sub-session")} (${s.children!.working} working)`),
       ...(classified.waiting.length > 2 ? [`+${classified.waiting.length - 2}`] : []),
       ...(classified.working ? [`${classified.working} working`] : []),
       ...new Set(classified.notReached.map(row => row.triage && "machine" in row.triage.ref ? `${deps.homeMachine(row.triage.ref.machine)?.name ?? "machine"} not reached` : "machine not reached"))];
-    const quiet = `<p class="focus-quiet">${esc(classified.cards.length ? `nothing needed from you${parts.length ? ": " : ""}` : "nothing needs you")}${parts.length ? `${classified.cards.length ? "" : " · "}${esc(parts.join(" · "))}` : ""}</p>`;
+    const quiet = parts.length || footer ? `<p class="focus-quiet">${esc([...parts, ...(footer ? [footer] : [])].join(" · "))}</p>` : "";
     if (!classified.cards.length) return quiet;
     const full = classified.cards.filter(card => card.kind !== "done");
     const finished = classified.cards.filter(card => card.kind === "done");
@@ -619,15 +619,15 @@ export function createAssistantView(deps: {
     const replyReady = cards.filter(({ row }) => !!row.triage?.suggestion).length;
     const doneCards = cards.filter(card => card.kind === "done").length;
     const actionCards = nextCount - replyReady - doneCards;
+    const needsLabel = actionCards ? `${actionCards} needs you` : "nothing needs you";
     const nextCounts = [
-      { count: actionCards, text: `${actionCards} ${actionCards === 1 ? "needs" : "need"} you` },
+      { count: actionCards, text: needsLabel },
       { count: replyReady, text: `${replyReady} reply ready` },
       { count: doneCards, text: `${doneCards} done` },
     ].filter(item => item.count > 0);
-    const nextSummary = nextCounts.map(item => item.text).join(" · ") || "0";
-    const firstCount = nextCounts[0];
-    const remainingCards = nextCount - (firstCount?.count ?? 0);
-    const tileSummary = firstCount ? `${firstCount.text}${remainingCards ? ` +${remainingCards}` : ""}` : "0";
+    const nextSummary = [needsLabel, ...nextCounts.filter(item => item.text !== needsLabel).map(item => item.text)].join(" · ");
+    const remainingCards = nextCount - actionCards;
+    const tileSummary = `${needsLabel}${remainingCards ? ` +${remainingCards}` : ""}`;
     const visibleNext = isDesktop() ? 5 : 3;
     const fullCount = nextCount - doneCards;
     const moreNext = !showAllNext && fullCount > visibleNext ? `<p>${button("more-next", `show ${fullCount - visibleNext} more`)}</p>` : "";
@@ -658,7 +658,7 @@ export function createAssistantView(deps: {
       : r?.stale ? `quiet since ${when(r.stale.since)}` : `${state} · ${freshness()}`;
     const catchUp = button("catch-up", "catch up now", "catch up now", !!terminalUnavailable());
     const noteItems = [...(r ? [...r.unreachable.map(m => esc(`${m.name} not reached ${m.since ? `since ${when(m.since)}` : "yet"} · its day is reviewed when it is back`)), ...(r.surfaced ? [`${r.stale ? `quiet since ${when(r.stale.since)} · ` : ""}look at its terminal, then ${catchUp}`] : []), ...(r.stale && !r.surfaced ? [catchUp] : []), ...[r.notice, r.error].filter(Boolean).map(t => esc(t!))] : []), ...(!focusUnavailable && enabled && assistantError ? [esc(assistantError)] : [])].map(n => `<span>${n}</span>`).join("");
-    const notes = noteItems ? `<p class="focus-notes">${noteItems}</p>` : "";
+    const notes = `${focusUnavailable || terminalUnavailable() ? `<p class="focus-notes">${esc(info)}</p>` : ""}${noteItems ? `<p class="focus-notes">${noteItems}</p>` : ""}`;
     const summaryDay = current.daySummary;
     // A day note stays listed until it is marked read after that activity day ended (its turn at the
     // fallback time, from the home server; calendar midnight when routines are unavailable). seenDayNoteAt is shared across devices.
@@ -703,7 +703,7 @@ export function createAssistantView(deps: {
       toggle.setAttribute("aria-controls", details);
       toggle.setAttribute("aria-expanded", String(expanded));
       toggle.setAttribute("aria-label", `${expanded ? "Collapse" : "Expand"} assistant ${state} ${attentionLabel}`);
-      replace(id, `${summary ? `<b>assistant</b> <span class="focus-title">${esc(state)}</span> <span>${esc(attentionLabel)}</span>` : ""}<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>`);
+      replace(id, `${summary ? `<b>${esc(needsLabel)}</b> <span title="${escAttr(info)}">${tone}<span class="visually-hidden">assistant ${esc(info)}</span></span>` : ""}<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>`);
     };
     if (tile) {
       updateSidebarVisibility();
@@ -720,7 +720,9 @@ export function createAssistantView(deps: {
     }
     const block = document.getElementById("dashboard-focus");
     if (block) { block.hidden = !enabled; block.dataset.mobileCollapsed = String(!dashboardExpanded); }
-    const attn = state === "needs you" ? `<button type="button" class="focus-attn" data-focus-action="talk" data-focus-key="action:attn">${dot(state)} ${esc(info)} ›</button>` : "";
+    const assistantState = `<span title="${escAttr(info)}">${tone}<span class="visually-hidden">assistant ${esc(info)}</span></span>`;
+    const attn = state === "needs you" ? `<button type="button" class="focus-attn" data-focus-action="talk" data-focus-key="action:attn">assistant needs you ›</button>` : assistantState;
+    const whyOrder = next.length ? `<details><summary>why this order</summary><p>${esc(orderLabel())}</p><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details>` : "";
     if (enabled && block && !block.firstElementChild) replace("dashboard-focus", `${disclosureFrame("dashboard-focus-toggle")}<div id="dashboard-focus-details" class="focus-dashboard-body"></div>`);
     if (!enabled) replace("dashboard-focus", "");
     else {
@@ -728,9 +730,9 @@ export function createAssistantView(deps: {
       const details = document.getElementById("dashboard-focus-details");
       if (details) details.hidden = !dashboardExpanded;
     }
-    const dashboardBody = !enabled ? "" : `<div class="focus-header">${attn || `${tone}${button("view", "assistant", "Open assistant", false, "view-title")}<small${catching ? ' class="focus-spin"' : ""}>${esc(info)}</small>`}${sessionNotice}${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${focus?.document ? nextHtml("d", 3) + takeHtml() + `<small>${esc(nextSummary)}${todayCount ? ` · today ${summary}` : ""}</small>` : `<p>Set your focus</p>${addForm(true)}`}${error && !focusUnavailable ? `<p role="status">${esc(error)}</p>` : ""}`;
+    const dashboardBody = !enabled ? "" : `<div class="focus-header"><h2 class="focus-count">${esc(needsLabel)}</h2>${attn}${sessionNotice}${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${focus?.document ? nextHtml("d", 3) + takeHtml() + whyOrder : `<p>Set your focus</p>${addForm(true)}`}${error && !focusUnavailable ? `<p role="status">${esc(error)}</p>` : ""}`;
     replace("dashboard-focus-details", dashboardBody);
-    replace("assistant-content", !enabled ? "" : `<div class="focus-header">${attn || `<span title="${escAttr(info)}"${catching ? ' class="focus-spin"' : ""}>${tone} ${esc(info)}</span>`}${sessionNotice}<span class="focus-header-actions"><button type="button" class="focus-talk" data-focus-action="talk" data-focus-key="action:talk" aria-label="Talk to assistant"${terminalUnavailable() ? ` title="${escAttr(terminalUnavailable()!)}"` : ""}${!terminalTarget() ? " disabled" : ""}>talk<span aria-hidden="true"> ›</span></button>${button("settings", "settings", "Assistant settings")}</span></div>${notes}<h2>next <small>${esc(nextSummary)}</small></h2>${nextHtml("p", pageNextCap(), showAllNext)}${moreNext}${takeHtml()}${next.length ? `<details><summary>why this order</summary><p>${esc(orderLabel())}</p><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details>` : ""}${todayCount ? `<h2>today <small>${summary}</small></h2>${todayHtml(open)}` : ""}${addForm(!focus?.document)}<small>reorder or reword: tell the assistant</small>${removed ? `<p class="focus-caption" role="status">removed “${esc(removed.intention.title)}” · <button type="button" data-focus-action="restore-removed" data-focus-key="action:restore-removed" aria-label="Undo remove: ${escAttr(removed.intention.title)}"${locked() ? " disabled" : ""}>undo</button></p>` : ""}${doneHtml}${yesterday}`);
+    replace("assistant-content", !enabled ? "" : `<div class="focus-header"><h2 class="focus-count">${esc(needsLabel)}</h2>${attn}${sessionNotice}<span class="focus-header-actions"><button type="button" class="focus-talk" data-focus-action="talk" data-focus-key="action:talk" aria-label="Talk to assistant"${terminalUnavailable() ? ` title="${escAttr(terminalUnavailable()!)}"` : ""}${!terminalTarget() ? " disabled" : ""}>talk<span aria-hidden="true"> ›</span></button>${button("settings", "settings", "Assistant settings")}</span></div>${notes}${nextHtml("p", pageNextCap(), showAllNext, todayCount ? `today ${summary}` : "")}${moreNext}${takeHtml()}${whyOrder}${todayCount ? `<h2>today <small>${summary}</small></h2>${todayHtml(open)}` : ""}${addForm(!focus?.document)}<small>reorder or reword: tell the assistant</small>${removed ? `<p class="focus-caption" role="status">removed “${esc(removed.intention.title)}” · <button type="button" data-focus-action="restore-removed" data-focus-key="action:restore-removed" aria-label="Undo remove: ${escAttr(removed.intention.title)}"${locked() ? " disabled" : ""}>undo</button></p>` : ""}${doneHtml}${yesterday}`);
     // Initial session/peer lists can arrive separately. Latch the oversized default
     // from rendered content; a stored/in-memory user preference still wins.
     if (!isDesktop() && mobileDefaultPending && !mobileOverCap && dashboardExpanded && answered && deps.sessionsAvailable() && block?.clientHeight) {

@@ -59,6 +59,21 @@ test("visual evidence: dashboard and assistant collapsed and expanded", async ({
   await capture(page, `assistant-${suffix}-collapsed`);
 });
 
+test("header, page heading and sidebar agree on attention without duplicate dashboard counts", async ({ page }) => {
+  await seed(page); await page.goto(server.baseUrl);
+  const block = page.locator("#dashboard-focus");
+  await expect(block.locator(".focus-header .focus-count")).toHaveText("4 needs you");
+  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toContainText("4 needs you");
+  await expect(block.locator(".focus-header")).not.toContainText("ordered");
+  await expect(block.locator(".focus-dashboard-body > small")).toHaveCount(0);
+  await expect(block).not.toContainText("today");
+  await block.getByRole("button", { name: "Open assistant page", exact: true }).click();
+  const view = page.locator("#assistant-content");
+  await expect(view.locator(".focus-header .focus-count")).toHaveText("4 needs you");
+  await view.getByText("why this order", { exact: true }).click();
+  await expect(view.locator(":scope > details")).toContainText("ordered just now");
+});
+
 test("duplicate projects and terminal status bars do not add noise", async ({ page }) => {
   await seed(page); await page.goto(server.baseUrl);
   const row = page.locator("#dashboard-focus .focus-next > li").filter({ hasText: "Approve the smoke test." });
@@ -75,7 +90,7 @@ test("done is a compact second tier and does not consume the three full-card slo
   await expect(block.locator(".focus-finished > li")).toHaveCount(2);
   const row = block.locator(".focus-finished > li").first();
   await expect(row.locator("summary")).toContainText(/✓ done-\d · \d\d:\d\d ·/);
-  expect((await row.boundingBox())!.height).toBeLessThanOrEqual(52);
+  await expect.poll(async () => (await row.boundingBox())?.height ?? Infinity).toBeLessThanOrEqual(52);
   await expandFocusCard(row);
   await expect(row.getByRole("textbox")).toBeVisible();
   await expect(row.getByRole("button", { name: "mark seen", exact: true })).toBeVisible();
