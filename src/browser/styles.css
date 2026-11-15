@@ -3099,6 +3099,8 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 .focus-header > button:not(:last-child):not(.focus-attn):hover, .focus-notes button:hover, .focus-done button:hover, .focus-yesterday button:hover, .assistant-column > header button:hover { background: none; color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
 .focus-header > button:not(:last-child):not(.focus-attn) { color: var(--text-1); font-size: 13px; font-weight: 600; }
 .assistant-column > header button { color: var(--text-3); font-size: 13px; }
+.assistant-column [data-focus-remove] { border: 0; background: none; color: var(--text-3); }
+.focus-caption[role=status] { overflow-wrap: anywhere; }
 .focus-header > button:not(:last-child):not(.focus-attn):hover, .assistant-column > header button:hover { color: var(--text-1); }
 .focus-notes button { display: inline; padding: 0 2px; font-size: inherit; vertical-align: baseline; }
 .app-dialog .app-dialog-scroll { max-height: 60vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 var(--font-mono); }
