@@ -1,8 +1,14 @@
-/** Sentence punctuation must end the text or precede whitespace; dots inside
- * versions, filenames and URLs are not sentence ends. Legacy prose stays intact. */
+/** Split only punctuation followed by whitespace and an uppercase/digit start.
+ * Initialisms, short abbreviation tokens and common longer abbreviations keep
+ * their dot. Ambiguous prose stays in the ask rather than losing its object. */
 export function focusHeadlineParts(text: string): { ask: string; why: string } {
-  const end = text.search(/[.?](?=\s|$)/u);
-  return end < 0 ? { ask: text, why: "" } : { ask: text.slice(0, end + 1), why: text.slice(end + 1).trim() };
+  for (const match of text.matchAll(/[.?!](?=\s+[\p{Lu}\d])/gu)) {
+    const end = match.index + 1;
+    const token = text.slice(0, end).match(/[\p{L}.]+$/u)?.[0] ?? "";
+    if (match[0] === "." && /^(?:(?:\p{L}\.)+|\p{L}{1,3}\.|(?:prof|approx|dept|corp)\.)$/iu.test(token)) continue;
+    return { ask: text.slice(0, end), why: text.slice(end).trim() };
+  }
+  return { ask: text, why: "" };
 }
 
 /** Hide terminal chrome only when there is a literal spaced pipe and every
