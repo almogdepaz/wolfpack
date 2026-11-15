@@ -42,7 +42,7 @@ test("a next row expands to its session details; the action acts without togglin
   await expect(card).toHaveAttribute("open", "");
   const body = card.locator(".focus-card-body");
   await expect(row.locator("summary [title='/home/dev/demo-app']")).toHaveText("demo-app");
-  await expect(row.locator("summary .focus-tag")).toHaveText("answer");
+  await expect(row.locator("summary .focus-tag")).toHaveText("reply");
   await expect(body).toContainText("Do you want to continue? (y/n)");
   await expect(body).not.toContainText("by rules");
   await expect(body).not.toContainText("why here");

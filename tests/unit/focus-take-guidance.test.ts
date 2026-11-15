@@ -4,6 +4,16 @@ import { reduceFocus, emptyFocus } from "../../src/focus-contract";
 import { linkedFocusSessions } from "../../src/focus-ranking";
 import skill from "../../skills/wolfpack-focus/SKILL.md" with { type: "text" };
 
+test("triage reasons lead with a short verb ask and keep examples ask-first", () => {
+  expect(skill).toContain("first sentence is the ask as `<verb> <what>` (≤80 characters), ending with `.` or `?`; then optional why.");
+  const sample = JSON.parse(skill.match(/```json\n([\s\S]*?)\n```/)![1]!);
+  expect(sample.map((row: { reason: string }) => row.reason)).toEqual([
+    "Continue the approved plan. The next step stays within the agreed scope.",
+    "Mark ship focus done? The linked work looks finished.",
+  ]);
+  for (const row of sample) expect(row.reason.match(/^.*?[.?](?=\s|$)/)?.[0].length).toBeLessThanOrEqual(80);
+});
+
 test("planning guidance reserves creation for one exact user-confirmed command and preserves links", () => {
   expect(skill).toContain("## planning a task");
   expect(skill).toContain("ask at most 1–2 questions");

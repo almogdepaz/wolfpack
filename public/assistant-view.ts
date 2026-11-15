@@ -3,7 +3,7 @@ import { focusCards, mergeFocus, takeVisible, stoppedUnseen, linkedFocusSessions
 import { emptyFocus, isFocusDocument, focusNextRefKey, focusPastedReply, focusReplyHasHiddenControl, type FocusDocument, type FocusIntention, type FocusOp } from "../src/focus-contract";
 import type { AssistantTiming } from "../src/focus-scheduler";
 import { SESSION_SEND_OUTCOME, type SessionSendOutcome } from "../src/session-send-contract";
-import { focusLastLine } from "../src/focus-text";
+import { focusHeadlineParts, focusLastLine } from "../src/focus-text";
 import { createFocusReceipts, focusSuggestionKey, focusReplyKey, FOCUS_REPLY_MAX_LENGTH, type FocusSendReceipt } from "./focus-receipts";
 import type { AssistantTerminalTarget } from "./assistant-terminal";
 import { createDayNoteContent } from "./focus-day-note";
@@ -421,10 +421,10 @@ export function createAssistantView(deps: {
     // it still prevents a duplicate, but cannot authorize replay under the new owner.
     requireOwner(owner, OLD_HOME_DELIVERY);
   }
-  const cardTag = (row: FocusAction) => row.triage?.suggestion ? "reply ready" : row.triage?.verdict === "needs-you" ? "needs you"
-    : doneSuggestion(row) ? "mark done?" : row.session?.state === "failed" ? "failed"
-    : row.session?.state === "needs-input" ? ({ permission: "approve", auth: "log in", question: "answer" }[row.session.inputKind ?? ""] ?? "needs you")
-    : stoppedUnseen(row.session ?? { state: "" }) ? row.session?.state === "done" ? "done" : "stopped" : row.kind === "start" ? "start" : "needs you";
+  const cardTag = (row: FocusAction) => row.triage?.suggestion ? "reply" : row.session?.state === "failed" ? "look"
+    : row.session?.state === "needs-input" ? ({ permission: "approve", auth: "log in", question: "reply" }[row.session.inputKind ?? ""] ?? "decide")
+    : row.triage?.verdict === "needs-you" || doneSuggestion(row) ? "decide"
+    : stoppedUnseen(row.session ?? { state: "" }) ? "done" : row.kind === "start" ? "start" : "decide";
   const cardHeadline = (row: FocusAction) => row.triage?.reason ?? (row.session ? `${row.session.name} ${row.session.state === "needs-input"
     ? row.session.inputKind === "permission" ? "needs approval" : row.session.inputKind === "auth" ? "needs you to log in" : "asks a question"
     : row.session.state === "failed" ? "failed" : row.session.state === "done" ? "is done" : "stopped"}` : nextTitle(row));
@@ -467,11 +467,12 @@ export function createAssistantView(deps: {
       const meta = row.session ? [`<b>${esc(name)}</b>`, row.session.changedAt && (kind === "done" ? clock(row.session.stoppedAt ?? row.session.changedAt) : age(row.session.changedAt)), project(row.session.cwd), new Set(sessions().map(s => s.machine)).size > 1 && esc(row.session.machine ?? "")].filter(Boolean).join(" · ") : [project(row.intention?.project), row.intention?.machine && row.intention.machine !== deps.localMachineName() ? esc(row.intention.machine) : ""].filter(Boolean).join(" · ");
       const lineChars = Array.from(row.session?.lastLine ?? "");
       const preview = lineChars.length > 100 ? "…" + lineChars.slice(-100).join("") : lineChars.join("");
-      const summary = `<span class="focus-tag">${esc(cardTag(row))}${suggest && drafts.has(actionKey) && reply !== row.triage?.suggestion && !delivered ? " · edited" : ""}</span><span class="focus-title">${esc(cardHeadline(row))}</span><span class="focus-meta">${meta}</span>${!row.triage && preview ? `<q class="focus-meta">${esc(preview)}</q>` : ""}`;
+      const headline = focusHeadlineParts(cardHeadline(row));
+      const summary = `<span class="focus-tag">${esc(cardTag(row))}${suggest && drafts.has(actionKey) && reply !== row.triage?.suggestion && !delivered ? " · edited" : ""}</span><span class="focus-title"><strong>${esc(headline.ask)}</strong>${headline.why ? `<small class="focus-why">${esc(headline.why)}</small>` : ""}</span><span class="focus-meta">${meta}</span>${!row.triage && preview ? `<q class="focus-meta">${esc(preview)}</q>` : ""}`;
       const lastLine = lineChars.length > 160 ? "…" + lineChars.slice(-160).join("") : lineChars.join("");
       const draft = replyBox ? `<div id="${messageId}-caption" class="focus-caption">message to ${esc(name)} · typed into its terminal and submitted</div><textarea id="${messageId}" data-focus-reply="${escAttr(actionKey)}" data-focus-key="${escAttr(`reply:${actionKey}`)}" aria-label="${escAttr(`reply to ${name}`)}" aria-describedby="${messageId}-caption" placeholder="${kind === "done" ? "follow up with" : "reply to"} ${escAttr(name)}…" maxlength="${FOCUS_REPLY_MAX_LENGTH}" rows="1"${readOnly ? " readonly" : ""}>${esc(reply)}</textarea><span id="${messageId}-description" class="visually-hidden">${esc(reply)}</span>${receipt && receipt.state !== "sending" ? `<small role="status"${receipt.state === "sent" ? "" : ' class="focus-notes"'}>${receipt.state === "sent" ? `✓ ${esc(receipt.label)} · ${age(receipt.at)} ago` : esc(receipt.label)}</small>` : ""}${action} ${suggest && !delivered && reply !== row.triage!.suggestion! ? `<button type="button" data-focus-reset="${escAttr(actionKey)}" data-focus-key="${escAttr(`reset:${actionKey}`)}"${readOnly ? " disabled" : ""}>reset</button>` : ""}${done ? `<button type="button" data-focus-mark-done="${escAttr(bindAction(row, "done"))}" aria-label="${escAttr(`Mark done: ${done.title}`)}" data-focus-key="${escAttr(`done:${key}`)}"${sessionLocked() || row.unavailable ? " disabled" : ""}>done ›</button>` : ""}` : "";
       const body = row.session ? field("last line", lastLine ? `<q><code>${esc(lastLine)}</code></q>` : "")
-        + (row.triage ? `<div data-focus-clamped hidden><dt>assistant</dt><dd>${esc(row.reason)}</dd></div>` : "") + field("for", esc(row.intention?.title ?? ""))
+        + (row.triage ? field("ask", esc(row.reason)) : "") + field("for", esc(row.intention?.title ?? ""))
         : row.intention ? intentionBody(row.intention, key, row.triage?.reason ?? "no live session") : field("reason", esc(row.reason));
       const controls = `<div class="focus-draft">${draft}${!replyBox && (!row.session || done) ? action : ""}${row.session && !replyBox ? '<span class="focus-caption">answer in the terminal</span>' : ""}${row.unavailable ? '<p class="focus-notes">not reached</p>' : ""}${kind === "done" ? `<button type="button" data-focus-next="${escAttr(bindAction(row, "seen"))}" data-focus-key="${escAttr(`seen:${key}`)}"${sessionLocked() || row.unavailable ? " disabled" : ""}>mark seen</button>` : ""}${open}</div>`;
       return `<li data-kind="${kind}"${index >= 3 && !expanded ? ' class="focus-extra"' : ""}>${card(key, summary, body, row.session ? contextHtml(row.session) : "", controls)}</li>`;
@@ -494,7 +495,7 @@ export function createAssistantView(deps: {
       const send = block.querySelector<HTMLButtonElement>("[data-focus-next][aria-describedby]");
       if (send) send.disabled = readOnly || !text.trim();
       const tag = block.closest("details")?.querySelector<HTMLElement>(".focus-tag");
-      if (tag && row?.triage?.suggestion) tag.textContent = `reply ready${!delivered && text !== row.triage.suggestion ? " · edited" : ""}`;
+      if (tag && row?.triage?.suggestion) tag.textContent = `reply${!delivered && text !== row.triage.suggestion ? " · edited" : ""}`;
       let reset = block.querySelector<HTMLButtonElement>("[data-focus-reset]");
       if (row?.triage?.suggestion && !delivered && text !== row.triage.suggestion) {
         if (!reset) {
@@ -726,10 +727,6 @@ export function createAssistantView(deps: {
       if (mobileOverCap && !attentionCards.length && state !== "needs you" && dashboardExpanded && !mobileDisclosure.expanded(false)) { render(); return; }
     }
     syncReplyControls();
-    for (const field of document.querySelectorAll<HTMLElement>("[data-focus-clamped]")) {
-      const headline = field.closest("details")?.querySelector<HTMLElement>("summary .focus-title");
-      field.hidden = !headline || headline.scrollHeight <= headline.clientHeight;
-    }
     const live = document.getElementById("focus-status");
     if (live) live.textContent = focusUnavailable ? "" : error || assistantError || (focus?.assistant?.queued ? `${focus.assistant.queued} queued${terminalUnavailable() ? " · sends when the broker is back" : ""}` : notice);
     const setting = document.getElementById("assistant-setting-status");

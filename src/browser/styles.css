@@ -3013,12 +3013,13 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 .focus-next > [data-kind=done] { --t: var(--text-4); }
 .focus-next .focus-card > summary { display: grid; grid-template-columns: auto minmax(0, 1fr) 12px; gap: 4px 12px; padding: 12px 0; }
 .focus-next .focus-card > summary::after { grid-column: 3; grid-row: 1 / 3; }
-.focus-next .focus-title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: normal; overflow-wrap: anywhere; font: 500 14px/1.35 var(--font-ui); }
-.focus-tag { align-self: start; color: var(--t); font: 600 11px/1.7 var(--font-ui); text-transform: uppercase; letter-spacing: .07em; }
+.focus-next .focus-title { font: 500 14px/1.35 var(--font-ui); }
+.focus-title strong, .focus-why { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.focus-title strong { font-weight: 600; }
+.focus-tag { align-self: start; color: var(--t); font: 600 11px/1.7 var(--font-ui); text-transform: lowercase; }
 .focus-meta { grid-column: 2; color: var(--text-3); font: 12px/1.4 var(--font-ui); overflow-wrap: anywhere; }
 .focus-meta b { color: var(--text-2); font: 12px var(--font-mono); }
 .focus-next summary q { display: block; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.focus-next [data-focus-clamped][hidden] { display: none; }
 .focus-block .focus-next + small, .focus-note h3 { margin-top: 12px; }
 .focus-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); font-weight: 500; }
 .focus-title small, .focus-for { color: var(--text-3); font-size: 12px; font-weight: 400; }

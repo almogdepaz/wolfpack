@@ -59,6 +59,20 @@ async function capture(page: Page, name: string, info: TestInfo) {
   if (process.env.WOLFPACK_FOCUS_SHOTS) await page.screenshot({ path: join(process.env.WOLFPACK_FOCUS_SHOTS, `${name}-${info.project.name}.png`), fullPage: true });
 }
 
+test("the triage headline leads with the ask and keeps the full why on expansion", async ({ page }) => {
+  await seed(page);
+  const why = "The approved scope is unchanged, but this deliberately long explanation should truncate in the collapsed row. ".repeat(2).trim();
+  const reason = `Continue with step 3. ${why}`;
+  await updateReason(page, reason);
+  await page.goto(server.baseUrl);
+  const row = page.locator("#dashboard-focus .focus-next > li").filter({ hasText: "Continue with step 3." });
+  await expect(row.locator("summary strong")).toHaveText("Continue with step 3.");
+  await expect(row.locator("summary .focus-why")).toHaveText(why);
+  await expect(row.locator("summary .focus-why")).toHaveCSS("text-overflow", "ellipsis");
+  await expandFocusCard(row);
+  await expect(row.locator(".focus-card-body").filter({ hasText: reason })).toBeVisible();
+});
+
 test("multiple suggestions have globally unique ids and retain a focused send through rerenders", async ({ page }) => {
   await seed(page);
   const secondDraft = "Continue the second approved step.";
