@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { startTestServer, type TestServer } from "./helpers";
 import { expandFocusCard } from "./focus-card-helpers";
@@ -37,8 +37,33 @@ async function capture(page: Page, name: string) {
   const root = process.env.WOLFPACK_FOCUS_SHOTS;
   if (!root) return;
   mkdirSync(root, { recursive: true, mode: 0o700 });
+  await expect(page.locator(".view.swiping")).toHaveCount(0);
+  await page.evaluate(() => document.fonts.ready);
   await page.screenshot({ path: join(root, name + ".png"), fullPage: true });
 }
+
+test("settled 390px expanded assistant has no horizontal overflow or offset", async ({ page }, info) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await seed(page, 1); await page.goto(server.baseUrl);
+  await expandFocusCard(page.locator("#dashboard-focus .focus-next > li").first());
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  const geometry = () => page.evaluate(() => {
+    const view = document.getElementById("assistant-view")!;
+    const bounds = view.getBoundingClientRect();
+    return { swiping: view.classList.contains("swiping"), transform: getComputedStyle(view).transform, left: bounds.left, right: bounds.right,
+      scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth };
+  });
+  const during = await geometry();
+  await expect(page.locator(".view.swiping")).toHaveCount(0);
+  await page.evaluate(() => document.fonts.ready);
+  await expect(page.locator("#assistant-content .focus-card").first()).toHaveAttribute("open", "");
+  const settled = await geometry();
+  writeFileSync(info.outputPath("390-expanded-geometry.json"), JSON.stringify({ during, settled }, null, 2));
+  expect(settled.scrollWidth).toBe(settled.clientWidth);
+  expect(settled.left).toBe(0);
+  expect(settled.right).toBe(390);
+  expect(settled.swiping).toBe(false);
+});
 
 for (const asks of [0, 1]) test(`390px assistant header keeps the ${asks ? "needs-you" : "nothing-needs-you"} title whole`, async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
