@@ -858,7 +858,10 @@ export function createAssistantView(deps: {
       removed = saved = snapshot;
       removalTimer = setTimeout(() => { clearRemoval(); render(); }, REMOVE_UNDO_MS);
     });
-    if (saved && removed === saved) restoreFocus(host.querySelector('[data-focus-action="restore-removed"]'));
+    if (saved && removed === saved) {
+      const undo = host.querySelector<HTMLElement>('[data-focus-action="restore-removed"]');
+      if (undo && restoreFocus(undo)) undo.scrollIntoView({ block: "center" });
+    }
   }
   async function restoreRemoved(host: HTMLElement) {
     const saved = removed;

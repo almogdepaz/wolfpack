@@ -205,6 +205,14 @@ test("a rejected removal leaves the intention and exposes the action error, not 
   expect((await document(page)).intentions.find(i => i.id === "target")).toMatchObject(target);
 });
 
+test("removing near the top of twelve intentions reveals the focused undo in the viewport", async ({ page }, info) => {
+  await update(page, Array.from({ length: 9 }, (_, n) => ({ type: "add" as const, intention: { id: `extra-${n}`, title: `extra intention ${n}` } })));
+  await open(page);
+  await removeTarget(page);
+  await expect(removalUndo(page)).toBeInViewport();
+  await page.screenshot({ path: info.outputPath("cleanup-undo-in-viewport.png") });
+});
+
 test("removal undo expires after ten seconds without trapping keyboard focus", async ({ page }) => {
   await page.clock.install();
   await open(page);
