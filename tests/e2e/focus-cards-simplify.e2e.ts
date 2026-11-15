@@ -59,6 +59,15 @@ test("visual evidence: dashboard and assistant collapsed and expanded", async ({
   await capture(page, `assistant-${suffix}-collapsed`);
 });
 
+test("duplicate projects and terminal status bars do not add noise", async ({ page }) => {
+  await seed(page); await page.goto(server.baseUrl);
+  const row = page.locator("#dashboard-focus .focus-next > li").filter({ hasText: "Approve the smoke test." });
+  await expect(row.locator("summary [title='/work/ask-0']")).toHaveCount(0);
+  await expandFocusCard(row);
+  await expect(row.locator("dt").filter({ hasText: /^last line$/ })).toHaveCount(0);
+  await expect(row).not.toContainText("tokens: 152.3k");
+});
+
 test("done is a compact second tier and does not consume the three full-card slots", async ({ page }) => {
   await seed(page); await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");

@@ -169,7 +169,7 @@ test("a session card shows the agent's context document, fetched only while it i
   await expect(context).toContainText("context");
   expect(reads[0]).toBe(SESSION_UUID);
   await expect(context.getByText("Ship the focus cards round", { exact: true })).toBeHidden();
-  await context.locator("summary").filter({ hasText: /^more$/ }).click();
+  await context.locator(":scope > summary").filter({ hasText: /^context$/ }).click();
   await expect(context.getByText("Ship the focus cards round", { exact: true })).toBeVisible();
   await expect(context).toContainText("Wire the context block into session cards");
   // every needs-you item is its own element keyed by its id; five show, the rest sit under "2 more"
@@ -185,10 +185,10 @@ test("a session card shows the agent's context document, fetched only while it i
   await expect(context).toContainText("pi 1.3.0 here");
   await expect(context).not.toContainText("fourth fact stays out");
   await expect(context).not.toContainText("Cards over a drawer");
-  await expect(context).toContainText("reviewed · updated 5m");
+  await expect(context).not.toContainText("reviewed · updated");
   expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
   expect(await page.evaluate(noHorizontalScroll)).toBe(true);
-  // refreshed with the 5 s poll while open; the nested "more" stays open across it; nothing is fetched once collapsed
+  // refreshed with the 5 s poll while open; context and its overflow stay open across it; nothing is fetched once collapsed
   await expect.poll(() => reads.length, { timeout: 15_000 }).toBeGreaterThan(1);
   await expect(context.locator('[data-focus-need="q-f"]')).toBeVisible();
   await row.locator(".focus-card > summary").click();

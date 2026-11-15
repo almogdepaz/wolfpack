@@ -1253,6 +1253,7 @@ const focusUi = createAssistantView({
     return id ? [{ id, name: peer.displayName, online: peer.status === "ready" }] : [];
   }),
   localMachineName: () => state.selfName || "this machine",
+  machineHostname: identity => tailnetPeers.entries().find(peer => peer.identity === identity)?.hostname,
   machineReachable: id => getMachines().some(machine => machine.ready && machine.url.endsWith(":" + id)
     && state.lastSessionGroups.some(group => group.machine.url === machine.url && group.online)),
   // Pinned helpers can need attention, but their routine idle/done turns are not next actions.
