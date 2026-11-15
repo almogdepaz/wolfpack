@@ -69,6 +69,7 @@ for (const [state, inputKind, unseen, label, verb] of [
   else await expect(view.locator(".focus-next, .focus-done")).toHaveCount(0);
   if (process.env.WOLFPACK_FOCUS_SHOTS && (inputKind === "permission" || state === "idle")) {
     mkdirSync(process.env.WOLFPACK_FOCUS_SHOTS, { recursive: true });
+    await expect(page.locator(".view.swiping")).toHaveCount(0);
     await page.screenshot({ path: join(process.env.WOLFPACK_FOCUS_SHOTS, `pinned-${state}-${width}.png`), fullPage: true });
   }
 });

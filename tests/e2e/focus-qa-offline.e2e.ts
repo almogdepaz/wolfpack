@@ -258,7 +258,10 @@ test("S2: a retired peer installation leaves the offline snapshot before local r
   const next = page.locator("#assistant-content .focus-next");
   await expect(next).toContainText("retired-worker", { timeout: 10_000 });
   await expect(next.locator("li").filter({ hasText: "retired-worker" }).locator("summary span.focus-meta")).toContainText("peer · focus-peer");
-  if (process.env.WOLFPACK_FOCUS_SHOTS) await page.screenshot({ path: join(process.env.WOLFPACK_FOCUS_SHOTS, `row-peer-${width}.png`), fullPage: true });
+  if (process.env.WOLFPACK_FOCUS_SHOTS) {
+    await expect(page.locator(".view.swiping")).toHaveCount(0);
+    await page.screenshot({ path: join(process.env.WOLFPACK_FOCUS_SHOTS, `row-peer-${width}.png`), fullPage: true });
+  }
   localDown = true;
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect(next.locator("button").first()).toBeDisabled({ timeout: 10_000 });

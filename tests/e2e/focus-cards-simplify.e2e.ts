@@ -51,7 +51,7 @@ test("settled 390px expanded assistant has no horizontal overflow or offset", as
   const geometry = () => page.evaluate(() => {
     const view = document.getElementById("assistant-view")!;
     const bounds = view.getBoundingClientRect();
-    return { swiping: view.classList.contains("swiping"), transform: getComputedStyle(view).transform, left: bounds.left, right: bounds.right,
+    return { swiping: view.classList.contains("swiping"), transitioning: !!document.querySelector(".view.swiping"), transform: getComputedStyle(view).transform, left: bounds.left, right: bounds.right,
       scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth };
   });
   const during = await geometry();
@@ -63,7 +63,7 @@ test("settled 390px expanded assistant has no horizontal overflow or offset", as
   expect(settled.scrollWidth).toBe(settled.clientWidth);
   expect(settled.left).toBe(0);
   expect(settled.right).toBe(390);
-  expect(settled.swiping).toBe(false);
+  expect(settled.transitioning).toBe(false);
 });
 
 for (const asks of [0, 1]) test(`390px assistant header keeps the ${asks ? "needs-you" : "nothing-needs-you"} title whole`, async ({ page }) => {
