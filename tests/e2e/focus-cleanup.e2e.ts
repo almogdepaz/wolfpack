@@ -22,7 +22,7 @@ async function open(page: Page) {
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
 }
 const status = (page: Page) => page.locator("#assistant-content").getByRole("status").filter({ hasText: `removed “${title}”` });
-const removalUndo = (page: Page) => status(page).getByRole("button", { name: "undo", exact: true });
+const removalUndo = (page: Page) => status(page).getByRole("button", { name: `Undo remove: ${title}`, exact: true });
 async function removeTarget(page: Page) {
   const card = page.locator('#assistant-content [data-focus-card="intention:target"]');
   await card.locator("summary").click();
@@ -109,10 +109,10 @@ test("drop CAS retry snapshots the latest edited, finished and reordered intenti
   await card.locator("summary").click();
   await card.getByRole("button", { name: `Remove: ${title}`, exact: true }).click();
   const receipt = page.locator("#assistant-content").getByRole("status");
-  await expect(receipt.getByRole("button", { name: "undo", exact: true })).toBeFocused();
+  await expect(receipt.getByRole("button", { name: `Undo remove: ${latest.title}`, exact: true })).toBeFocused();
   expect(responses).toEqual([409, 200]);
   expect((await document(page)).intentions.some(i => i.id === "target")).toBe(false);
-  await receipt.getByRole("button", { name: "undo", exact: true }).click();
+  await receipt.getByRole("button", { name: `Undo remove: ${latest.title}`, exact: true }).click();
   await expect.poll(async () => (await document(page)).intentions.find(i => i.id === "target")).toMatchObject({ id: "target", ...latest, done: true });
   expect((await document(page)).intentions.map(i => i.id)).toEqual(order);
   await expect(page.getByRole("button", { name: `Undo done: ${latest.title}`, exact: true })).toBeFocused();
@@ -143,11 +143,11 @@ test("finished remove + undo restores done in one batch and focuses its done und
   await open(page);
   await page.locator("#assistant-content").getByRole("button", { name: "Remove: finished task", exact: true }).click();
   const line = page.locator("#assistant-content").getByRole("status").filter({ hasText: "removed “finished task”" });
-  await expect(line.getByRole("button", { name: "undo", exact: true })).toBeFocused();
+  await expect(line.getByRole("button", { name: "Undo remove: finished task", exact: true })).toBeFocused();
   expect((await document(page)).intentions.some(i => i.id === "finished")).toBe(false);
   await page.screenshot({ path: info.outputPath("cleanup-removed.png"), fullPage: true });
   const request = page.waitForRequest(req => req.method() === "POST" && req.url().endsWith("/api/focus"));
-  await line.getByRole("button", { name: "undo", exact: true }).click();
+  await line.getByRole("button", { name: "Undo remove: finished task", exact: true }).click();
   expect((await request).postDataJSON().ops.map((op: FocusOp) => op.type)).toEqual(["add", "reorder", "done"]);
   await expect(page.getByRole("button", { name: "Undo done: finished task", exact: true })).toBeFocused();
   const restored = (await document(page)).intentions.find(i => i.id === "finished")!;
