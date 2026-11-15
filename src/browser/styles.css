@@ -3018,6 +3018,7 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 .focus-next .focus-title { font: 500 14px/1.35 var(--font-ui); }
 .focus-title strong, .focus-why { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .focus-title strong { font-weight: 600; }
+.focus-next .focus-card[open] .focus-title, .focus-next .focus-card[open] .focus-title > * { white-space: normal; overflow-wrap: anywhere; }
 .focus-tag { align-self: start; color: var(--t); font: 600 11px/1.7 var(--font-ui); text-transform: lowercase; }
 .focus-meta { grid-column: 2; color: var(--text-3); font: 12px/1.4 var(--font-ui); overflow-wrap: anywhere; }
 .focus-meta b { color: var(--text-2); font: 12px var(--font-mono); }

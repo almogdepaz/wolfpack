@@ -70,7 +70,11 @@ test("the triage headline leads with the ask and keeps the full why on expansion
   await expect(row.locator("summary .focus-why")).toHaveText(why);
   await expect(row.locator("summary .focus-why")).toHaveCSS("text-overflow", "ellipsis");
   await expandFocusCard(row);
-  await expect(row.locator(".focus-ask")).toHaveText(reason);
+  await expect(row.locator(".focus-ask")).toHaveCount(0);
+  await expect(row.locator("summary strong")).toHaveText("Continue with step 3.");
+  const explanation = row.locator("summary .focus-why");
+  await expect(explanation).toHaveText(why);
+  expect(await explanation.evaluate(el => el.scrollWidth <= el.clientWidth && el.scrollHeight <= el.clientHeight)).toBe(true);
 });
 
 test("multiple suggestions have globally unique ids and retain a focused send through rerenders", async ({ page }) => {

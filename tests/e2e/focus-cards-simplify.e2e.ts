@@ -103,6 +103,8 @@ for (const host of ["dashboard", "page"] as const) test(`expanded ${host} puts t
   const block = page.locator(host === "page" ? "#assistant-content" : "#dashboard-focus");
   const row = block.locator(".focus-next > li").filter({ hasText: "Choose the next step for ask-1." });
   await expandFocusCard(row);
+  await expect(row.locator(".focus-ask")).toHaveCount(0);
+  await expect(row.getByText("Choose the next step for ask-1.", { exact: true })).toHaveCount(1);
   const reply = row.getByRole("textbox", { name: "reply to ask-1", exact: true });
   await reply.fill("Use the first option.");
   const send = row.getByRole("button", { name: "Send to ask-1", exact: true });
@@ -111,7 +113,7 @@ for (const host of ["dashboard", "page"] as const) test(`expanded ${host} puts t
   await expect(reply).toBeFocused();
   await expect(send).toBeEnabled();
   expect(await row.evaluate(el => {
-    const selectors = [".focus-ask", "textarea", "[data-focus-next][aria-describedby]", "[data-focus-session]", ".focus-context-more"];
+    const selectors = [":scope > .focus-card > summary", "textarea", "[data-focus-next][aria-describedby]", "[data-focus-session]", ".focus-context-more"];
     const nodes = selectors.map(selector => el.querySelector(selector));
     return nodes.every((node, i) => !!node && (!i || !!(nodes[i - 1]!.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING)));
   })).toBe(true);
