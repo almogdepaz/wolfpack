@@ -167,7 +167,7 @@ test("removal undo expires after ten seconds without trapping keyboard focus", a
   expect((await document(page)).intentions.some(i => i.id === "target")).toBe(false);
 });
 
-test("historical-only documents have no today header and offer the first intention prompt", async ({ page }) => {
+test("historical-only documents have no today header or empty disclosure and retain the add form", async ({ page }) => {
   await update(page, ["first", "target", "last", "finished"].map(id => ({ type: "drop" as const, id })));
   await page.route(url => url.pathname === "/api/focus", async route => {
     const response = await route.fetch(); const body = await response.json();
@@ -177,6 +177,7 @@ test("historical-only documents have no today header and offer the first intenti
   await open(page);
   await expect(page.locator("#assistant-content .focus-today")).toHaveCount(0);
   await expect(page.locator("#assistant-content .focus-done")).toHaveCount(0);
-  await expect(page.getByRole("textbox", { name: "What are you working on?", exact: true })).toBeVisible();
+  await expect(page.locator("#assistant-content").getByText("why this order", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: "Add an intention", exact: true })).toBeVisible();
   await expect(page.locator("#dashboard-focus-details > small").last()).not.toContainText("today");
 });
