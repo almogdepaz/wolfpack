@@ -7,7 +7,7 @@ test.beforeAll(async () => { server = await startTestServer({ focusAssistant: tr
 test.afterAll(async () => { await server?.close(); });
 const noHorizontalScroll = () => document.documentElement.scrollWidth <= innerWidth;
 
-test("unjudged cards quote only the last 100 untrusted characters, never as their headline", async ({ page }) => {
+test("unjudged cards promote only the last 100 untrusted prompt characters into the headline", async ({ page }) => {
   const line = "Earlier context ".repeat(8) + "🦊".repeat(30) + " <img src=x onerror=alert(1)> choose a plan?";
   await page.route("**/api/sessions", async route => {
     const response = await route.fetch(); const body = await response.json();
@@ -16,13 +16,13 @@ test("unjudged cards quote only the last 100 untrusted characters, never as thei
   });
   await page.goto(server.baseUrl);
   const row = page.locator("#dashboard-focus .focus-next > li").filter({ hasText: "prompt-project" });
-  await expect(row.locator("summary .focus-title")).toHaveText("prompt-project asks a question");
-  const quote = row.locator("summary q");
-  await expect(quote).toHaveText("…" + Array.from(line).slice(-100).join(""));
-  await expect(quote.locator("*")).toHaveCount(0);
-  await expect(quote).toHaveCSS("white-space", "nowrap");
-  expect((await quote.boundingBox())!.height).toBeLessThanOrEqual(20);
-  expect(await quote.evaluate(el => getComputedStyle(el).fontFamily)).toMatch(/mono/i);
+  const ask = row.locator("summary strong");
+  await expect(ask).toHaveText("…" + Array.from(line).slice(-100).join(""));
+  await expect(ask.locator("*")).toHaveCount(0);
+  await expect(row.locator("summary q")).toHaveCount(0);
+  await expect(ask).toHaveCSS("white-space", "nowrap");
+  expect((await ask.boundingBox())!.height).toBeLessThanOrEqual(20);
+  await expect(ask).toHaveCSS("font-weight", "600");
 });
 
 test("a next row expands to its session details; the action acts without toggling; open survives a re-render", async ({ page }) => {

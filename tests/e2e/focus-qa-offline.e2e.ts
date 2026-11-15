@@ -490,7 +490,7 @@ test("QA-14: self-offline keeps last known next rows, disabled, then recovers", 
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-content");
-  await expect(view.locator(".focus-next")).toContainText("prompt-project asks a question");
+  await expect(view.locator(".focus-next summary strong").first()).toHaveText("Do you want to continue? (y/n)");
   await expandFocusCard(view.locator(".focus-next > li").first());
   const summaries = await view.locator(".focus-next .focus-card > summary").allTextContents();
   await context.setOffline(true);

@@ -88,7 +88,7 @@ test("QA-22/23: narrow pane rows yield context before kind text and pane control
   await openFocus(page);
   await hydrated(page);
   const title = page.locator("#assistant-content .focus-next .focus-title").first();
-  await expect(title).toContainText("broker-leak needs approval");
+  await expect(title).toHaveText("Do you want to continue? (y/n)");
   const measure = await title.evaluate(el => {
     const range = document.createRange();
     range.selectNodeContents(el.querySelector("strong")!);

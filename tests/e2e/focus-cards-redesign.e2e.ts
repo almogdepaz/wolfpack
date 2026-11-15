@@ -64,9 +64,9 @@ test("mixed cards, waiting line and grouped done work expose the next decision",
   await expect.soft(block.locator(".focus-count")).toHaveText("1 needs you");
   await expect.soft(block).not.toContainText("today");
   const unjudged = block.locator(".focus-next > li").filter({ hasText: "me-2" });
-  await expect.soft(unjudged.locator("summary q")).toHaveText("Choose bun add or vendoring?");
-  await expect(unjudged.locator("summary .focus-title")).toHaveText("me-2 asks a question");
-  await expect(unjudged.locator("summary q > *")).toHaveCount(0);
+  await expect(unjudged.locator("summary strong")).toHaveText("Choose bun add or vendoring?");
+  await expect(unjudged.locator("summary q")).toHaveCount(0);
+  await expect(unjudged.locator("summary strong > *")).toHaveCount(0);
   const chevron = [-135, 3];
   await expect.poll(() => replyCard.locator(":scope > .focus-card > summary").evaluate(el => {
     const m = new DOMMatrix(getComputedStyle(el, "::after").transform);

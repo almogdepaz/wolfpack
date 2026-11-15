@@ -26,7 +26,7 @@ for (const kind of ["question", "permission"] as const) test(`phone row time: ${
     await expect(page.locator(".view.swiping")).toHaveCount(0);
     const row = page.locator(`#${surface} .focus-next li`).filter({ hasText: "prompt-project" });
     const title = row.locator("summary .focus-title");
-    await expect(title).toHaveText(kind === "question" ? "prompt-project asks a question" : "prompt-project needs approval");
+    await expect(title).toHaveText("Do you want to continue? (y/n)");
     await expect(row.locator("span.focus-meta")).toContainText("12m");
     await expect(title.locator("small")).toHaveCount(0);
     const size = await title.evaluate(el => {
@@ -187,8 +187,8 @@ test("QA-25: phone next count is reachable with one show-more action, including 
   await page.screenshot({ path: info.outputPath("phone-next-more.png"), animations: "disabled" });
   await view.getByRole("button", { name: "show 4 more", exact: true }).click();
   await expect(view.locator(".focus-next > li:visible")).toHaveCount(7);
-  await expect(view.locator(".focus-next .focus-title")).toHaveText(Array.from({ length: 7 }, (_, i) => `goal-${i + 1} asks a question`));
-  await expect(view.locator(".focus-next > li").nth(3).locator("summary")).toBeFocused();
+  await expect(view.locator(".focus-next .focus-title")).toHaveText(Array(7).fill("Do you want to continue? (y/n)"));
+  await expect(view.locator(".focus-next > li").nth(3).locator(":scope > .focus-card > summary")).toBeFocused();
   await expandFocusCard(view.locator(".focus-next > li").last());
   await view.getByRole("button", { name: "Open goal-7", exact: true }).click();
   await expect(page.locator("#terminal-view")).toBeVisible();

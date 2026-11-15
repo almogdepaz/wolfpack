@@ -702,7 +702,7 @@ test("R1: a newer needs-you episode stays visible and disabled when the local li
   phase = "unavailable";
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect(row.getByRole("button", { name: "Open prompt-project", exact: true })).toBeDisabled();
-  await expect(row).toContainText("asks a question");
+  await expect(row.locator("summary strong")).toHaveText("Do you want to continue? (y/n)");
 });
 
 test("L3: unknown installation suggestions do not become permanent placeholders", async ({ page }) => {

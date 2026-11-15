@@ -144,6 +144,30 @@ for (const [inputKind, tag] of [["question", "decide"], ["permission", "approve"
   await expect(page.locator("#dashboard-focus .focus-next .focus-tag")).toHaveText(tag);
 });
 
+for (const [inputKind, line, headline, tag] of [
+  ["question", "Choose bun add or vendoring?", "Choose bun add or vendoring?", "reply"],
+  ["permission", "Approve the proposed smoke test?", "Approve the proposed smoke test?", "approve"],
+  ["auth", "Log in to the package registry.", "Log in to the package registry.", "log in"],
+  ["question", "", "prompt-project asks a question", "reply"],
+  ["permission", "Opus 5.5 | tokens: 152.3k | ctx: 25% left", "prompt-project needs approval", "approve"],
+] as const) test(`rule headline promotes ${inputKind} prompt or keeps its fallback: ${line || "empty"}`, async ({ page }) => {
+  await page.route("**/api/sessions", async route => {
+    const response = await route.fetch(); const body = await response.json();
+    const session = body.sessions.find((s: { name: string }) => s.name === "prompt-project");
+    session.lastLine = line;
+    session.runtimeState = { ...session.runtimeState, state: "needs-input", inputKind };
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(server.baseUrl);
+  for (const host of ["dashboard-focus", "assistant-content"]) {
+    if (host === "assistant-content") await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+    const row = page.locator(`#${host} .focus-next > li`).filter({ hasText: "prompt-project" });
+    await expect(row.locator("summary strong")).toHaveText(headline);
+    await expect(row.locator("summary .focus-tag")).toHaveText(tag);
+    await expect(row.locator("summary q")).toHaveCount(0);
+  }
+});
+
 test("the assistant page reports today's count only once, in the working footer", async ({ page }) => {
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
