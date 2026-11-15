@@ -2983,6 +2983,7 @@ details.focus-card > summary:focus-visible { outline: 2px solid var(--accent); o
 .focus-card-body > div { display: contents; }
 .focus-card-body dt { color: var(--text-3); }
 .focus-card-body dd { margin: 0; min-width: 0; color: var(--text-2); overflow-wrap: anywhere; }
+.focus-ask { margin: 0 0 12px; color: var(--text-2); font: 13px/1.5 var(--font-ui); overflow-wrap: anywhere; }
 .focus-draft { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; overflow-wrap: anywhere; font: 13px/1.5 var(--font-ui); }
 .focus-draft > :is(textarea, [role=status], .focus-caption) { flex-basis: 100%; }
 .focus-draft > [data-focus-session] { margin-left: auto; }

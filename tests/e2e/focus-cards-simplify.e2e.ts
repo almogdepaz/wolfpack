@@ -59,6 +59,30 @@ test("visual evidence: dashboard and assistant collapsed and expanded", async ({
   await capture(page, `assistant-${suffix}-collapsed`);
 });
 
+for (const host of ["dashboard", "page"] as const) test(`expanded ${host} puts the editable reply before open and collapsed details`, async ({ page }) => {
+  await seed(page); await page.goto(server.baseUrl);
+  if (host === "page") await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  const block = page.locator(host === "page" ? "#assistant-content" : "#dashboard-focus");
+  const row = block.locator(".focus-next > li").filter({ hasText: "Choose the next step for ask-1." });
+  await expandFocusCard(row);
+  const reply = row.getByRole("textbox", { name: "reply to ask-1", exact: true });
+  await reply.fill("Use the first option.");
+  const send = row.getByRole("button", { name: "Send to ask-1", exact: true });
+  await expect(send).toHaveAccessibleDescription("Use the first option.");
+  await expect(reply).toHaveAccessibleDescription("message to ask-1 · typed into its terminal and submitted");
+  await expect(reply).toBeFocused();
+  await expect(send).toBeEnabled();
+  expect(await row.evaluate(el => {
+    const selectors = [".focus-ask", "textarea", "[data-focus-next][aria-describedby]", "[data-focus-session]", ".focus-context-more"];
+    const nodes = selectors.map(selector => el.querySelector(selector));
+    return nodes.every((node, i) => !!node && (!i || !!(nodes[i - 1]!.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING)));
+  })).toBe(true);
+  const lastLine = row.locator("details.focus-context-more");
+  await expect(lastLine).not.toHaveAttribute("open", "");
+  await lastLine.locator("summary").click();
+  await expect(lastLine).toContainText("Finished ask-1 safely.");
+});
+
 test("header, page heading and sidebar agree on attention without duplicate dashboard counts", async ({ page }) => {
   await seed(page); await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");
