@@ -111,7 +111,7 @@ test("settings exposes both states and a background inspection terminal without 
   await page.locator("#assistant-content").getByRole("button", { name: "Assistant settings", exact: true }).click();
   await expect(page.locator("#assistant-setting-status")).toContainText("background");
   await expect(page.locator("#assistant-setting-status")).toContainText("chat");
-  await page.getByRole("button", { name: "Open background terminal", exact: true }).click();
+  await page.getByRole("button", { name: "Inspect background terminal", exact: true }).click();
   await expect.poll(() => opened.at(-1)).toBe("assistant");
   if (page.viewportSize()!.width >= 1280) await page.getByRole("button", { name: "Hide assistant terminal", exact: true }).click();
   else await page.locator("#assistant-terminal-focus").click();
