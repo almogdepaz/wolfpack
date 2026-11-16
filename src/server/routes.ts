@@ -1,6 +1,7 @@
 /**
  * HTTP route handlers.
  */
+import { isFocusAssistantName } from "../focus-session.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { existsSync } from "node:fs";
 import { getMachineDisplayName } from "../machine-display-name.js";
@@ -164,12 +165,21 @@ return {
     if (typeof selector !== "string" || !selector) return json(res, { error: "missing session" }, 400);
     const resolved = await resolveActiveSession(res, selector, ctx.backend);
     if (!resolved) return;
-    const pinned = ctx.assistantService.pins.some(pin => pin.name === resolved.name);
+    const pin = ctx.assistantService.pins.find(pin => pin.name === resolved.name);
+    const pinned = !!pin;
+    const managedAssistant = !!pin && ctx.assistantService.isManagedPin(pin) && resolved.identity.projectPath === ctx.assistantService.folder;
     if (pinned && body.unpin !== true) return json(res, { error: "pinned session: use unpin & stop", pinned: true }, 409);
     if (pinned) {
       await ctx.focusRuntime.pins.tick();
       ctx.assistantService.unpin(resolved.name);
-      if (resolved.name === "assistant") ctx.focusRuntime.queue.clear("assistant unpinned");
+      if (managedAssistant) {
+        ctx.focusRuntime.queue.clear("assistant unpinned");
+        const facts = await ctx.backend.listSessionFacts();
+        for (const sibling of facts.filter(f => f.alive && f.name !== resolved.name && isFocusAssistantName(f.name)
+          && f.identity?.projectPath === ctx.assistantService.folder)) {
+          if (sibling.identity) await killSessionWithTeardown(ctx.backend, sibling.name, sibling.identity.wolfpackSessionId);
+        }
+      }
     }
     const sessionId = resolved.identity.wolfpackSessionId;
     // Claim before the kill: the parent's exit frame can arrive during it.

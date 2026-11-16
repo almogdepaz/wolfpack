@@ -10,6 +10,10 @@ import { localActivitySource } from "../../src/server/focus-routines.ts";
 import { ACTIVITY_KIND } from "../../src/activity-journal.ts";
 import { withoutAssistantRows } from "../../src/focus-coverage.ts";
 import { withoutFocusAssistant } from "../../src/focus-session.ts";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { createServerContext } from "../../src/server/context.ts";
+import { createRoutes } from "../../src/server/routes.ts";
 import type { Config } from "../../src/config.ts";
 
 function fixture() {
@@ -65,6 +69,23 @@ test("an unmanaged chat pin does not gain permission to share the worker folder"
     await t.pins.tick();
     expect(await t.backend.list()).toEqual([]);
   } finally { t.close(); }
+});
+
+test.each(["assistant", "assistant-chat"])("unpin-and-stop from %s disables and stops the complete managed pair", async role => {
+  const t = fixture();
+  await t.service.enable(true);
+  await t.pins.tick();
+  const ctx = createServerContext({ backend: t.backend, config: t.config, assistantService: t.service });
+  const routes = createRoutes(ctx);
+  const server = createServer((req, res) => { void routes["POST /api/kill"]!(req, res); });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/kill`;
+  try {
+    expect((await fetch(url, { method: "POST", body: JSON.stringify({ session: role }) })).status).toBe(409);
+    expect((await fetch(url, { method: "POST", body: JSON.stringify({ session: role, unpin: true }) })).status).toBe(200);
+    expect(t.service.pins).toEqual([]);
+    expect(await t.backend.list()).toEqual([]);
+  } finally { ctx.focusRuntime.stop(); await new Promise<void>(resolve => server.close(() => resolve())); t.close(); }
 });
 
 test("chat's read-first launch instruction is role-local, one-shot and survives a failed launch", async () => {
