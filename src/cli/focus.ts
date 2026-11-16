@@ -1,3 +1,4 @@
+import { isFocusAssistantName } from "../focus-session.js";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { isFocusOp, type FocusDocument, type FocusOp } from "../focus-contract.js";
@@ -11,7 +12,7 @@ import { verifyMachineTarget, type VerifiedMachineTarget } from "./machine-targe
 import { print, printError } from "../terminal-output.js";
 import { printJson } from "./formatting.js";
 
-export const FOCUS_USAGE = `Usage: wolfpack focus show|add|edit|done|undo|drop|reorder|next|nudge|note|day-summary [--json]
+export const FOCUS_USAGE = `Usage: wolfpack focus show|add|edit|done|undo|drop|reorder|next|nudge|note|day-summary|catch-up [--json]
   add <title> [--id id] [--project /path] [--on machine] [--sessions id,id]
   edit <id> [title] [--project /path] [--on machine] [--sessions id,id]
   done|undo|drop <id>
@@ -19,12 +20,14 @@ export const FOCUS_USAGE = `Usage: wolfpack focus show|add|edit|done|undo|drop|r
   next <json-file> [--take <text>] [--about <1,3>]   ordered triage rows (ref, verdict, reason, stoppedAt, suggestion?, doneIntention?)
   nudge|note <text>
   day-summary <YYYY-MM-DD> <done> <carried> <questions>
+  catch-up   request re-triage on the focus home machine
   home [<installation-id>|--clear]   show or set this machine's focus home (config.json; restart to apply)`;
-export function parseFocusCommand(args: readonly string[]): { json: boolean; op?: FocusOp } {
+export function parseFocusCommand(args: readonly string[]): { json: boolean; op?: FocusOp; catchUp?: true } {
   const json = args.includes("--json");
   const argv = args.filter(a => a !== "--json");
   const [cmd, ...rest] = argv;
   if (cmd === "show" && rest.length === 0) return { json };
+  if (cmd === "catch-up" && rest.length === 0) return { json, catchUp: true };
   let op: unknown;
   if (cmd === "add" || cmd === "edit") {
     const fields: Record<string, unknown> = {};
@@ -111,7 +114,7 @@ export async function focusHomeCommand(parsed: { json?: boolean; home?: string |
   const current = config?.focus?.home ?? null;
   if (parsed.home !== undefined) {
     const local = (current ?? self) === self;
-    if (local && (parsed.home ?? self) !== self && config?.pinnedSessions?.some(pin => pin.name === "assistant" && pin.cwd === join(dirname(io.path), "assistant"))) throw new Error(FOCUS_HOME_DISABLE_FIRST);
+    if (local && (parsed.home ?? self) !== self && config?.pinnedSessions?.some(pin => isFocusAssistantName(pin.name) && pin.cwd === join(dirname(io.path), "assistant"))) throw new Error(FOCUS_HOME_DISABLE_FIRST);
     const { changed } = writeFocusHome(parsed.home, io.path);
     return { home: parsed.home ?? self, local: (parsed.home ?? self) === self, changed };
   }
@@ -130,6 +133,11 @@ export async function focusCommand(args: readonly string[], target?: VerifiedMac
     const parsed = parseFocusCommand(args);
     const home = await focusHomeTarget(target);
     const request: FocusRequest = (path, init) => call(path, init, home);
+    if (parsed.catchUp) {
+      const status = await checked<unknown>(await request("/api/focus/catch-up", { method: "POST" }));
+      if (parsed.json) printJson(status); else print("focus catch-up requested");
+      return 0;
+    }
     const doc = parsed.op ? await updateFocusWithRetry(parsed.op, request) : (await checked(await request("/api/focus"))).document;
     if (parsed.json) printJson(doc);
     else if (!doc) print("Set your focus: wolfpack focus add <title>");

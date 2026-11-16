@@ -1,0 +1,33 @@
+import { test, expect } from "@playwright/test";
+import { mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { startTestServer, type TestServer } from "./helpers";
+let server: TestServer;
+test.beforeAll(async () => { server = await startTestServer({ focusAssistant: true }); });
+test.afterAll(async () => { await server?.close(); });
+
+test("assistant page, terminal header and settings visual evidence", async ({ page }, info) => {
+  const desktop = info.project.name === "desktop";
+  await page.setViewportSize({ width: desktop ? 1440 : 390, height: desktop ? 900 : 844 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.addInitScript(() => localStorage.setItem("wolfpack-sidebar-pinned", "1"));
+  const shots = process.env.WOLFPACK_FOCUS_SHOTS ?? join(homedir(), ".cache/focus-split/shots");
+  mkdirSync(shots, { recursive: true });
+  const shot = async (name: string) => page.screenshot({ path: join(shots, `split-${name}-${desktop ? "desktop" : "phone"}.png`), fullPage: true });
+  await page.goto(server.baseUrl);
+  await expect(page.locator("#dashboard-focus")).toBeVisible();
+  await shot("header");
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  await expect(page.locator("#assistant-content .focus-today")).toBeVisible();
+  await shot("page");
+  await page.getByRole("button", { name: "Talk to assistant", exact: true }).click();
+  await expect(page.locator(desktop ? "#assistant-pane canvas" : "#desktop-terminal-container canvas").first()).toBeVisible();
+  await shot("terminal");
+  if (desktop) await page.getByRole("button", { name: "Hide assistant terminal", exact: true }).click();
+  else await page.locator("#assistant-terminal-focus").click();
+  await page.locator("#assistant-content").getByRole("button", { name: "Assistant settings", exact: true }).click();
+  await expect(page.locator("#assistant-setting-status")).toBeVisible();
+  await page.locator("#settings-assistant").scrollIntoViewIfNeeded();
+  await shot("settings");
+});

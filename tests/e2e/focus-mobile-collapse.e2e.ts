@@ -151,7 +151,7 @@ async function touchToLastCard(page: Page) {
 for (const scenario of [
   { triage: "suggest" as const, needsInput: false, label: "1 reply ready" },
   { triage: "needs-you" as const, needsInput: false, label: "1 needs you" },
-  { triage: "needs-you" as const, needsInput: true, label: "6 need you" },
+  { triage: "needs-you" as const, needsInput: true, label: "6 needs you" },
 ]) test(`phone attention includes ${scenario.triage} (${scenario.needsInput ? "session" : "no session input"}) without double-counting`, async ({ page }, info) => {
   test.skip(info.project.name === "desktop", "mobile triage disclosure");
   await realisticFocus(page, scenario.needsInput, scenario.triage); await ready(page);
@@ -159,8 +159,8 @@ for (const scenario of [
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
   await toggle.tap();
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
-  await expect(toggle).toContainText(scenario.label);
-  await expect(toggle.locator("span").last()).toBeVisible();
+  await expect(toggle).toHaveAccessibleName(new RegExp(scenario.label));
+  await expect(toggle.locator("b")).toBeVisible();
   await expect(page.locator("#dashboard-focus-details")).toBeHidden();
   await toggle.tap();
   if (scenario.triage === "suggest") {
@@ -182,10 +182,12 @@ for (const scenario of [
 
 for (const triage of ["questions", "failures"] as const) test(`an oversized phone panel retains live ${triage} even when their cards have suggestions`, async ({ page }, info) => {
   test.skip(info.project.name === "desktop", "mobile action precedence");
+  // The simplified cards now fit at 844px; exercise the same overflow policy in a shorter viewport.
+  await page.setViewportSize({ width: 390, height: 600 });
   await realisticFocus(page, triage === "questions", triage); await ready(page);
   const panel = page.locator("#dashboard-focus");
   await expect(panel.locator('.focus-next > [data-kind="suggest"]')).toHaveCount(3);
-  await expect(panel.locator(".focus-tag")).toHaveText(Array(3).fill("reply ready"));
+  await expect(panel.locator(".focus-tag")).toHaveText(Array(3).fill("reply"));
   await expect(panel.locator('[data-focus-action="toggle-dashboard"]')).toHaveAttribute("aria-expanded", "true");
   await expect(page.locator("#dashboard-focus-details")).toBeVisible();
   expect(await panel.evaluate(el => el.scrollHeight > innerHeight * .6), "the test exceeds the cap rather than only exercising a short panel").toBe(true);
@@ -193,6 +195,7 @@ for (const triage of ["questions", "failures"] as const) test(`an oversized phon
 
 test("a phone defaults a capped reply-only panel to collapsed, but retains an explicit expansion", async ({ page }, info) => {
   test.skip(info.project.name === "desktop", "mobile default sizing");
+  await page.setViewportSize({ width: 390, height: 600 });
   await realisticFocus(page, false, "scroll"); await ready(page);
   const toggle = page.locator('#dashboard-focus [data-focus-action="toggle-dashboard"]');
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
@@ -224,7 +227,7 @@ test("phone disclosure keeps its choice across reload, shows attention, and has 
   await realisticFocus(page); await ready(page);
   const toggle = page.getByRole("button", { name: /Collapse assistant/ });
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
-  await expect(toggle).toContainText("6 need you");
+  await expect(toggle).toContainText("6 needs you");
   const target = await toggle.boundingBox();
   expect(target!.height).toBeGreaterThanOrEqual(44);
   expect(target!.width).toBeGreaterThanOrEqual(44);
@@ -266,7 +269,7 @@ test("quiet phones default collapsed; desktop defaults expanded with its own dis
     await page.getByRole("button", { name: /Expand assistant/ }).click();
   }
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
-  const statusDot = page.locator("#assistant-content .focus-header > span:not(.focus-spin) > .dot");
+  const statusDot = page.locator("#assistant-content .focus-header > span > .dot");
   await expect(statusDot).toHaveCount(1);
   const size = info.project.name === "desktop" ? 7 : 10;
   await expect.poll(() => statusDot.evaluate(el => {
@@ -310,13 +313,14 @@ test("expanded dashboard scrolls its last card control while keeping a usable se
   if (await toggle.getAttribute("aria-expanded") === "false") await toggle.click();
   const cards = panel.locator(".focus-next .focus-card");
   await expect(cards).toHaveCount(3);
-  for (let i = 0; i < 3; i++) await cards.nth(i).locator("summary").click();
+  for (let i = 0; i < 3; i++) await cards.nth(i).locator(":scope > summary").click();
   await expect(panel.locator(".focus-card[open]")).toHaveCount(3);
   const send = panel.getByRole("button", { name: "Send to local-project-02", exact: true });
-  await send.scrollIntoViewIfNeeded();
-  await expect(send).toBeInViewport({ ratio: 1 });
+  // Center within the native scroller: nearest-edge alignment can round under its fractional border.
+  await send.evaluate(el => el.scrollIntoView({ block: "center" }));
   const geometry = await metrics(page);
-  writeFileSync(info.outputPath("panel-scroll-geometry.json"), JSON.stringify(geometry, null, 2));
+  writeFileSync(info.outputPath("panel-scroll-geometry.json"), JSON.stringify({ ...geometry, send: await send.boundingBox(), scrollHeight: await panel.evaluate(el => el.scrollHeight) }, null, 2));
+  await expect(send).toBeInViewport({ ratio: 1 });
   expect(geometry.banner.scrollTop, "the expanded panel must scroll internally").toBeGreaterThan(0);
   expect(geometry.banner.height).toBeLessThanOrEqual(geometry.viewport * .6 + 1);
   expect(geometry.list.height, "sessions retain at least 30% of the view").toBeGreaterThanOrEqual(geometry.page.height * .3 - 1);

@@ -27,6 +27,7 @@ for (const runtimeState of ["needs-input", "failed"]) test(`R3: cached ${runtime
   await page.goto(server.baseUrl);
   const row = page.locator("#dashboard-focus .focus-next > li").filter({ hasText: "Remote user decision required" });
   await expect(row).toHaveCount(1);
+  await expect(row.locator("summary span[title='focus peer']")).toHaveText("focus-peer");
   unavailable = true; await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect(page.locator(`.machine-group.offline[data-machine="n-peer:${id}"]`).first()).toBeVisible();
   await expect(page.locator("#dashboard-focus .focus-quiet")).toContainText("focus peer not reached");
@@ -35,7 +36,7 @@ for (const runtimeState of ["needs-input", "failed"]) test(`R3: cached ${runtime
   await expect(row.getByRole("button", { name: "Open remote-worker", exact: true })).toBeDisabled();
   await expect(row.getByRole("textbox")).not.toBeEditable();
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
-  await expect(page.locator("#assistant-content > h2").first()).toHaveText("next 2 need you");
+  await expect(page.locator("#assistant-content .focus-count")).toHaveText("2 needs you");
 });
 for (const parentPresent of [true, false]) test(`R4: child finish follows full inventory parent liveness (${parentPresent})`, async ({ page }) => {
   await page.route("**/api/sessions", async route => {
@@ -48,6 +49,6 @@ for (const parentPresent of [true, false]) test(`R4: child finish follows full i
     await route.fulfill({ response, json: body });
   });
   await page.goto(server.baseUrl);
-  const row = page.locator("#dashboard-focus .focus-next > li").filter({ hasText: "child-finish" });
+  const row = page.locator("#dashboard-focus .focus-finished > li").filter({ hasText: "child-finish" });
   await expect(row).toHaveCount(parentPresent ? 0 : 1);
 });

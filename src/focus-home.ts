@@ -1,3 +1,4 @@
+import { isFocusAssistantName } from "./focus-session.js";
 import { readFileSync } from "node:fs";
 import { CONFIG_PATH, parseConfig } from "./config.js";
 import { writePrivateJsonFile } from "./persistence.js";
@@ -22,7 +23,7 @@ export function writeFocusHome(home: string | null, path = CONFIG_PATH, disableA
   const pins = previous.pinnedSessions;
   let unpinned = false;
   if (disableAssistantFolder && pins) {
-    const retained = pins.filter(pin => pin.name !== "assistant" || pin.cwd !== disableAssistantFolder);
+    const retained = pins.filter(pin => !isFocusAssistantName(pin.name) || pin.cwd !== disableAssistantFolder);
     unpinned = retained.length !== pins.length;
     if (unpinned) next.pinnedSessions = retained;
   }

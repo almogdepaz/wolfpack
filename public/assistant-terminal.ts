@@ -1,3 +1,4 @@
+import type { FocusAssistantRole } from "../src/focus-session";
 import type { PtyTerminalController, PtyTerminalControllerOpts } from "./pty-terminal-controller";
 import { classifyDisconnect, handleTakeControlClick } from "../src/take-control-logic";
 import { scheduleTakeControlFallback } from "./take-control-coordinator";
@@ -10,6 +11,7 @@ export interface AssistantTerminalTarget {
   readonly session: string;
   readonly machine: string;
   readonly sessionId?: string;
+  readonly role?: FocusAssistantRole;
 }
 
 /** The pinned assistant's projection only: deliberately outside the watched
@@ -158,7 +160,7 @@ export function createAssistantTerminal(deps: {
       onOpen: () => { if (controller === owner) { clearOverlay(); status.textContent = "connecting"; } },
       onHydrated: () => {
         if (controller !== owner) return;
-        if (!overlay) status.textContent = "click to talk";
+        if (!overlay) status.textContent = next.role === "assistant" ? "routines only" : "click to talk";
         updateControls();
         if (inputRequested && !overlay && visible()) owner.focus();
       },

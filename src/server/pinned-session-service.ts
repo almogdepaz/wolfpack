@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
-import { conflictingAssistantPins, reconcilePinned, recordPinFailure, PIN_STABLE_MS, type PinHistory, type PinnedSession } from "../pinned-sessions.js";
-import type { SessionBackend } from "./backend-contract.js";
+import { conflictingAssistantPins, reconcilePinned, recordPinFailure, PIN_STABLE_MS, type PinHistory, type PinnedSession, type PreparedPinnedSession } from "../pinned-sessions.js";
+import type { SessionBackend, SessionListFact } from "./backend-contract.js";
 import { createLogger, errMsg } from "../log.js";
 const log = createLogger("server");
 export class PinnedSessionService {
@@ -10,7 +10,7 @@ export class PinnedSessionService {
   private liveSince = new Map<string, number>();
   private flight?: Promise<void>;
   private timer?: ReturnType<typeof setInterval>;
-  constructor(private readonly options: { backend: SessionBackend; pins: () => readonly PinnedSession[]; prepareLaunch?: (pin: PinnedSession) => PinnedSession; now?: () => number }) {}
+  constructor(private readonly options: { backend: SessionBackend; pins: () => readonly PinnedSession[]; prepareLaunch?: (pin: PinnedSession) => PreparedPinnedSession; managedAssistantPin?: (pin: PinnedSession) => boolean; managedAssistantSession?: (fact: SessionListFact) => boolean; now?: () => number }) {}
   start(): void {
     if (this.timer) return;
     void this.tick();
@@ -27,8 +27,10 @@ export class PinnedSessionService {
     const facts = await this.options.backend.listSessionFacts();
     const live = facts.filter(f => f.alive).map(f => f.name);
     const directory = (cwd: string) => { try { return realpathSync(cwd); } catch { return resolve(cwd); } };
-    const conflicts = conflictingAssistantPins(pins.map(pin => ({ name: pin.name, cwd: directory(pin.cwd) })),
-      facts.flatMap(fact => fact.alive && fact.identity ? [{ name: fact.name, cwd: directory(fact.identity.projectPath) }] : []));
+    const managed = (pin: PinnedSession) => this.options.managedAssistantPin?.(pin) === true;
+    const conflicts = conflictingAssistantPins(pins.map(pin => ({ name: pin.name, cwd: directory(pin.cwd), managedAssistant: managed(pin) })),
+      facts.flatMap(fact => fact.alive && fact.identity ? [{ name: fact.name, cwd: directory(fact.identity.projectPath),
+        managedAssistant: this.options.managedAssistantSession?.(fact) === true && pins.some(pin => pin.name === fact.name && directory(pin.cwd) === directory(fact.identity!.projectPath) && managed(pin)) }] : []));
     for (const name of Object.keys(this.history)) if (!pins.some(p => p.name === name)) { delete this.history[name]; delete this.errors[name]; }
     for (const pin of pins) {
       if (live.includes(pin.name)) {
@@ -47,9 +49,10 @@ export class PinnedSessionService {
       if (action.action !== "create") continue;
       const configured = pins.find(p => p.name === action.name)!;
       try {
-        const pin = this.options.prepareLaunch?.(configured) ?? configured;
+        const pin: PreparedPinnedSession = this.options.prepareLaunch?.(configured) ?? configured;
         await this.options.backend.createSession(pin.name, pin.cwd, pin.command[0], () => ({ agentCmd: pin.command[0]! }), { agentKind: pin.harness, pinnedCommand: pin.command });
         this.liveSince.set(pin.name, now);
+        pin.onStarted?.();
         delete this.errors[pin.name];
       } catch (error) {
         this.history[configured.name] = recordPinFailure(this.history[configured.name], now);

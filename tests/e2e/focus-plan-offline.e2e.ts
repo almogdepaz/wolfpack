@@ -16,7 +16,7 @@ for (const project of [undefined, "/work/focus-project"]) test(`L5: ${project ? 
   // No work agents yet; the sole intention has no linked live session.
   await page.route("**/api/sessions", async route => {
     const response = await route.fetch({ url: server.baseUrl + "/api/sessions" }); const body = await response.json();
-    body.sessions = body.sessions.filter((s: { name: string }) => s.name === "assistant");
+    body.sessions = body.sessions.filter((s: { name: string }) => ["assistant", "assistant-chat"].includes(s.name));
     await route.fulfill({ response, headers: { "Access-Control-Allow-Origin": "*" }, json: body });
   });
   const errors: string[] = [], mutations: string[] = [];

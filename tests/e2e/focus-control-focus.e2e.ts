@@ -52,7 +52,7 @@ test("R1: slow completion keeps list focus through a refresh while saving and af
 });
 
 for (const [name, selector, dashboard = false, expand = false] of [
-  ["dashboard title", "#dashboard-focus [aria-label='Open assistant']", true],
+  ["dashboard order", "#dashboard-focus-details > details > summary", true],
   ["dashboard open assistant", "#dashboard-focus [aria-label='Open assistant page']", true],
   ["settings", "#assistant-content [aria-label='Assistant settings']"],
   ["talk", "#assistant-content .focus-talk"],
@@ -97,11 +97,13 @@ for (const [name, selector, dashboard = false, expand = false] of [
     await expect(control).toBeVisible();
     await control.focus();
     await expect(control).toBeFocused();
+    if (name === "dashboard order") { await page.keyboard.press("Enter"); await expect(control.locator("..")).toHaveAttribute("open", ""); }
     const previous = await control.elementHandle();
     render++;
     await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
     await expect(host.locator(".focus-notes")).toContainText(`Focus refresh ${render}`);
     expect(await previous!.evaluate(el => el.isConnected), "a changed render actually replaced the control").toBe(false);
     await expect(control).toBeFocused();
+    if (name === "dashboard order") await expect(control.locator("..")).toHaveAttribute("open", "");
   });
 }

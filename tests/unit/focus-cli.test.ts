@@ -14,6 +14,10 @@ test("focus CLI parses every operation with explicit link/project/machine fields
   expect(() => parseFocusCommand(["done", "ship", "junk"])).toThrow();
   expect(() => parseFocusCommand(["add", "ship", "--wat", "x"])).toThrow();
 });
+test("catch-up is a distinct home-routed command, not a focus document edit", () => {
+  expect(parseFocusCommand(["catch-up", "--json"])).toEqual({ json: true, catchUp: true });
+  expect(() => parseFocusCommand(["catch-up", "extra"])).toThrow();
+});
 test("focus next parses a JSON input file through the same reducer validation", () => {
   const { mkdtempSync, writeFileSync, rmSync } = require("node:fs");
   const { tmpdir } = require("node:os");

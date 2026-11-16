@@ -34,7 +34,8 @@ test("full merge is classified before the cap; delegated stops wait and starts l
   });
   await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");
-  await expect(block.locator(".focus-next > li")).toHaveCount(3);
+  await expect(block.locator(".focus-next > li")).toHaveCount(1);
+  await expect(block.locator(".focus-finished > li")).toHaveCount(2);
   await expect(block.locator(".focus-next")).not.toContainText("Unstarted");
   await expect(block.locator(".focus-next")).not.toContainText("child-finish");
   await expect(block.locator(".focus-quiet")).toContainText("api-refactor waiting on 3 sub-sessions (1 working)");
@@ -42,9 +43,10 @@ test("full merge is classified before the cap; delegated stops wait and starts l
   await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("1 needs you +2:");
   await block.getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-content");
-  await expect(view.getByRole("heading", { name: /^next / })).toHaveText("next 1 needs you · 2 done");
+  await expect(view.getByRole("heading", { name: "1 needs you", exact: true })).toBeVisible();
+  await expect(page.locator("#sidebar-assistant-nav")).toHaveAccessibleDescription("1 needs you · 2 done");
   await expect(view.locator(".focus-today [data-focus-plan]")).toHaveCount(6);
-  const quiet = view.locator(".focus-next > li").filter({ hasText: "The documentation is complete" });
+  const quiet = view.locator(".focus-finished > li").filter({ hasText: "The documentation is complete" });
   await expect(quiet).toHaveAttribute("data-kind", "done");
   await expandFocusCard(quiet);
   await expect(quiet.getByRole("textbox", { name: "reply to quiet-finish", exact: true })).toHaveAttribute("placeholder", "follow up with quiet-finish…");

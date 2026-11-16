@@ -34,6 +34,8 @@ async function fixture() {
   let at = Date.now();
   const state = (state: "done" | "working" | "blocked" = "done") => backend.setProgramStatus("assistant", { id: "", state, ...(state === "blocked" && { kind: "question" as const }), updatedAtMs: ++at });
   state();
+  // These legacy cases isolate worker fences; chat rotation is covered in focus-assistant-split-runtime.test.ts.
+  backend.setProgramStatus("assistant-chat", { id: "", state: "working", updatedAtMs: ++at });
   const transcript = join(assistant.folder, "sessions/20261110_focus-assistant.jsonl");
   const record = join(assistant.folder, "conversation.json");
   const archive = join(assistant.folder, "sessions/archive");
@@ -208,7 +210,7 @@ test("custom AGENTS is preserved and digested; a missing seed is repaired and fi
   try {
     const agents = join(t.assistant.folder, "AGENTS.md");
     const original = readFileSync(agents, "utf8");
-    expect(original).toContain("Read .pi/skills/wolfpack-focus/SKILL.md before working");
+    expect(original).toContain("Read your explicitly supplied role skill before working");
     expect(original).toContain("durable intentions, next-action order, and notes");
     expect(original).not.toContain("nudge");
     writeFileSync(t.transcript, "old AGENTS conversation");
@@ -379,7 +381,7 @@ test("SR-R2: a new runtime lifetime cannot revive an old held rotation or clear 
     t.backend.createSession = create;
     release();
     await flight;
-    expect(await t.backend.list()).toEqual([]);
+    expect(await t.backend.list()).toEqual(["assistant-chat"]);
     expect(t.ctx.focusRuntime.pins.errors.assistant).toBe("new lifetime startup failure");
   } finally { release(); await flight; t.close(); }
 });

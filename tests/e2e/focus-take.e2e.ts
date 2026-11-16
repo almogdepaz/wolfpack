@@ -40,7 +40,7 @@ async function setup(page: Page) {
   });
   await page.route("**/api/sessions", async route => {
     const response = await route.fetch(); const body = await response.json();
-    body.sessions = body.sessions.filter((s: { name: string }) => ["assistant", "prompt-project"].includes(s.name));
+    body.sessions = body.sessions.filter((s: { name: string }) => ["assistant", "assistant-chat", "prompt-project"].includes(s.name));
     for (const s of body.sessions) if (s.name === "prompt-project") s.runtimeState = { ...s.runtimeState,
       state: state.answered ? "working" : "needs-input", inputKind: "question", changedAt: episode, stoppedAt: episode,
       unseen: true, stoppedSequence: 5, acknowledgedSequence: 0, stale: false, freshness: "fresh" };
@@ -63,8 +63,8 @@ test("take sits below cards on both hosts; dismissal persists and a newer order 
   await expect(block.locator(".focus-next > li")).toHaveCount(2);
   await expect(take).toContainText(text);
   await expect(take.locator(".focus-take-label")).toHaveText(/assistant's take · (now|\d+m) ago/);
-  await expect.poll(() => take.evaluate(el => el.previousElementSibling?.className)).toBe("focus-quiet");
-  await expect.poll(() => take.evaluate(el => el.nextElementSibling?.tagName)).toBe("SMALL");
+  await expect.poll(() => take.evaluate(el => el.previousElementSibling?.className)).toBe("focus-next");
+  await expect.poll(() => take.evaluate(el => el.nextElementSibling?.tagName)).toBe("DETAILS");
   await take.scrollIntoViewIfNeeded();
   await page.screenshot({ path: join(shots, `${info.project.name}-dashboard-visible.png`), fullPage: true });
   await block.getByRole("button", { name: "Open assistant page", exact: true }).click();

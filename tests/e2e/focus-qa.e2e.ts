@@ -24,10 +24,10 @@ test("QA-4: an empty focus document has no today count or empty rule disclosure"
   const block = page.locator("#dashboard-focus");
   await expect(block).toBeVisible();
   await expect.soft(block).not.toContainText("0 of 0 done");
-  await block.getByRole("button", { name: "Open assistant", exact: true }).click();
+  await block.getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-content");
   await expect.soft(view).not.toContainText("0 of 0 done");
-  await expect.soft(view.getByText("why this order", { exact: true })).toHaveCount(0);
+  await expect.soft(view.locator(":scope > details").filter({ hasText: "why this order" }).locator("ol > li")).not.toHaveCount(0);
   await expect(view.getByRole("textbox", { name: "Add an intention" })).toBeVisible();
 });
 
@@ -47,7 +47,7 @@ test("QA-19: phone header keeps actions on the first row across long status chan
     await route.fulfill({ response, json: body });
   });
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   const header = page.locator("#assistant-content .focus-header");
   const actions = header.locator(".focus-header-actions");
   await expect(header).toBeVisible();
@@ -92,7 +92,7 @@ test("QA-19: phone header keeps actions on the first row across long status chan
 test("QA-21: phone done target is 44 square without enlarging the box or covering the summary", async ({ page }, info) => {
   test.skip(info.project.name === "desktop", "phone touch target");
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-content");
   const row = view.locator(".focus-today > li").first();
   const label = row.locator(".focus-check");
@@ -113,7 +113,7 @@ test("QA-21: phone done target is 44 square without enlarging the box or coverin
 
 test("QA-10: a write announces focus updated then the notice expires, including after another render", async ({ page }) => {
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   const input = page.getByRole("textbox", { name: "Add an intention" });
   await input.fill("transient notice intention");
   await input.press("Enter");
@@ -123,6 +123,6 @@ test("QA-10: a write announces focus updated then the notice expires, including 
   await expect(status).toHaveAttribute("aria-live", "polite");
   await expect(status).toBeEmpty({ timeout: 8_000 });
   await page.locator("#assistant-back").evaluate((el: HTMLButtonElement) => el.click());
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   await expect(status).toBeEmpty();
 });

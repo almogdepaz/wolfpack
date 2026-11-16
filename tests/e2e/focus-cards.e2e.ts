@@ -7,7 +7,7 @@ test.beforeAll(async () => { server = await startTestServer({ focusAssistant: tr
 test.afterAll(async () => { await server?.close(); });
 const noHorizontalScroll = () => document.documentElement.scrollWidth <= innerWidth;
 
-test("unjudged cards quote only the last 100 untrusted characters, never as their headline", async ({ page }) => {
+test("unjudged cards promote only the last 100 untrusted prompt characters into the headline", async ({ page }) => {
   const line = "Earlier context ".repeat(8) + "🦊".repeat(30) + " <img src=x onerror=alert(1)> choose a plan?";
   await page.route("**/api/sessions", async route => {
     const response = await route.fetch(); const body = await response.json();
@@ -16,13 +16,13 @@ test("unjudged cards quote only the last 100 untrusted characters, never as thei
   });
   await page.goto(server.baseUrl);
   const row = page.locator("#dashboard-focus .focus-next > li").filter({ hasText: "prompt-project" });
-  await expect(row.locator("summary .focus-title")).toHaveText("prompt-project asks a question");
-  const quote = row.locator("summary q");
-  await expect(quote).toHaveText("…" + Array.from(line).slice(-100).join(""));
-  await expect(quote.locator("*")).toHaveCount(0);
-  await expect(quote).toHaveCSS("white-space", "nowrap");
-  expect((await quote.boundingBox())!.height).toBeLessThanOrEqual(20);
-  expect(await quote.evaluate(el => getComputedStyle(el).fontFamily)).toMatch(/mono/i);
+  const ask = row.locator("summary strong");
+  await expect(ask).toHaveText("…" + Array.from(line).slice(-100).join(""));
+  await expect(ask.locator("*")).toHaveCount(0);
+  await expect(row.locator("summary q")).toHaveCount(0);
+  await expect(ask).toHaveCSS("white-space", "nowrap");
+  expect((await ask.boundingBox())!.height).toBeLessThanOrEqual(20);
+  await expect(ask).toHaveCSS("font-weight", "600");
 });
 
 test("a next row expands to its session details; the action acts without toggling; open survives a re-render", async ({ page }) => {
@@ -42,7 +42,7 @@ test("a next row expands to its session details; the action acts without togglin
   await expect(card).toHaveAttribute("open", "");
   const body = card.locator(".focus-card-body");
   await expect(row.locator("summary [title='/home/dev/demo-app']")).toHaveText("demo-app");
-  await expect(row.locator("summary .focus-tag")).toHaveText("answer");
+  await expect(row.locator("summary .focus-tag")).toHaveText("reply");
   await expect(body).toContainText("Do you want to continue? (y/n)");
   await expect(body).not.toContainText("by rules");
   await expect(body).not.toContainText("why here");
@@ -110,7 +110,7 @@ test("a tap that opens a card stays open when a poll renders before its toggle e
   await page.waitForTimeout(300);
   await page.evaluate(() => (window as unknown as { heldToggle: EventTarget }).heldToggle.dispatchEvent(new Event("toggle")));
   await expect(card).toHaveAttribute("open", "");
-  await expect(card.locator(".focus-card-body")).toBeVisible();
+  await expect(card.locator(".focus-draft")).toBeVisible();
   await expect(card.locator(".focus-card-body")).toContainText("Do you want to continue? (y/n)");
   // and a poll after that keeps it open
   await page.waitForTimeout(6000);
@@ -120,7 +120,7 @@ test("a tap that opens a card stays open when a poll renders before its toggle e
 
 test("today intentions expand to their details; the checkbox and chips work without toggling the card", async ({ page }) => {
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-view");
   const item = view.locator(".focus-today li").filter({ hasText: "fix broker leak" });
   const card = item.locator("details.focus-card");
@@ -169,7 +169,7 @@ test("a session card shows the agent's context document, fetched only while it i
   await expect(context).toContainText("context");
   expect(reads[0]).toBe(SESSION_UUID);
   await expect(context.getByText("Ship the focus cards round", { exact: true })).toBeHidden();
-  await context.locator("summary").filter({ hasText: /^more$/ }).click();
+  await context.locator(":scope > summary").filter({ hasText: /^context$/ }).click();
   await expect(context.getByText("Ship the focus cards round", { exact: true })).toBeVisible();
   await expect(context).toContainText("Wire the context block into session cards");
   // every needs-you item is its own element keyed by its id; five show, the rest sit under "2 more"
@@ -185,10 +185,10 @@ test("a session card shows the agent's context document, fetched only while it i
   await expect(context).toContainText("pi 1.3.0 here");
   await expect(context).not.toContainText("fourth fact stays out");
   await expect(context).not.toContainText("Cards over a drawer");
-  await expect(context).toContainText("reviewed · updated 5m");
+  await expect(context).not.toContainText("reviewed · updated");
   expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
   expect(await page.evaluate(noHorizontalScroll)).toBe(true);
-  // refreshed with the 5 s poll while open; the nested "more" stays open across it; nothing is fetched once collapsed
+  // refreshed with the 5 s poll while open; context and its overflow stay open across it; nothing is fetched once collapsed
   await expect.poll(() => reads.length, { timeout: 15_000 }).toBeGreaterThan(1);
   await expect(context.locator('[data-focus-need="q-f"]')).toBeVisible();
   await row.locator(".focus-card > summary").click();
@@ -215,7 +215,7 @@ test("no document is no block; another schema version is one line", async ({ pag
 test("open cards refreshing their context do not drop a half-typed intention", async ({ page }) => {
   await withContext(page, v3);
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-view");
   await view.locator(".focus-next li").filter({ hasText: "prompt-project" }).locator(".focus-card > summary").click();
   await view.locator(".focus-today li").filter({ hasText: "fix broker leak" }).locator(".focus-card > summary").click();
@@ -233,7 +233,7 @@ test("open cards refreshing their context do not drop a half-typed intention", a
 
 test("a poll answered before a tick lands after it without reverting the tick (S2)", async ({ page }) => {
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-view");
   await expect(view).toContainText("1 of 3 done");
   let hold = false;
@@ -304,7 +304,7 @@ test("a machine that answers not installed is not asked again every poll (N2)", 
 
 test("disclosure markers are not the action's glyph and are silent to screen readers (C1, N5)", async ({ page }) => {
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-view");
   await expect(view.locator(".focus-next details.focus-card").first()).toBeVisible();
   const marker = (selector: string, pseudo: string) => view.locator(selector).first().evaluate((el, p) => getComputedStyle(el, p).content, pseudo);

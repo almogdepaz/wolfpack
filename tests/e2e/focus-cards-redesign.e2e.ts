@@ -55,18 +55,20 @@ test("mixed cards, waiting line and grouped done work expose the next decision",
   });
   await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");
-  await expect(block.locator(".focus-next > li")).toHaveCount(3);
+  await expect(block.locator(".focus-next > li")).toHaveCount(2);
+  await expect(block.locator(".focus-finished > li")).toHaveCount(1);
   const replyCard = block.locator(".focus-next > li").filter({ hasText: "Step 2 added beta" });
   await expandFocusCard(replyCard);
   await expect(block.locator(".focus-quiet")).toContainText("api-refactor waiting on 2 sub-sessions (1 working)");
   const counts = "1 needs you · 1 reply ready · 1 done";
-  await expect.soft(block.locator(".focus-dashboard-body > small").last()).toHaveText(`${counts} · today 2 of 3 done`);
+  await expect.soft(block.locator(".focus-count")).toHaveText("1 needs you");
+  await expect.soft(block).not.toContainText("today");
   const unjudged = block.locator(".focus-next > li").filter({ hasText: "me-2" });
-  await expect.soft(unjudged.locator("summary q")).toHaveText("Choose bun add or vendoring?");
-  await expect(unjudged.locator("summary .focus-title")).toHaveText("me-2 asks a question");
-  await expect(unjudged.locator("summary q > *")).toHaveCount(0);
+  await expect(unjudged.locator("summary strong")).toHaveText("Choose bun add or vendoring?");
+  await expect(unjudged.locator("summary q")).toHaveCount(0);
+  await expect(unjudged.locator("summary strong > *")).toHaveCount(0);
   const chevron = [-135, 3];
-  await expect.poll(() => replyCard.locator("summary").evaluate(el => {
+  await expect.poll(() => replyCard.locator(":scope > .focus-card > summary").evaluate(el => {
     const m = new DOMMatrix(getComputedStyle(el, "::after").transform);
     return [Math.round(Math.atan2(m.b, m.a) * 180 / Math.PI), m.f];
   })).toEqual(chevron);
@@ -84,7 +86,8 @@ test("mixed cards, waiting line and grouped done work expose the next decision",
   }
   await block.getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-content");
-  await expect.soft(view.locator(":scope > h2").first()).toHaveText(`next ${counts}`);
+  await expect.soft(view.locator(".focus-count")).toHaveText("1 needs you");
+  await expect.soft(view.locator(".focus-quiet")).toContainText("today 2 of 3 done");
   if (desktop) {
     const pill = page.locator("#sidebar-assistant .assistant-tile-state");
     await expect(pill).toHaveText("1 needs you +2:");
@@ -96,7 +99,7 @@ test("mixed cards, waiting line and grouped done work expose the next decision",
       return rect.right <= button.right && el.scrollWidth <= el.clientWidth;
     }), "the shared count stays readable inside the existing sidebar tile").toBe(true);
   }
-  expect(await view.locator(".focus-next > li").filter({ hasText: "Step 2 added beta" }).locator("summary").evaluate(el => {
+  expect(await view.locator(".focus-next > li").filter({ hasText: "Step 2 added beta" }).locator(":scope > .focus-card > summary").evaluate(el => {
     const m = new DOMMatrix(getComputedStyle(el, "::after").transform);
     return [Math.round(Math.atan2(m.b, m.a) * 180 / Math.PI), m.f];
   })).toEqual(chevron);
@@ -121,10 +124,12 @@ test("mixed cards, waiting line and grouped done work expose the next decision",
   }
   await expect(view.locator(".focus-yesterday")).toHaveText("yesterday· 1 question for you · 2 carried over · 3 doneread ›");
   const finishClock = await page.evaluate(at => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }), at(11));
-  await expect.soft(view.locator('.focus-next > [data-kind="done"] span.focus-meta')).toContainText(finishClock);
-  await expect.soft(replyCard.locator("dt").first()).toHaveText("last line");
-  await expect.soft(view.locator(".focus-header")).toContainText(/ordered (just now|\d+[mhd] ago)/);
+  await expect.soft(view.locator('.focus-finished > [data-kind="done"] > .focus-card > summary')).toContainText(finishClock);
+  await expect.soft(replyCard.locator(".focus-context-more > summary").first()).toHaveText("last line");
+  await expect.soft(view.locator(".focus-header")).not.toContainText("ordered");
   const why = view.locator(":scope > details").filter({ hasText: "why this order" });
+  await why.locator("summary").click();
+  await expect(why).toContainText(/ordered (just now|\d+[mhd] ago)/);
   await expect.soft(why.locator("summary")).toHaveCSS("min-height", desktop ? "24px" : "44px");
   if (!desktop) {
     const read = view.locator(".focus-yesterday button");

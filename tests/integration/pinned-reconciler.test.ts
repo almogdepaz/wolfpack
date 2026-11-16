@@ -61,7 +61,7 @@ test("assistant runtime drains fast completed turns using broker program timesta
   const { AssistantService } = await import("../../src/server/assistant-service.ts");
   const folder = join(root, "assistant");
   const backend = new MockBackend();
-  await backend.createSession("assistant", folder, "pi", () => ({ agentCmd: "pi" }));
+  await backend.createSession("assistant", folder, "pi", () => ({ agentCmd: "pi" }), { agentKind: "pi", pinnedCommand: new AssistantService({ root }).command() });
   let at = 1000;
   backend.setProgramStatus("assistant", { id: "", state: "done", updatedAtMs: at });
   const sent: string[] = [];
@@ -87,7 +87,7 @@ test("a routine send that cannot be verified or is not delivered settles failed 
   const { AssistantService } = await import("../../src/server/assistant-service.ts");
   const folder = join(root, "assistant");
   const backend = new MockBackend();
-  await backend.createSession("assistant", folder, "pi", () => ({ agentCmd: "pi" }));
+  await backend.createSession("assistant", folder, "pi", () => ({ agentCmd: "pi" }), { agentKind: "pi", pinnedCommand: new AssistantService({ root }).command() });
   backend.setProgramStatus("assistant", { id: "", state: "done", updatedAtMs: 1000 });
   // The mock backend's default observation is `unverified`: the line was written, pi's status did not move within the window.
   const config = { devDir: root, port: 19791, pinnedSessions: [{ name: "assistant", cwd: folder, command: ["pi"], harness: "pi" }] };
@@ -213,7 +213,7 @@ test("a pi dialog with no semantic status reports needs-input in /api/focus stat
   let captures = 0;
   const dialog = " Trust project folder?\n /x/assistant\n\n → Trust\n   Do not trust\n\n ↑↓ navigate  enter select  escape/ctrl+c cancel\n\n────\n\n\n";
   const backend = new MockBackend({ capturePane: async () => { captures++; return dialog; } });
-  await backend.createSession("assistant", folder, "pi", () => ({ agentCmd: "pi" }), { agentKind: "pi" });
+  await backend.createSession("assistant", folder, "pi", () => ({ agentCmd: "pi" }), { agentKind: "pi", pinnedCommand: new AssistantService({ root }).command() });
   const config = { devDir: root, port: 19865, pinnedSessions: [{ name: "assistant", cwd: folder, command: ["pi"], harness: "pi" }] };
   const ctx = createServerContext({ backend, config, assistantService: new AssistantService({ root, readConfig: () => config }) });
   try {
@@ -242,7 +242,7 @@ test("a relaunched assistant never shows the previous incarnation's cached verdi
   let captures = 0;
   let screen = " Trust project folder?\n /x/assistant\n\n → Trust\n   Do not trust\n\n ↑↓ navigate  enter select  escape/ctrl+c cancel\n";
   const backend = new MockBackend({ capturePane: async () => { captures++; return screen; } });
-  await backend.createSession("assistant", folder, "pi", () => ({ agentCmd: "pi" }), { agentKind: "pi" });
+  await backend.createSession("assistant", folder, "pi", () => ({ agentCmd: "pi" }), { agentKind: "pi", pinnedCommand: new AssistantService({ root }).command() });
   // a disable → enable (or a crash relaunch) gives the same name a new session id
   let incarnation = 1;
   const identities = backend.listIdentities.bind(backend);
@@ -282,7 +282,7 @@ test("enable requires login confirmation, seeds only focus skill, resumes by pat
     expect(service.command()).toContain("--no-approve");
     expect(service.command()).not.toContain("--approve");
     expect(service.pins[0]?.command).toContain("--no-approve");
-    expect(readFileSync(join(service.folder, "AGENTS.md"), "utf8")).toContain("Never kill/create/send");
+    expect(readFileSync(join(service.folder, "AGENTS.md"), "utf8")).toContain("Never kill/send");
     expect(existsSync(join(service.folder, ".pi/skills/wolfpack-tailnet-control"))).toBe(false);
     const file = join(service.folder, "sessions/2026_focus-assistant.jsonl");
     writeFileSync(file, "conversation");
@@ -311,8 +311,12 @@ test("enable requires login confirmation, seeds only focus skill, resumes by pat
     expect(readFileSync(skill, "utf8")).toContain("options with a recommendation → `suggest`");
     expect(readFileSync(skill, "utf8")).toContain("wolfpack focus next next.json");
     expect(readFileSync(skill, "utf8")).toContain("never use `wolfpack session read` for triage");
+    expect(readFileSync(skill, "utf8")).toContain("first sentence is the ask as `<verb> <what>` (≤80 characters)");
     expect(readFileSync(skill, "utf8")).toContain("`wolfpack session send` and kill remain forbidden");
-    expect(readFileSync(skill, "utf8")).toContain("session creation is forbidden except only inside a plan conversation the user opened, after the user explicitly confirms the exact proposed");
+    expect(readFileSync(skill, "utf8")).toContain("session creation is forbidden for the worker");
+    const chatSkill = readFileSync(join(service.folder, ".pi/skills/wolfpack-focus-chat/SKILL.md"), "utf8");
+    expect(chatSkill).toContain("session creation is forbidden except only inside a plan conversation the user opened, after the user explicitly confirms the exact proposed");
+    expect(chatSkill).toContain("never process inboxes, ack activity, write day notes, day-summary, next/take, or note");
     expect(readFileSync(skill, "utf8")).toContain("5–8 bullets total");
     expect(readFileSync(skill, "utf8")).toContain("### done");
     expect(readFileSync(skill, "utf8")).toContain("### still open");

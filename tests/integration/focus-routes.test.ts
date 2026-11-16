@@ -100,15 +100,16 @@ test("peer clients use normal owner auth for focus reads and CAS writes; non-hom
 test("local focus stays readable and writable when the assistant's broker disconnects", async () => {
   const root = mkdtempSync(join(tmpdir(), "focus-broker-down-"));
   const { AssistantService } = await import("../../src/server/assistant-service.ts");
-  const assistantService = new AssistantService({ root, readConfig: () => null });
-  Object.defineProperty(assistantService, "enabled", { get: () => true });
+  const config: import("../../src/config.ts").Config = { devDir: root, port: 19643 };
+  const assistantService = new AssistantService({ root, readConfig: () => config });
+  config.pinnedSessions = [{ name: "assistant", cwd: assistantService.folder, command: assistantService.command(), harness: "pi" }];
   const backend = new MockBackend({ sessions: ["assistant"] });
   const facts = await backend.listSessionFacts();
   const initial = facts[0]!;
-  const live = { ...initial, identity: { ...initial.identity!, projectPath: assistantService.folder } };
+  const live = { ...initial, pinnedCommand: assistantService.command(), identity: { ...initial.identity!, projectPath: assistantService.folder, agentKind: "pi" } };
   let down = false;
   backend.listSessionFacts = async () => { if (down) throw new Error("broker not connected"); return [live]; };
-  const ctx = createServerContext({ backend, config: null, assistantService, observationCacheTtlMs: 0, focusStore: new FocusStore(join(root, "focus.json")), taskRelayRoot: join(root, "relay") });
+  const ctx = createServerContext({ backend, config, assistantService, observationCacheTtlMs: 0, focusStore: new FocusStore(join(root, "focus.json")), taskRelayRoot: join(root, "relay") });
   const routes = createRoutes(ctx);
   const server = createServer((req, res) => { void routes[`${req.method} ${new URL(req.url!, "http://localhost").pathname}`]!(req, res); });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));

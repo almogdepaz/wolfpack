@@ -41,7 +41,7 @@ test("sgt just booted: catching up since … with machine count and cards", asyn
   await expect(block.locator(".focus-nudge")).toHaveCount(0);
   expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
   await shot(page, "catching-up", info.project.name === "desktop");
-  await block.getByRole("button", { name: "Open assistant", exact: true }).click();
+  await block.getByRole("button", { name: "Open assistant page", exact: true }).click();
   await expect(page.locator("#assistant-content .focus-header")).toContainText("2 machines");
 });
 
@@ -57,7 +57,7 @@ test("stale, peer not reached and unacked inbox; catch up now sends the catch-up
   await expect(block).toContainText("look at its terminal, then");
   await expect(page.locator("#sidebar-assistant")).toHaveText(/needs you/);
   await expect(page.locator("#sidebar-assistant .dot")).toHaveClass(/yellow/);
-  await expect(block.locator(".focus-header > .dot")).toHaveClass(/yellow/);
+  await expect(block.locator(".focus-header .dot")).toHaveClass(/yellow/);
   expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
   await shot(page, "stale", info.project.name === "desktop");
   await expect(block.getByRole("button", { name: "catch up now" })).toHaveCount(1);
@@ -75,7 +75,7 @@ test("yesterday row opens the day note dialog; mark read hides it on every devic
   mkdirSync(join(server.home, ".wolfpack/assistant/days"), { recursive: true });
   writeFileSync(join(server.home, ".wolfpack/assistant/days", `${yesterday}.md`), `# ${yesterday}\n\n## sessions\n\n- prompt-project (/tmp, pi) · 3 state changes\n\n## assistant\n\nShipped the focus view. Carried: broker leak.\n`);
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-view");
   await expect(view.locator(".focus-yesterday")).toContainText("yesterday· 1 question for you · 2 carried over · 4 done");
   expect((await new AxeBuilder({ page }).include("#assistant-view").analyze()).violations).toEqual([]);
@@ -91,7 +91,7 @@ test("yesterday row opens the day note dialog; mark read hides it on every devic
 
 test("assistant timing settings validate and save to the home machine's bridge settings", async ({ page }, info) => {
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   await page.locator("#assistant-view").getByRole("button", { name: /assistant.*settings/i }).click();
   const form = page.getByRole("form", { name: "Assistant routine timing" });
   const quiet = form.getByRole("spinbutton", { name: "Day review after quiet (minutes)" });
@@ -151,7 +151,7 @@ test("an assistant error beside a live session is a note, not a failed state; wi
   await withAssistant({ error: "pinned session failed repeatedly; disable and enable to retry", session: undefined, sessionId: undefined, state: "starting" });
   await page.goto(server.baseUrl);
   await expect(block.locator(".focus-header")).toContainText("failed");
-  await expect(block.locator(".focus-header > .dot")).toHaveClass(/red/);
+  await expect(block.locator(".focus-header .dot")).toHaveClass(/red/);
   await expect(page.locator("#sidebar-assistant")).toHaveText(/failed/);
 });
 
@@ -161,7 +161,7 @@ test("the day-note button is disabled when the home server has no note for that 
   const current = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
   expect((await page.request.post(`${server.baseUrl}/api/focus`, { data: { expectedRevision: current.revision, ops: [{ type: "day-summary", summary: { date, done: 1, carried: 0, questions: 0 } }] } })).ok()).toBe(true);
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   const read = page.locator("#assistant-view").getByRole("button", { name: `Read day note for ${date}` });
   await expect(read).toBeDisabled();
   await expect(page.locator("#assistant-view")).not.toContainText("no day note");

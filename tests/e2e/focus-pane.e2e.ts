@@ -88,11 +88,10 @@ test("QA-22/23: narrow pane rows yield context before kind text and pane control
   await openFocus(page);
   await hydrated(page);
   const title = page.locator("#assistant-content .focus-next .focus-title").first();
-  await expect(title).toContainText("broker-leak needs approval");
+  await expect(title).toHaveText("Do you want to continue? (y/n)");
   const measure = await title.evaluate(el => {
     const range = document.createRange();
-    range.setStart(el.firstChild!, 0);
-    range.setEnd(el.firstChild!, "broker-leak needs approval".length);
+    range.selectNodeContents(el.querySelector("strong")!);
     return { available: el.getBoundingClientRect().width, label: range.getBoundingClientRect().width };
   });
   await page.screenshot({ path: info.outputPath("pane-1280.png"), animations: "disabled" });
@@ -157,7 +156,10 @@ for (const outage of ["home", "broker"] as const) test(`QA-27: ${outage} outage 
     if (down && outage === "home") return route.abort();
     const response = await route.fetch();
     const body = await response.json();
-    if (down) body.assistant = { ...body.assistant, state: "unknown", session: undefined, sessionId: undefined, unavailableReason: "sessions unavailable; reconnecting to the terminal broker" };
+    if (down) {
+      const unavailable = { state: "unknown", session: undefined, sessionId: undefined, unavailableReason: "sessions unavailable; reconnecting to the terminal broker" };
+      body.assistant = { ...body.assistant, ...unavailable, chat: { ...body.assistant.chat, ...unavailable } };
+    }
     await route.fulfill({ response, json: body });
   });
   await openFocus(page);
@@ -179,9 +181,11 @@ for (const outage of ["home", "broker"] as const) test(`QA-27: ${outage} outage 
   await page.screenshot({ path: info.outputPath(`pane-${outage}-unavailable.png`), animations: "disabled" });
   const reasonInset = await page.locator("#assistant-pane-empty").evaluate(el => {
     const range = document.createRange(); range.setStart(el.firstChild!, 0); range.setEnd(el.firstChild!, 1);
-    return range.getBoundingClientRect().left - document.getElementById("assistant-pane-status")!.getBoundingClientRect().left;
+    // The header now leads with the visible role label (chat/background); the reason aligns with the header's leading text.
+    return range.getBoundingClientRect().left - document.getElementById("assistant-pane-role")!.getBoundingClientRect().left;
   });
-  expect.soft(Math.abs(reasonInset), "QA-31: empty reason aligns with the pane header status").toBeLessThanOrEqual(1);
+  await expect(page.locator("#assistant-pane-role")).toBeVisible();
+  expect.soft(Math.abs(reasonInset), "QA-31: empty reason aligns with the pane header's leading role label").toBeLessThanOrEqual(1);
   down = false;
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await hydrated(page);

@@ -1,3 +1,4 @@
+import { FOCUS_ASSISTANT_SESSION_NAMES, isFocusAssistantName, isFocusAssistantSession, type FocusAssistantRole } from "../focus-session.js";
 import { AGENT_KIND } from "../agent-kind.js";
 import { AGENT_STATUS_AUTHORITY, AGENT_STATUS_STATE } from "../agent-status-contract.js";
 import type { ServerContext } from "./context.js";
@@ -23,7 +24,7 @@ export class FocusRuntime {
     return next;
   }
   private sampledSessionId?: string;
-  private lastVerdict?: { at: number; id: string; verdict: { idle: boolean; needsInput: boolean } | undefined };
+  private readonly lastVerdicts = new Map<FocusAssistantRole, { at: number; id: string; verdict: { idle: boolean; needsInput: boolean } | undefined }>();
   private timer?: ReturnType<typeof setInterval>;
   private tickFlight?: Promise<void>;
   private lifetime = 0;
@@ -34,8 +35,10 @@ export class FocusRuntime {
     this.pins = new PinnedSessionService({ backend: ctx.backend,
       pins: () => {
         pinLifetime = this.lifetime;
-        return (ctx.assistantService.config?.pinnedSessions ?? []).filter(pin => this.homeIsLocal() || pin.name !== "assistant" || pin.cwd !== ctx.assistantService.folder);
+        return (ctx.assistantService.config?.pinnedSessions ?? []).filter(pin => this.homeIsLocal() || !isFocusAssistantName(pin.name) || pin.cwd !== ctx.assistantService.folder);
       },
+      managedAssistantPin: pin => ctx.assistantService.isManagedPin(pin),
+      managedAssistantSession: fact => ctx.assistantService.isManagedSession(fact),
       prepareLaunch: pin => {
         if (ctx.assistantService.isManagedPin(pin) && pinLifetime !== this.lifetime) throw new Error("assistant launch revoked: runtime stopped or restarted");
         return ctx.assistantService.prepareLaunch(pin);
@@ -45,6 +48,9 @@ export class FocusRuntime {
       const prompt = origin === "routine" ? ctx.assistantService.routinePrompt(text) : { text };
       const { isAllowedSession } = await import("./http.js");
       if (!(await isAllowedSession("assistant", ctx.backend))) throw new Error("assistant session unavailable");
+      const worker = (await ctx.backend.listSessionFacts()).find(f => f.alive && f.name === "assistant"
+        && f.identity?.projectPath === ctx.assistantService.folder && f.identity.wolfpackSessionId === id);
+      if (!worker || (this.requiresManagedProof("assistant", worker.identity?.agentKind) && !ctx.assistantService.isManagedSession(worker))) throw new Error("routine target is not the current assistant worker");
       const result = await ctx.backend.sendAndObserveSubmission(id, { text: prompt.text, noEnter: false, ensureSubmitted: true, observeMs: 1500 });
       const delivery = sendDelivery(result.outcome);
       ctx.assistantService.routineSent(prompt.generation);
@@ -82,8 +88,20 @@ export class FocusRuntime {
   stop(): void { this.lifetime++; this.pins.stop(); this.routines.stop(); clearInterval(this.timer); this.timer = undefined; this.queue.clear("server stopped; queue discarded"); }
   async status() {
     const service = this.ctx.assistantService;
+    const [worker, chat] = await Promise.all([this.roleStatus("assistant"), this.roleStatus("assistant-chat")]);
+    return { ...worker, enabled: service.enabled && this.homeIsLocal(), folder: service.folder, queued: this.queue.size,
+      error: service.enabled && this.homeIsLocal() ? this.queue.error ?? this.pins.errors.assistant : undefined, chat };
+  }
+  /** Only a matching live non-Pi worker gets the legacy adapter exemption; every live Pi needs role proof. */
+  private requiresManagedProof(role: FocusAssistantRole, liveHarness: string | undefined): boolean {
+    const pin = this.ctx.assistantService.pins.find(p => p.name === role && p.cwd === this.ctx.assistantService.folder);
+    return role === "assistant-chat" || !pin || liveHarness === AGENT_KIND.PI.id || pin.harness !== liveHarness;
+  }
+  private async roleStatus(role: FocusAssistantRole) {
+    const service = this.ctx.assistantService;
     const enabled = service.enabled && this.homeIsLocal();
-    const session = (await this.ctx.sessionObservation.observeDashboardSessions()).find(s => s.name === "assistant" && s.identity?.projectPath === service.folder);
+    const session = (await this.ctx.sessionObservation.observeDashboardSessions()).find(s => s.name === role && s.identity?.projectPath === service.folder
+      && (!this.requiresManagedProof(role, s.identity?.agentKind) || isFocusAssistantSession({ ...s, pinned: true })));
     const id = session?.identity?.wolfpackSessionId;
     // Focus is a local document; optional live terminal enrichment must not
     // make its reads fail when the broker disconnects (including mid-sample).
@@ -91,29 +109,31 @@ export class FocusRuntime {
       || (session?.runtimeState.authority === AGENT_STATUS_AUTHORITY.BROKER && session.runtimeState.state === AGENT_STATUS_STATE.UNKNOWN);
     let verdict: { idle: boolean; needsInput: boolean } | undefined;
     if (id && enabled && !unavailable) {
-      try { verdict = await this.verdict(id); }
+      try { verdict = await this.verdict(id, role); }
       catch (error) {
         unavailable = true;
         log.warn("assistant terminal status unavailable", { error: errMsg(error) });
       }
     }
-    if (unavailable) this.lastVerdict = undefined;
+    if (unavailable) this.lastVerdicts.delete(role);
     // A harness dialog (pi's trust / login / resume selects) has no semantic status and reads as idle from the
     // screen fallback; the harness verdict is what the user needs to see, with the terminal as the action.
     const state = unavailable ? AGENT_STATUS_STATE.UNKNOWN : verdict?.needsInput ? AGENT_STATUS_STATE.NEEDS_INPUT : session?.runtimeState.state ?? (enabled ? "starting" : "off");
-    return { enabled, folder: service.folder, session: unavailable ? undefined : session?.name, sessionId: unavailable ? undefined : id,
+    return { session: unavailable ? undefined : session?.name, sessionId: unavailable ? undefined : id,
       ...(unavailable && { unavailableReason: "sessions unavailable; reconnecting to the terminal broker" }),
-      state, idle: verdict?.idle ?? false, queued: this.queue.size,
-      error: enabled ? this.queue.error ?? this.pins.errors.assistant : undefined };
+      state, idle: verdict?.idle ?? false, needsInput: verdict?.needsInput ?? false,
+      error: enabled ? this.pins.errors[role] : undefined };
   }
   /** Every dashboard polls `/api/focus`; one screen sample serves them for a few seconds, per incarnation (a relaunch resamples). */
-  private async verdict(id: string): Promise<{ idle: boolean; needsInput: boolean } | undefined> {
+  private async verdict(id: string, role: FocusAssistantRole): Promise<{ idle: boolean; needsInput: boolean } | undefined> {
     const now = Date.now();
-    if (!this.lastVerdict || this.lastVerdict.id !== id || now - this.lastVerdict.at > VERDICT_TTL_MS) {
-      const sample = await this.sample();
-      this.lastVerdict = { at: now, id, verdict: sample && { idle: sample.idle, needsInput: sample.needsInput } };
+    let cached = this.lastVerdicts.get(role);
+    if (!cached || cached.id !== id || now - cached.at > VERDICT_TTL_MS) {
+      const sample = await this.sample(role);
+      cached = { at: now, id, verdict: sample && sample.id === id ? { idle: sample.idle, needsInput: sample.needsInput } : undefined };
+      this.lastVerdicts.set(role, cached);
     }
-    return this.lastVerdict.verdict;
+    return cached.verdict;
   }
   private requestTick(): void {
     void this.tick().then(() => { this.tickError = undefined; }, error => {
@@ -131,49 +151,56 @@ export class FocusRuntime {
       if (lifetime !== this.lifetime) return;
       if (sample) await this.queue.tick(sample);
       const service = this.ctx.assistantService;
-      if (!active() || !service.pins.some(pin => service.isManagedPin(pin)) || !this.homeIsLocal() || this.queue.busy || !service.conversationChanged()) return;
-      // Share the routine lock, not its cached status: a pull might still be about to publish an inbox.
-      await this.routines.withNoInbox(async () => {
-        const userActive = () => {
-          const attached = this.ctx.terminals.activePtySessions.get("assistant");
-          return !!(attached?.viewer || attached?.pendingViewer) || this.ctx.activityRecorder.hasRecentInput("assistant");
+      if (!active() || !this.homeIsLocal()) return;
+      for (const role of FOCUS_ASSISTANT_SESSION_NAMES) {
+        if (!active()) return;
+        if (!service.pins.some(pin => pin.name === role && service.isManagedPin(pin)) || (role === "assistant" && this.queue.busy) || !service.conversationChanged(role)) continue;
+        const rotate = async () => {
+          const userActive = () => {
+            const attached = this.ctx.terminals.activePtySessions.get(role);
+            return !!(attached?.viewer || attached?.pendingViewer) || this.ctx.activityRecorder.hasRecentInput(role);
+          };
+          if (userActive()) return;
+          const current = await this.sample(role);
+          const workerBusy = () => role === "assistant" && this.queue.busy;
+          if (!active() || !current?.idle || current.needsInput || workerBusy() || !service.enabled || !this.homeIsLocal()) return;
+          // Recheck incarnation and program token after asynchronous sampling; never kill by reusable name.
+          const facts = await this.ctx.backend.listSessionFacts();
+          const fact = facts.find(f => f.alive && f.identity?.wolfpackSessionId === current.id);
+          const state = programStatusSource(fact?.programStatus, { observedAt: new Date().toISOString() });
+          if (!active() || !fact || fact.programStatus?.updatedAtMs !== current.programAt
+            || (fact.programStatus && (!state || !piHarness.isIdle(state)))
+            || (current.programAt === undefined && (!current.fallback || current.fallback.outputSequence === undefined
+              || fact.outputSequence !== current.fallback.outputSequence || !genericHarness.isIdle(current.fallback)))
+            || workerBusy() || userActive() || !service.enabled || !this.homeIsLocal()) return;
+          try { service.preflightConversation(role); }
+          catch (error) { this.pins.errors[role] = errMsg(error); return; }
+          await this.ctx.backend.killSessionById(current.id);
+          // stop() revokes this continuation even if the same runtime has since started again.
+          if (!active()) return;
+          this.pins.reset(role);
+          await this.pins.tick();
+          if (!active()) return;
+          this.lastVerdicts.delete(role);
         };
-        if (userActive()) return;
-        const current = await this.sample();
-        if (!active() || !current?.idle || current.needsInput || this.queue.busy || !service.enabled || !this.homeIsLocal()) return;
-        // Recheck incarnation and program token after asynchronous sampling; never kill by reusable name.
-        const facts = await this.ctx.backend.listSessionFacts();
-        const fact = facts.find(f => f.alive && f.identity?.wolfpackSessionId === current.id);
-        const state = programStatusSource(fact?.programStatus, { observedAt: new Date().toISOString() });
-        if (!active() || !fact || fact.programStatus?.updatedAtMs !== current.programAt
-          || (fact.programStatus && (!state || !piHarness.isIdle(state)))
-          || (current.programAt === undefined && (!current.fallback || current.fallback.outputSequence === undefined
-            || fact.outputSequence !== current.fallback.outputSequence || !genericHarness.isIdle(current.fallback)))
-          || this.queue.busy || userActive() || !service.enabled || !this.homeIsLocal()) return;
-        try { service.preflightConversation(); }
-        catch (error) { this.pins.errors.assistant = errMsg(error); return; }
-        await this.ctx.backend.killSessionById(current.id);
-        // stop() revokes this continuation even if the same runtime has since started again.
-        if (!active()) return;
-        this.pins.reset("assistant");
-        await this.pins.tick();
-        if (!active()) return;
-        this.lastVerdict = undefined;
-      });
+        // Only the worker shares the routine lock: chat never processes an inbox.
+        if (role === "assistant") await this.routines.withNoInbox(rotate);
+        else await rotate();
+      }
     }).finally(() => { this.tickFlight = undefined; });
   }
   /** The assistant's current incarnation, whether its harness is resting, and whether it is waiting on the user. */
-  private async sample(): Promise<{ id: string; idle: boolean; needsInput: boolean; token: string; programAt?: number; fallback?: { screen: string; quietMs: number; outputSequence?: string } } | undefined> {
+  private async sample(role: FocusAssistantRole = "assistant"): Promise<{ id: string; idle: boolean; needsInput: boolean; token: string; programAt?: number; fallback?: { screen: string; quietMs: number; outputSequence?: string } } | undefined> {
     const service = this.ctx.assistantService;
     if (!service.enabled || !this.homeIsLocal()) return undefined;
-    const session = (await this.ctx.sessionObservation.observeDashboardSessions()).find(s => s.name === "assistant" && s.identity?.projectPath === service.folder);
+    const session = (await this.ctx.sessionObservation.observeDashboardSessions()).find(s => s.name === role && s.identity?.projectPath === service.folder);
     if (!session?.identity?.wolfpackSessionId) return undefined;
     const fact = (await this.ctx.backend.listSessionFacts()).find(f => f.alive && f.identity?.wolfpackSessionId === session.identity?.wolfpackSessionId);
-    if (!fact) return undefined;
+    if (!fact || (this.requiresManagedProof(role, fact.identity?.agentKind) && !service.isManagedSession(fact))) return undefined;
     // A whole turn can finish between polls. The broker's current program timestamp
     // fences both stale idle projections and repeated done states without a sampled working state.
     const state = programStatusSource(fact.programStatus, { observedAt: new Date().toISOString() }) ?? session.runtimeState;
-    const adapter = service.pins.find(p => p.name === "assistant")?.harness === AGENT_KIND.PI.id ? piHarness : genericHarness;
+    const adapter = service.pins.find(p => p.name === role)?.harness === AGENT_KIND.PI.id ? piHarness : genericHarness;
     const screen = adapter.needsScreen(state) ? await this.ctx.backend.capturePane(session.name, { scrollbackLines: 0 }) : undefined;
     const quietMs = Date.now() - Date.parse(session.activity.lastRenderedActivityAt ?? session.runtimeState.changedAt);
     const facts = { ...state, screen, quietMs };

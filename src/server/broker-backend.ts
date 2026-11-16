@@ -68,6 +68,7 @@ import {
   detectAgentKindFromCommandArgs,
   resolveAgentCommand,
 } from "../agent-kind.js";
+import { EXEC_SESSION_COMMAND, recordedPinnedCommand } from "./pinned-command.js";
 import { SHELL } from "./shell.js";
 import { CLAUDE_INTEGRATION } from "../claude-integration.js";
 import { claudeTaskIntegrationState } from "../config.js";
@@ -672,7 +673,9 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       const identity = identitiesById.get(s.id);
       const outputSequence = brokerOutputSequence(s.output_seq);
       const programStatus = parseBrokerProgramStatusRecord(s.program_status);
+      const pinnedCommand = recordedPinnedCommand(s.command);
       facts.push({
+        ...(pinnedCommand && { pinnedCommand }),
         name: s.name,
         alive: s.alive,
         ...(outputSequence !== undefined && { outputSequence }),
@@ -791,10 +794,10 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       shellCmd = SHELL;
     } else if (options?.pinnedCommand !== undefined) {
       if (options.pinnedCommand.length === 0 || options.pinnedCommand.some(arg => typeof arg !== "string" || arg.includes("\0"))) throw new Error("invalid pinned command");
-      shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; exec "$@"`;
+      shellCmd = EXEC_SESSION_COMMAND;
       commandArgs = [...options.pinnedCommand];
     } else if (taskWorker !== undefined && taskWorker.harness === AGENT_KIND.CLAUDE.id) {
-      shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; exec "$@"`;
+      shellCmd = EXEC_SESSION_COMMAND;
       commandArgs = [taskWorker.executable, "--channels", CLAUDE_INTEGRATION.channelSpec];
     } else if (taskWorker !== undefined) {
       // Test and compatibility callers can provide the pre-policy launch shape;
@@ -809,7 +812,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
         ...(workerPiOptions.offline ? ["--offline"] : []),
         ...(workerPiOptions.verbose ? ["--verbose"] : []),
       ];
-      shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; exec "$@"`;
+      shellCmd = EXEC_SESSION_COMMAND;
       commandArgs = [taskWorker.executable, ...workerPiArgs];
     } else {
       // Values travel as positional argv ("$1", "$2", ...), never inside the shell text.

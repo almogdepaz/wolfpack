@@ -7796,6 +7796,30 @@
         "pinned": {
           "type": "boolean"
         },
+        "focusAssistant": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "enum": [
+                "assistant",
+                "assistant-chat"
+              ]
+            },
+            "folder": {
+              "type": "string"
+            },
+            "sessionId": {
+              "$ref": "#/$defs/SessionId"
+            }
+          },
+          "required": [
+            "name",
+            "folder",
+            "sessionId"
+          ],
+          "additionalProperties": false,
+          "description": "Owning focus home's managed-role provenance, bound to this UUID and configured folder; absent for unrelated namesakes and unproven launches"
+        },
         "activity": {
           "$ref": "#/$defs/ActivityObservation"
         },

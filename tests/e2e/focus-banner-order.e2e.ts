@@ -43,7 +43,7 @@ for (const width of [1440, 1280, 1279, 390]) test(`assistant banner leads sessio
   const block = (await page.locator("#dashboard-focus").boundingBox())!;
   const controls = (await page.locator("#session-dashboard-controls").boundingBox())!;
   expect(controls.y).toBeGreaterThanOrEqual(block.y + block.height);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).focus();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).focus();
   await page.keyboard.press("Shift+Tab");
   // Disclosure precedes the banner content, not session status/filter/search.
   await expect(page.locator('#dashboard-focus [data-focus-action="toggle-dashboard"]')).toBeFocused();

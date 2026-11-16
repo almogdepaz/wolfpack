@@ -147,7 +147,7 @@
     <section id="assistant-view" class="view" aria-label="Assistant" aria-hidden="true" inert>
       <div class="assistant-column" tabindex="-1"><header><button id="assistant-back" type="button">← Sessions</button><h1>Assistant</h1><button id="assistant-pane-skip" type="button" aria-label="Go to assistant terminal" aria-controls="assistant-pane" hidden>Terminal ›</button></header><div id="assistant-content"></div><p id="focus-status" role="status" aria-live="polite"></p></div>
       <section id="assistant-pane" aria-label="Assistant terminal" aria-describedby="assistant-pane-keys" hidden>
-        <div class="focus-terminal-header"><span id="assistant-pane-keys" class="visually-hidden">Press Shift+Escape to return to the focus list.</span><span id="assistant-pane-status" class="focus-title" role="status">connecting</span><button id="assistant-pane-focus" type="button" hidden disabled>Focus terminal</button><button id="assistant-pane-hide" type="button" aria-label="Hide assistant terminal">hide</button><button id="assistant-pane-list" type="button" aria-keyshortcuts="Shift+Escape">Back to list</button></div>
+        <div class="focus-terminal-header"><span id="assistant-pane-keys" class="visually-hidden">Press Shift+Escape to return to the focus list.</span><strong id="assistant-pane-role">chat</strong><span id="assistant-pane-status" class="focus-title" role="status">connecting</span><button id="assistant-pane-focus" type="button" hidden disabled>Focus terminal</button><button id="assistant-pane-hide" type="button" aria-label="Hide assistant terminal">hide</button><button id="assistant-pane-list" type="button" aria-keyshortcuts="Shift+Escape">Back to list</button></div>
         <div id="assistant-pty"><p id="assistant-pane-empty" class="focus-empty" hidden></p><div id="assistant-pty-input" style="height:100%"></div></div>
       </section>
     </section>
@@ -279,8 +279,8 @@
       <div class="list">
         <section class="settings-section" id="settings-assistant" aria-label="Assistant settings">
           <h2 class="settings-label">Assistant</h2><p id="assistant-setting-status" class="assistant-setting-state"></p>
-          <p class="assistant-setting-help">Keeps a short list of what you want to get done, orders your live sessions by it, and writes a note when the day goes quiet. Runs as one persistent pi terminal on the home machine.</p>
-          <div class="assistant-setting-actions"><button id="assistant-setting-toggle" class="discover-btn" type="button">Enable assistant…</button><button id="assistant-setting-open" class="discover-btn" type="button" hidden>Open assistant ›</button></div>
+          <p class="assistant-setting-help">Keeps a short list of what you want to get done, orders your live sessions by it, and writes a note when the day goes quiet. Runs as uninterrupted chat and a separate background pi worker on the home machine.</p>
+          <div class="assistant-setting-actions"><button id="assistant-setting-toggle" class="discover-btn" type="button">Enable assistant…</button><button id="assistant-setting-open" class="organization-secondary" type="button" hidden>Open assistant ›</button><button id="assistant-setting-chat" class="discover-btn" type="button" aria-label="Talk to assistant" hidden>talk ›</button><button id="assistant-setting-worker" class="organization-secondary" type="button" aria-label="Inspect background terminal" hidden>inspect background ›</button></div>
           <p id="assistant-setting-error" class="notification-setting-status" data-state="error" role="status" aria-live="polite"></p>
           <div class="assistant-home"><label class="settings-toggle" for="assistant-setting-home-select"><span>Home machine</span><select id="assistant-setting-home-select" aria-describedby="assistant-setting-home" disabled></select></label></div>
           <p id="assistant-setting-home" class="assistant-setting-help"></p>
@@ -480,8 +480,8 @@
         <div id="delegation-grid-container"></div>
       </section>
       <nav id="assistant-terminal-header" class="focus-terminal-header" aria-label="Assistant terminal" hidden>
-        <strong>assistant</strong><span id="assistant-terminal-state" role="status"></span>
-        <button id="assistant-terminal-focus" type="button">Focus</button><button id="assistant-terminal-inspect" type="button">Inspect</button><button id="assistant-terminal-stop" type="button">Disable…</button>
+        <strong id="assistant-terminal-role">chat</strong><span id="assistant-terminal-state" role="status"></span>
+        <button id="assistant-terminal-focus" type="button">Focus</button><button id="assistant-terminal-inspect" type="button">Inspect</button><button id="assistant-terminal-stop" type="button">Disable assistant…</button>
       </nav>
       <div id="desktop-terminal-container"></div>
       <div id="desktop-grid-container"></div>

@@ -47,13 +47,13 @@ for (const [state, inputKind, unseen, label, verb] of [
   await page.goto(server.baseUrl);
   await expect(page.locator('#sidebar-session-filter [data-session-card-view="need"] .n')).toHaveAttribute("data-count", state === "needs-input" ? "1" : "0");
   await expect(page.locator('#sidebar-session-filter [data-session-card-view="fail"] .n')).toHaveAttribute("data-count", state === "failed" ? "1" : "0");
-  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText(count ? "1 needs you:" : "0");
+  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText(count ? "1 needs you:" : "nothing needs you");
   const block = page.locator("#dashboard-focus");
   await expect(block.locator(".focus-next > li")).toHaveCount(count);
-  await expect(block.locator(":scope > .focus-dashboard-body > small").last()).toContainText(count ? "1 needs you" : "0 · today");
+  await expect(block.locator(".focus-header .focus-count")).toHaveText(count ? "1 needs you" : "nothing needs you");
   if (label) {
     const row = block.locator(".focus-next > li");
-    await expect(row.locator(".focus-tag")).toHaveText(state === "failed" ? "failed" : verb === "open" ? "needs you" : verb!);
+    await expect(row.locator(".focus-tag")).toHaveText(state === "failed" ? "look" : inputKind === "question" ? "reply" : verb === "open" ? "decide" : verb!);
     await expandFocusCard(row);
     await expect(row.getByRole("button", { name: "Open prompt-project", exact: true })).toHaveText("open ›");
   }
@@ -61,14 +61,15 @@ for (const [state, inputKind, unseen, label, verb] of [
     const expand = block.getByRole("button", { name: /Expand assistant/ });
     if (await expand.count()) await expand.tap();
   }
-  await block.getByRole("button", { name: "Open assistant", exact: true }).click();
+  await block.getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-content");
   await expect(view.locator(".focus-next > li")).toHaveCount(count);
-  await expect(view.locator(":scope > h2").first()).toHaveText(`next ${count ? "1 needs you" : "0"}`);
+  await expect(view.locator(".focus-header .focus-count")).toHaveText(count ? "1 needs you" : "nothing needs you");
   if (label) await expect(view.getByRole("button", { name: "Open prompt-project", exact: true })).toHaveText("open ›");
   else await expect(view.locator(".focus-next, .focus-done")).toHaveCount(0);
   if (process.env.WOLFPACK_FOCUS_SHOTS && (inputKind === "permission" || state === "idle")) {
     mkdirSync(process.env.WOLFPACK_FOCUS_SHOTS, { recursive: true });
+    await expect(page.locator(".view.swiping")).toHaveCount(0);
     await page.screenshot({ path: join(process.env.WOLFPACK_FOCUS_SHOTS, `pinned-${state}-${width}.png`), fullPage: true });
   }
 });

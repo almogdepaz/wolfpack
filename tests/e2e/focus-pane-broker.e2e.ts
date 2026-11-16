@@ -31,7 +31,7 @@ async function focus(page: Page) {
   // ownership, snapshot/reflow, stdin and output use the real server + broker.
   await page.route(url => url.pathname === "/api/focus", route => route.fulfill({ json: {
     home: "private", installationId: "private", local: true, revision: 0, document: emptyFocus(),
-    assistant: { enabled: true, folder: root, state: "idle", session, sessionId, queued: 0 },
+    assistant: { enabled: true, folder: root, state: "idle", queued: 0, chat: { state: "idle", session, sessionId } },
   } }));
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();

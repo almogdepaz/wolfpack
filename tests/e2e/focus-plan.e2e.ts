@@ -42,7 +42,7 @@ for (const outcome of ["delivered", "pasted_not_submitted", "submitted"]) test(`
     await expect(page.locator("#assistant-pane")).toBeHidden();
     release();
     await expect(terminal(page)).toBeVisible();
-    expect(sends).toEqual([{ session: "assistant", text: "plan “prepare release” (task plan-task, project /work/release, on workstation): ", noEnter: true }]);
+    expect(sends).toEqual([{ session: "assistant-chat", text: "plan “prepare release” (task plan-task, project /work/release, on workstation): ", noEnter: true }]);
     expect(creates).toEqual([]);
     await expect(page.locator("#projects-view")).not.toHaveClass(/visible/);
   } finally { release(); }
@@ -79,8 +79,8 @@ for (const state of ["needs-input", "no-target"]) test(`plan is disabled for ${s
   await task(page);
   await page.route(url => url.pathname === "/api/focus", async route => {
     const response = await route.fetch(); const body = await response.json();
-    if (state === "needs-input") body.assistant.state = state;
-    else { delete body.assistant.session; delete body.assistant.sessionId; }
+    if (state === "needs-input") body.assistant.chat.state = state;
+    else { delete body.assistant.chat.session; delete body.assistant.chat.sessionId; }
     await route.fulfill({ response, json: body });
   });
   let sends = 0;
@@ -115,7 +115,7 @@ test("a dialog that appears after the rendered plan button prevents the paste", 
   let dialog = false;
   await page.route(url => url.pathname === "/api/focus", async route => {
     const response = await route.fetch(); const body = await response.json();
-    if (dialog) body.assistant.state = "needs-input";
+    if (dialog) body.assistant.chat.state = "needs-input";
     await route.fulfill({ response, json: body });
   });
   let sends = 0;
@@ -131,7 +131,7 @@ test("a remote home plan sends to the assistant machine, not the intention's mac
   await task(page, "prepare release", "/work/release");
   const home = await remoteFocusHome(page, server);
   const sends: string[] = [];
-  await page.route("**/api/session-control/send", async route => { sends.push(route.request().url()); expect(route.request().postDataJSON().session).toBe("assistant"); await route.fulfill({ json: { outcome: "delivered" }, headers: { "Access-Control-Allow-Origin": "*" } }); });
+  await page.route("**/api/session-control/send", async route => { sends.push(route.request().url()); expect(route.request().postDataJSON().session).toBe("assistant-chat"); await route.fulfill({ json: { outcome: "delivered" }, headers: { "Access-Control-Allow-Origin": "*" } }); });
   try {
     await page.goto(server.baseUrl); await home.ready();
     await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();

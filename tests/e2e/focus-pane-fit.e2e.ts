@@ -58,7 +58,7 @@ for (const width of [1440, 1280]) for (const entry of ["dashboard", "cached firs
   await page.goto(server.baseUrl);
   if (entry === "dashboard") {
     await expect(page.locator("#dashboard-focus .focus-next li").first()).toBeVisible();
-    await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+    await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   }
   await page.getByRole("button", { name: "Talk to assistant", exact: true }).click();
   await expect(page.locator("#assistant-pty")).toHaveClass(/hydrated/);
@@ -93,7 +93,7 @@ for (const width of [1440, 1280]) for (const motion of ["normal", "fallback race
     });
   });
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   await page.getByRole("button", { name: "Talk to assistant", exact: true }).click();
   await expect(page.locator("#assistant-pty")).toHaveClass(/hydrated/);
   // Sample beyond the normal resize settlement window, rather than accepting

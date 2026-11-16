@@ -32,7 +32,7 @@ test("QA-20: chips use remaining title space on render and resize, with an exact
   });
   await page.setViewportSize({ width: desktop ? 1024 : 390, height: 900 });
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   const row = page.locator("#assistant-content .focus-today > li").first();
   const chips = row.locator(":scope > .focus-chips");
   const counts: number[] = [];

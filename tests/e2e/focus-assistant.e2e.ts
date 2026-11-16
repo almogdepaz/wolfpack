@@ -94,7 +94,8 @@ test("enabling is one button and one dialog; the assistant then opens for its fi
   const block = page.locator("#dashboard-focus");
   await expect(block).toBeVisible();
   await expect(block.getByRole("button", { name: /plan.*ship focus/i })).toHaveCount(0);
-  await expect(block).toContainText("1 needs you · today 1 of 2 done");
+  await expect(block.locator(".focus-count")).toHaveText("1 needs you");
+  await expect(block).not.toContainText("today");
   expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
   await expandFocusCard(block.locator(".focus-next > li").filter({ hasText: "prompt-project" }));
   await block.getByRole("button", { name: "Open prompt-project", exact: true }).click();
@@ -115,9 +116,9 @@ test("cached home-offline focus is read-only and still ranks live sessions", asy
   await expect(page.locator("#dashboard-focus")).toContainText(/focus from (?:\w+ )?\d\d:\d\d · .+ offline · read-only/);
   // the cached copy carries the home's resolved name; no stale default machine name
   await expect(page.locator("#dashboard-focus")).toContainText("this machine offline");
-  await expect(page.locator("#dashboard-focus .focus-header > .dot")).toHaveClass(/red/);
+  await expect(page.locator("#dashboard-focus .focus-header .dot")).toHaveClass(/red/);
   await expect(page.locator("#sidebar-assistant .dot")).toHaveClass(/red/);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Add an intention" })).toBeDisabled();
   await expect(page.locator("#assistant-content .focus-next")).toBeVisible();
 });
@@ -134,10 +135,10 @@ test("before the first focus response a cached copy is shown as it was, never as
   await expect(block.locator(".focus-next")).toBeVisible();
   // one read while the response is held: a retrying assertion would pass once the response lands
   expect(await block.textContent()).not.toContain("offline");
-  expect(await block.locator(".focus-header > .dot").getAttribute("class")).not.toMatch(/red/);
+  expect(await block.locator(".focus-header .dot").getAttribute("class")).not.toMatch(/red/);
   expect(await page.locator("#sidebar-assistant .dot").getAttribute("class")).not.toMatch(/red/);
   // nothing is written to a home that is not known yet
-  await block.getByRole("button", { name: "Open assistant", exact: true }).click();
+  await block.getByRole("button", { name: "Open assistant page", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Add an intention" })).toBeDisabled();
   release();
   await expect(page.getByRole("textbox", { name: "Add an intention" })).toBeEnabled();
@@ -154,7 +155,7 @@ test("the assistant's own session is not a card and not counted; its terminal is
   await expect(page.locator("#session-list .card-name-text", { hasText: /^assistant$/ })).toHaveCount(0);
   await expect(page.locator("#session-list .machine-session-count").first()).toHaveText("4 sessions");
   await expect(page.locator("#dashboard-session-filter [data-session-card-view=idle] .n")).toHaveAttribute("data-count", "4");
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   await page.setViewportSize({ width: Math.min(page.viewportSize()!.width, 1279), height: 900 });
   await page.locator("#assistant-view").getByRole("button", { name: "Talk to assistant" }).click();
   await expect(page.locator("#assistant-terminal-header")).toBeVisible();
@@ -171,7 +172,7 @@ test("the assistant's own session is not a card and not counted; its terminal is
 
 test("disabling the assistant elsewhere while its page is open returns to sessions", async ({ page }) => {
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   await expect(page.locator("#assistant-view")).toHaveClass(/visible/);
   await page.route(url => url.pathname === "/api/focus", async route => {
     if (route.request().method() !== "GET") return route.continue();
@@ -187,7 +188,7 @@ test("disabling the assistant elsewhere while its page is open returns to sessio
 
 test("a failed disable from the terminal header is worded as the assistant's, not unpin & stop", async ({ page }) => {
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   await page.setViewportSize({ width: Math.min(page.viewportSize()!.width, 1279), height: 900 });
   await page.locator("#assistant-view").getByRole("button", { name: "Talk to assistant" }).click();
   await expect(page.locator("#assistant-terminal-stop")).toBeVisible();
@@ -204,7 +205,7 @@ test("a failed disable from the terminal header is worded as the assistant's, no
 
 test("talk opens the assistant terminal, Focus returns, there is no ask box, and the terminal header can disable it", async ({ page }) => {
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   // the terminal is how the user talks to the assistant: the page has no ask box and no reply area
   await expect(page.locator("#assistant-view").getByRole("textbox", { name: "Ask the assistant" })).toHaveCount(0);
   await expect(page.locator("#assistant-view .focus-reply")).toHaveCount(0);
