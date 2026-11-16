@@ -71,6 +71,27 @@ test("an unmanaged chat pin does not gain permission to share the worker folder"
   } finally { t.close(); }
 });
 
+test("unpinning an unrelated assistant-named pin preserves the managed chat", async () => {
+  const t = fixture();
+  try {
+    await t.service.enable(true);
+    t.config.pinnedSessions![0] = { name: "assistant", cwd: t.root, command: ["sh"], harness: "shell" };
+    t.service.unpin("assistant");
+    expect(t.config.pinnedSessions?.map(p => p.name)).toEqual(["assistant-chat"]);
+  } finally { t.close(); }
+});
+
+test("disable removes a partial managed pair without removing another pin", async () => {
+  const t = fixture();
+  try {
+    await t.service.enable(true);
+    t.config.pinnedSessions = t.config.pinnedSessions!.filter(p => p.name === "assistant-chat");
+    t.config.pinnedSessions.push({ name: "work", cwd: t.root, command: ["sh"], harness: "shell" });
+    t.service.disable();
+    expect(t.config.pinnedSessions.map(p => p.name)).toEqual(["work"]);
+  } finally { t.close(); }
+});
+
 test.each(["assistant", "assistant-chat"])("unpin-and-stop from %s disables and stops the complete managed pair", async role => {
   const t = fixture();
   await t.service.enable(true);

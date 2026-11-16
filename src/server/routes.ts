@@ -172,8 +172,8 @@ return {
     if (pinned) {
       await ctx.focusRuntime.pins.tick();
       ctx.assistantService.unpin(resolved.name);
+      if (resolved.name === "assistant" || managedAssistant) ctx.focusRuntime.queue.clear("assistant unpinned");
       if (managedAssistant) {
-        ctx.focusRuntime.queue.clear("assistant unpinned");
         const facts = await ctx.backend.listSessionFacts();
         for (const sibling of facts.filter(f => f.alive && f.name !== resolved.name && isFocusAssistantName(f.name)
           && f.identity?.projectPath === ctx.assistantService.folder)) {

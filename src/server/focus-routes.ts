@@ -69,7 +69,7 @@ export function createFocusRoutes(ctx: ServerContext) {
             await ctx.focusRuntime.pins.tick();
           } else {
             await ctx.focusRuntime.pins.tick();
-            ctx.assistantService.unpin("assistant");
+            ctx.assistantService.disable();
             ctx.focusRuntime.queue.clear("assistant disabled");
             const facts = await ctx.backend.listSessionFacts();
             for (const session of facts.filter(f => f.alive && isFocusAssistantName(f.name) && f.identity?.projectPath === ctx.assistantService.folder)) {

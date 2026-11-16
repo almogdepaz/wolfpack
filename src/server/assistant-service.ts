@@ -159,9 +159,15 @@ export class AssistantService {
     return { ...pin, command: this.command(role, fresh || previous?.readSkillPending === true),
       ...(role === "assistant-chat" && { onStarted: () => this.skillRead(generation, role) }) };
   }
+  disable(): void {
+    const config = this.config;
+    if (!config) throw new Error("valid wolfpack config required");
+    this.save({ ...config, pinnedSessions: (config.pinnedSessions ?? []).filter(p => !(isFocusAssistantName(p.name) && p.cwd === this.folder)) });
+  }
   unpin(name: string): void {
     const config = this.config;
     if (!config) throw new Error("valid wolfpack config required");
-    this.save({ ...config, pinnedSessions: (config.pinnedSessions ?? []).filter(p => isFocusAssistantName(name) ? !(isFocusAssistantName(p.name) && p.cwd === this.folder) : p.name !== name) });
+    if (config.pinnedSessions?.some(p => p.name === name && this.isManagedPin(p))) return this.disable();
+    this.save({ ...config, pinnedSessions: (config.pinnedSessions ?? []).filter(p => p.name !== name) });
   }
 }
