@@ -2412,6 +2412,7 @@ body:not(:has(#terminal-view.visible)) #workspace-restore,#workspace-restore[hid
 .assistant-setting-help { margin: 0 0 8px; color: var(--text-dim); font-size: 12px; line-height: 1.45; }
 .assistant-setting-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 8px; }
 .assistant-setting-actions .discover-btn { width: auto; margin: 0; }
+.assistant-setting-actions button:disabled { opacity: .5; cursor: default; }
 @media (min-width: 769px) { .assistant-timing .discover-btn { width: auto; } }
 #assistant-setting-error { margin-left: 0; }
 #assistant-setting-error:empty { display: none; }

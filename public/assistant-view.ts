@@ -142,7 +142,7 @@ export function createAssistantView(deps: {
     // A remote /focus response is local to its own server, not this browser.
     const home = machine || deps.homeMachine(focus!.home)?.key || "";
     if (home && !deps.sessionMachineKnown(home)) return null;
-    const target = { session: assistant.session, sessionId: assistant.sessionId, machine: home };
+    const target = { session: assistant.session, sessionId: assistant.sessionId, machine: home, role };
     // A focus-store fault must not disconnect a separately verified live terminal.
     // Cached identity alone cannot authorize a missing/replaced/offline session.
     return !focusUnavailable || deps.terminalSessionAvailable(target) ? target : null;
@@ -788,12 +788,12 @@ export function createAssistantView(deps: {
     const headerRole = activeTerminal?.machine === machine && activeTerminal.session === focus?.assistant?.session ? "assistant" : "assistant-chat";
     const currentStatus = roleStatus(headerRole);
     const label = document.getElementById("assistant-terminal-role");
-    if (label) label.textContent = headerRole === "assistant" ? "assistant · background" : "assistant · chat";
+    if (label) label.textContent = headerRole === "assistant" ? "background" : "chat";
     const terminalState = document.getElementById("assistant-terminal-state");
     if (terminalState) terminalState.textContent = currentStatus?.unavailableReason ? "sessions unavailable"
       : headerRole === "assistant" && focus?.assistant?.queued ? `${focus.assistant.queued} queued` : currentStatus?.error ?? currentStatus?.state ?? "starting";
     const paneLabel = document.getElementById("assistant-pane-role");
-    if (paneLabel) paneLabel.hidden = selectedRole !== "assistant";
+    if (paneLabel) paneLabel.textContent = selectedRole === "assistant" ? "background" : "chat";
     // The existing focus/session refresh owns this projection; the pane never polls or watches work.
     deps.terminalTarget(terminalTarget(selectedRole),
       offline() ? `${homeName} is offline. the terminal reconnects when it is back.` : roleStatus(selectedRole)?.unavailableReason ? "the terminal is unavailable while the broker reconnects." : focusUnavailable ? "the assistant terminal is unavailable. check sessions and focus settings." : "the assistant terminal is not running yet.");

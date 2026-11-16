@@ -69,6 +69,8 @@ for (const role of ["assistant", "assistant-chat"]) test(`needs-you evidence ope
   await shot(page, `needs-you-${role}`, info.project.name);
   await action.click();
   await expect(page.locator(info.project.name === "desktop" ? "#assistant-pane-role" : "#assistant-terminal-role")).toHaveText(role === "assistant" ? "background" : "chat");
+  await expect(page.locator(info.project.name === "desktop" ? "#assistant-pane canvas" : "#desktop-terminal-container canvas").first()).toBeVisible();
+  await shot(page, `needs-you-${role}-terminal`, info.project.name);
 });
 
 test("chat not yet started is explicit in settings and cannot accept talk or plan", async ({ page }, info) => {
@@ -83,6 +85,8 @@ test("chat not yet started is explicit in settings and cannot accept talk or pla
   await shot(page, "chat-starting-page", info.project.name);
   await page.locator("#assistant-content").getByRole("button", { name: "Assistant settings", exact: true }).click();
   await expect(page.locator("#assistant-setting-status")).toContainText("chat: starting · background:");
-  await expect(page.getByRole("button", { name: "Talk to assistant", exact: true })).toBeDisabled();
+  const talk = page.getByRole("button", { name: "Talk to assistant", exact: true });
+  await expect(talk).toBeDisabled();
+  expect(await talk.evaluate(el => getComputedStyle(el).opacity)).toBe("0.5");
   await shot(page, "chat-starting-settings", info.project.name);
 });

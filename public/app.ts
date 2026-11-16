@@ -4395,7 +4395,10 @@ function renderDrawerList() {
   const focused = list.contains(document.activeElement) && document.activeElement instanceof HTMLElement
     ? Object.entries(document.activeElement.dataset) : null;
   const chipLabel = document.getElementById("chip-label");
-  if (chipLabel) chipLabel.textContent = state.currentSession || "";
+  if (chipLabel) {
+    const current = groups.find(group => (group.machine.url || "") === state.currentMachine)?.sessions.find(session => session.name === state.currentSession);
+    chipLabel.textContent = current && isFocusAssistantSession(current) ? (current.name === "assistant" ? "background" : "chat") : state.currentSession || "";
+  }
   if (list.innerHTML === html) return;
   list.innerHTML = html;
   if (restoreOrganizationFocus) restoreOrganizationFocus();
