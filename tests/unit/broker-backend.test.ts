@@ -271,6 +271,7 @@ function sessionInfo(overrides: Partial<{
   name: string;
   cwd: string;
   alive: boolean;
+  command: string[];
   env: Array<[string, string]>;
 }> = {}) {
   return {
@@ -283,7 +284,7 @@ function sessionInfo(overrides: Partial<{
     pid: 1234,
     started_at_ms: 1700000000000,
     exit_code: null,
-    command: ["bash", "-l"],
+    command: overrides.command ?? ["bash", "-l"],
     env: overrides.env ?? [],
   };
 }
@@ -752,6 +753,11 @@ describe("BrokerBackend.createSession", () => {
     expect(params.command[2]).toContain('exec "$@"');
     expect(params.command[2]).not.toContain(argv[2]!);
     expect(params.env.find(([key]) => key === "WOLFPACK_DIR")?.[1]).toBe(process.env.WOLFPACK_DIR!);
+    client.setHandler("list_sessions", () => okResp({ sessions: [sessionInfo({ name: "assistant", id: SESSION_UUID_1, command: params.command })] }));
+    expect((await backend.listSessionFacts())[0]?.pinnedCommand).toEqual(argv);
+    const changed = [...params.command]; changed[2] = 'echo unsafe; exec "$@"';
+    client.setHandler("list_sessions", () => okResp({ sessions: [sessionInfo({ name: "assistant", id: SESSION_UUID_1, command: changed })] }));
+    expect((await backend.listSessionFacts())[0]?.pinnedCommand).toBeUndefined();
   });
 
   test("passes pi model selection as an opaque native --model argv value", async () => {

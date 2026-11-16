@@ -55,6 +55,8 @@ export interface SessionLaunchOptions {
 }
 
 export interface SessionListFact {
+  /** Exact exec argv recovered from the broker's immutable launch command; absent means unproven. */
+  readonly pinnedCommand?: readonly string[];
   readonly name: string;
   readonly alive: boolean;
   /** Decimal broker PTY output watermark; absent when connected to an older broker. */

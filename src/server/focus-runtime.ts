@@ -38,6 +38,7 @@ export class FocusRuntime {
         return (ctx.assistantService.config?.pinnedSessions ?? []).filter(pin => this.homeIsLocal() || !isFocusAssistantName(pin.name) || pin.cwd !== ctx.assistantService.folder);
       },
       managedAssistantPin: pin => ctx.assistantService.isManagedPin(pin),
+      managedAssistantSession: fact => ctx.assistantService.isManagedSession(fact),
       prepareLaunch: pin => {
         if (ctx.assistantService.isManagedPin(pin) && pinLifetime !== this.lifetime) throw new Error("assistant launch revoked: runtime stopped or restarted");
         return ctx.assistantService.prepareLaunch(pin);

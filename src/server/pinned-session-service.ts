@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { conflictingAssistantPins, reconcilePinned, recordPinFailure, PIN_STABLE_MS, type PinHistory, type PinnedSession, type PreparedPinnedSession } from "../pinned-sessions.js";
-import type { SessionBackend } from "./backend-contract.js";
+import type { SessionBackend, SessionListFact } from "./backend-contract.js";
 import { createLogger, errMsg } from "../log.js";
 const log = createLogger("server");
 export class PinnedSessionService {
@@ -10,7 +10,7 @@ export class PinnedSessionService {
   private liveSince = new Map<string, number>();
   private flight?: Promise<void>;
   private timer?: ReturnType<typeof setInterval>;
-  constructor(private readonly options: { backend: SessionBackend; pins: () => readonly PinnedSession[]; prepareLaunch?: (pin: PinnedSession) => PreparedPinnedSession; managedAssistantPin?: (pin: PinnedSession) => boolean; now?: () => number }) {}
+  constructor(private readonly options: { backend: SessionBackend; pins: () => readonly PinnedSession[]; prepareLaunch?: (pin: PinnedSession) => PreparedPinnedSession; managedAssistantPin?: (pin: PinnedSession) => boolean; managedAssistantSession?: (fact: SessionListFact) => boolean; now?: () => number }) {}
   start(): void {
     if (this.timer) return;
     void this.tick();
@@ -30,7 +30,7 @@ export class PinnedSessionService {
     const managed = (pin: PinnedSession) => this.options.managedAssistantPin?.(pin) === true;
     const conflicts = conflictingAssistantPins(pins.map(pin => ({ name: pin.name, cwd: directory(pin.cwd), managedAssistant: managed(pin) })),
       facts.flatMap(fact => fact.alive && fact.identity ? [{ name: fact.name, cwd: directory(fact.identity.projectPath),
-        managedAssistant: fact.identity.agentKind === "pi" && pins.some(pin => pin.name === fact.name && directory(pin.cwd) === directory(fact.identity!.projectPath) && managed(pin)) }] : []));
+        managedAssistant: this.options.managedAssistantSession?.(fact) === true && pins.some(pin => pin.name === fact.name && directory(pin.cwd) === directory(fact.identity!.projectPath) && managed(pin)) }] : []));
     for (const name of Object.keys(this.history)) if (!pins.some(p => p.name === name)) { delete this.history[name]; delete this.errors[name]; }
     for (const pin of pins) {
       if (live.includes(pin.name)) {

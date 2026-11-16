@@ -49,6 +49,7 @@ export interface MockBackendOptions {
 export class MockBackend implements SessionBackend, PtyBackendMethods, SessionPromptBackendMethods {
   private _sessions: Set<string>;
   private _outputSequences: Map<string, string>;
+  private readonly _pinnedCommands = new Map<string, readonly string[]>();
   private readonly _programStatus = new Map<string, ProgramStatusRecord>();
   private _capturePane: (session: string) => Promise<string>;
   private _onBeforeCreate: ((name: string) => void) | null;
@@ -97,6 +98,7 @@ export class MockBackend implements SessionBackend, PtyBackendMethods, SessionPr
   setSessions(sessions: string[]): void {
     this._sessions = new Set(sessions);
     this._outputSequences = new Map(sessions.map(name => [name, "0"]));
+    for (const name of this._pinnedCommands.keys()) if (!this._sessions.has(name)) this._pinnedCommands.delete(name);
     for (const name of this._parentSessions.keys()) {
       if (!this._sessions.has(name)) this._parentSessions.delete(name);
     }
@@ -134,6 +136,7 @@ export class MockBackend implements SessionBackend, PtyBackendMethods, SessionPr
     return names.map((name) => ({
       name,
       alive: this.isSessionAlive(name),
+      ...(this._pinnedCommands.has(name) && { pinnedCommand: this._pinnedCommands.get(name) }),
       ...(this._outputSequences.get(name) !== undefined && {
         outputSequence: this._outputSequences.get(name),
       }),
@@ -207,6 +210,8 @@ export class MockBackend implements SessionBackend, PtyBackendMethods, SessionPr
       throw new DuplicateSessionError(name);
     }
     this._sessions.add(name);
+    if (options?.pinnedCommand) this._pinnedCommands.set(name, [...options.pinnedCommand]);
+    else this._pinnedCommands.delete(name);
     this._outputSequences.set(name, "0");
     if (options?.parentSession) this._parentSessions.set(name, options.parentSession);
     const now = new Date(0).toISOString();

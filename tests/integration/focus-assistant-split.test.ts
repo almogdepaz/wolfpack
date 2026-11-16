@@ -22,7 +22,7 @@ function fixture() {
   const service = new AssistantService({ root, readConfig: () => config, writeConfig: next => { config = next; },
     detectProviders: async () => [{ id: "pi", displayName: "Pi", command: "pi", status: "installed", executablePath: "/fake/pi", version: "1", authStatus: "unknown", loginCommand: "pi" }] });
   const backend = new MockBackend();
-  const pins = new PinnedSessionService({ backend, pins: () => service.pins, prepareLaunch: pin => service.prepareLaunch(pin), managedAssistantPin: pin => service.isManagedPin(pin) });
+  const pins = new PinnedSessionService({ backend, pins: () => service.pins, prepareLaunch: pin => service.prepareLaunch(pin), managedAssistantPin: pin => service.isManagedPin(pin), managedAssistantSession: fact => service.isManagedSession(fact) });
   return { root, service, backend, pins, get config() { return config; }, close() { pins.stop(); rmSync(root, { recursive: true, force: true }); } };
 }
 
@@ -58,6 +58,46 @@ test.each(["none", "pin", "live"] as const)("only the managed pair may share the
       expect(t.pins.errors.assistant).toContain("conflicting ownership");
       expect(t.pins.errors["assistant-chat"]).toContain("conflicting ownership");
     }
+  } finally { t.close(); }
+});
+
+test.each(["wrong-role", "swapped", "same-file", "unpinned", "legacy-config"] as const)("unproven live ownership blocks the pair: %s", async attack => {
+  const t = fixture();
+  try {
+    await t.service.enable(true);
+    const workerFile = join(t.service.folder, "sessions/20261116_focus-assistant.jsonl");
+    writeFileSync(workerFile, "worker history");
+    const worker = t.service.command("assistant");
+    const chat = t.service.command("assistant-chat");
+    if (attack === "swapped") {
+      t.config.pinnedSessions![0]!.command = chat;
+      t.config.pinnedSessions![1]!.command = worker;
+    }
+    if (attack === "same-file") t.config.pinnedSessions![1]!.command = worker;
+    if (attack === "legacy-config") t.config.pinnedSessions = t.config.pinnedSessions!.filter(p => p.name === "assistant");
+    await t.backend.createSession("assistant-chat", t.service.folder, "pi", () => ({ agentCmd: "pi" }), {
+      agentKind: "pi", ...(attack !== "unpinned" && { pinnedCommand: worker }),
+    });
+    t.backend.lastCreateArgs = null;
+    await t.pins.tick();
+    expect(await t.backend.list()).toEqual(["assistant-chat"]);
+    expect(t.backend.lastCreateArgs).toBeNull();
+    expect(t.pins.errors.assistant).toContain("conflicting ownership");
+    expect(t.service.isManagedPin({ name: "assistant-chat", cwd: t.service.folder, command: worker, harness: "pi" })).toBe(false);
+  } finally { t.close(); }
+});
+
+test("a proven live pair remains accepted after conversation files appear and on server restart", async () => {
+  const t = fixture();
+  try {
+    await t.service.enable(true);
+    await t.pins.tick();
+    writeFileSync(join(t.service.folder, "sessions/20261116_focus-assistant.jsonl"), "worker");
+    writeFileSync(join(t.service.folder, "sessions/20261116_focus-chat.jsonl"), "chat");
+    t.backend.lastCreateArgs = null;
+    await t.pins.tick();
+    expect(t.pins.errors).toEqual({});
+    expect(t.backend.lastCreateArgs).toBeNull();
   } finally { t.close(); }
 });
 

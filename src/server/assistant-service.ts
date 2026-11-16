@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { AGENT_KIND } from "../agent-kind.js";
 import { loadConfig, saveConfig, type Config } from "../config.js";
 import { resolveWolfpackDir } from "../wolfpack-dir.js";
@@ -8,6 +8,7 @@ import { readValidatedJsonFile, writePrivateFile, writePrivateJsonFile } from ".
 import type { PinnedSession, PreparedPinnedSession } from "../pinned-sessions.js";
 import { FOCUS_ASSISTANT_SESSION_NAMES, isFocusAssistantName, type FocusAssistantRole } from "../focus-session.js";
 import { detectProviderReadiness, type ProviderReadiness } from "../provider-readiness.js";
+import type { SessionListFact } from "./backend-contract.js";
 import { focusAssistantSkill } from "../focus-skill.js";
 
 interface ConversationState { digest: string; readSkillPending?: boolean; generation?: string }
@@ -27,7 +28,25 @@ export class AssistantService {
     this.folder = join(this.root, "assistant");
   }
   get config(): Config | null { return (this.options.readConfig ?? loadConfig)(); }
-  isManagedPin(pin: PinnedSession): boolean { return isFocusAssistantName(pin.name) && pin.cwd === this.folder && pin.harness === AGENT_KIND.PI.id && pin.command[0] === AGENT_KIND.PI.cmd; }
+  isManagedPin(pin: PinnedSession): boolean {
+    return isFocusAssistantName(pin.name) && pin.cwd === this.folder && pin.harness === AGENT_KIND.PI.id
+      && (this.isManagedCommand(pin.name, pin.command) || pin.name === "assistant" && pin.command.length === 1 && pin.command[0] === AGENT_KIND.PI.cmd);
+  }
+  /** Configured ownership alone never proves what a live incarnation actually launched. */
+  isManagedSession(fact: SessionListFact): boolean {
+    return isFocusAssistantName(fact.name) && !!fact.identity?.wolfpackSessionId && fact.identity.projectPath === this.folder
+      && fact.identity.agentKind === AGENT_KIND.PI.id && this.isManagedCommand(fact.name, fact.pinnedCommand)
+      && (this.config?.pinnedSessions ?? []).some(pin => pin.name === fact.name && this.isManagedPin(pin));
+  }
+  private isManagedCommand(role: FocusAssistantRole, command: readonly string[] | undefined): boolean {
+    if (!command) return false;
+    const file = command[4] === "--session" ? command[5] : undefined;
+    if (command[4] === "--session" && (!file || dirname(file) !== join(this.folder, "sessions") || !basename(file).endsWith(`_${this.sessionFamily(role)}.jsonl`))) return false;
+    return [false, true].some(readFirst => {
+      const expected = this.launchCommand(role, file, readFirst);
+      return command.length === expected.length && command.every((arg, i) => arg === expected[i]);
+    });
+  }
   get pins() { return (this.config?.pinnedSessions ?? []).map(pin => this.isManagedPin(pin) ? { ...pin, command: this.command(pin.name as FocusAssistantRole) } : pin); }
   get enabled(): boolean { return (this.config?.pinnedSessions ?? []).some(p => isFocusAssistantName(p.name) && p.cwd === this.folder); }
   private save(config: Config): void { (this.options.writeConfig ?? saveConfig)(config); }
@@ -41,7 +60,10 @@ export class AssistantService {
   command(role: FocusAssistantRole = "assistant", readSkillFirst = false): string[] {
     const sessions = join(this.folder, "sessions");
     const file = this.conversationFiles(role).at(-1);
-    return [AGENT_KIND.PI.cmd, "--no-approve", "--session-dir", sessions, ...(file ? ["--session", join(sessions, file)] : ["--session-id", this.sessionFamily(role)]), "--no-skills", "--skill", this.skillPath(role),
+    return this.launchCommand(role, file ? join(sessions, file) : undefined, readSkillFirst);
+  }
+  private launchCommand(role: FocusAssistantRole, file: string | undefined, readSkillFirst: boolean): string[] {
+    return [AGENT_KIND.PI.cmd, "--no-approve", "--session-dir", join(this.folder, "sessions"), ...(file ? ["--session", file] : ["--session-id", this.sessionFamily(role)]), "--no-skills", "--skill", this.skillPath(role),
       ...(role === "assistant-chat" && readSkillFirst
         ? ["Read .pi/skills/wolfpack-focus-chat/SKILL.md first; read focus, next, notes and today's day note, then wait for the user's request. Do not process inboxes or write worker state."] : [])];
   }
