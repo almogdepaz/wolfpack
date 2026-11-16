@@ -1,6 +1,7 @@
 import { isAbsolute } from "node:path";
 import { isValidSessionName } from "./validation.js";
 export interface PinnedSession { name: string; cwd: string; command: readonly string[]; harness: string }
+export interface PreparedPinnedSession extends PinnedSession { onStarted?: () => void }
 export interface PinHistory { failures: number; retryAt: number }
 export const PIN_FAILURE_LIMIT = 5;
 export const PIN_STABLE_MS = 60_000;

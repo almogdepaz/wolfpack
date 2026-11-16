@@ -290,7 +290,7 @@ test("enable requires login confirmation, seeds only focus skill, resumes by pat
     expect(service.command()).toContain("--no-approve");
     expect(service.command()).not.toContain("--approve");
     expect(service.pins[0]?.command).toContain("--no-approve");
-    expect(readFileSync(join(service.folder, "AGENTS.md"), "utf8")).toContain("Never kill/create/send");
+    expect(readFileSync(join(service.folder, "AGENTS.md"), "utf8")).toContain("Never kill/send");
     expect(existsSync(join(service.folder, ".pi/skills/wolfpack-tailnet-control"))).toBe(false);
     const file = join(service.folder, "sessions/2026_focus-assistant.jsonl");
     writeFileSync(file, "conversation");
@@ -321,7 +321,10 @@ test("enable requires login confirmation, seeds only focus skill, resumes by pat
     expect(readFileSync(skill, "utf8")).toContain("never use `wolfpack session read` for triage");
     expect(readFileSync(skill, "utf8")).toContain("first sentence is the ask as `<verb> <what>` (≤80 characters)");
     expect(readFileSync(skill, "utf8")).toContain("`wolfpack session send` and kill remain forbidden");
-    expect(readFileSync(skill, "utf8")).toContain("session creation is forbidden except only inside a plan conversation the user opened, after the user explicitly confirms the exact proposed");
+    expect(readFileSync(skill, "utf8")).toContain("session creation is forbidden for the worker");
+    const chatSkill = readFileSync(join(service.folder, ".pi/skills/wolfpack-focus-chat/SKILL.md"), "utf8");
+    expect(chatSkill).toContain("session creation is forbidden except only inside a plan conversation the user opened, after the user explicitly confirms the exact proposed");
+    expect(chatSkill).toContain("never process inboxes, ack activity, write day notes, day-summary, next/take, or note");
     expect(readFileSync(skill, "utf8")).toContain("5–8 bullets total");
     expect(readFileSync(skill, "utf8")).toContain("### done");
     expect(readFileSync(skill, "utf8")).toContain("### still open");

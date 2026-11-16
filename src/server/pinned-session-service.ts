@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
-import { conflictingAssistantPins, reconcilePinned, recordPinFailure, PIN_STABLE_MS, type PinHistory, type PinnedSession } from "../pinned-sessions.js";
+import { conflictingAssistantPins, reconcilePinned, recordPinFailure, PIN_STABLE_MS, type PinHistory, type PinnedSession, type PreparedPinnedSession } from "../pinned-sessions.js";
 import type { SessionBackend } from "./backend-contract.js";
 import { createLogger, errMsg } from "../log.js";
 const log = createLogger("server");
@@ -10,7 +10,7 @@ export class PinnedSessionService {
   private liveSince = new Map<string, number>();
   private flight?: Promise<void>;
   private timer?: ReturnType<typeof setInterval>;
-  constructor(private readonly options: { backend: SessionBackend; pins: () => readonly PinnedSession[]; prepareLaunch?: (pin: PinnedSession) => PinnedSession; managedAssistantPin?: (pin: PinnedSession) => boolean; now?: () => number }) {}
+  constructor(private readonly options: { backend: SessionBackend; pins: () => readonly PinnedSession[]; prepareLaunch?: (pin: PinnedSession) => PreparedPinnedSession; managedAssistantPin?: (pin: PinnedSession) => boolean; now?: () => number }) {}
   start(): void {
     if (this.timer) return;
     void this.tick();
@@ -49,9 +49,10 @@ export class PinnedSessionService {
       if (action.action !== "create") continue;
       const configured = pins.find(p => p.name === action.name)!;
       try {
-        const pin = this.options.prepareLaunch?.(configured) ?? configured;
+        const pin: PreparedPinnedSession = this.options.prepareLaunch?.(configured) ?? configured;
         await this.options.backend.createSession(pin.name, pin.cwd, pin.command[0], () => ({ agentCmd: pin.command[0]! }), { agentKind: pin.harness, pinnedCommand: pin.command });
         this.liveSince.set(pin.name, now);
+        pin.onStarted?.();
         delete this.errors[pin.name];
       } catch (error) {
         this.history[configured.name] = recordPinFailure(this.history[configured.name], now);

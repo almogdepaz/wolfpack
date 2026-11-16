@@ -13,6 +13,7 @@ import { writePrivateJsonFile } from "../../src/persistence.ts";
 import type { Config } from "../../src/config.ts";
 
 async function fixture() {
+  __resetSessionObservationForTests();
   const root = mkdtempSync(join(tmpdir(), "focus-skill-"));
   let config: Config = { devDir: root, port: 19876 };
   const service = (skill: string) => new AssistantService({ root, skill, readConfig: () => config, writeConfig: next => { config = next; },
@@ -211,7 +212,7 @@ test("custom AGENTS is preserved and digested; a missing seed is repaired and fi
   try {
     const agents = join(t.assistant.folder, "AGENTS.md");
     const original = readFileSync(agents, "utf8");
-    expect(original).toContain("Read .pi/skills/wolfpack-focus/SKILL.md before working");
+    expect(original).toContain("Read your explicitly supplied role skill before working");
     expect(original).toContain("durable intentions, next-action order, and notes");
     expect(original).not.toContain("nudge");
     writeFileSync(t.transcript, "old AGENTS conversation");
