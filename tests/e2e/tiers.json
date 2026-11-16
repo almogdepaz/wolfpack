@@ -370,6 +370,7 @@
     "focus-screenshots.e2e.ts": { "projects": ["desktop", "iphone-14", "iphone-se"] },
     "focus-sidebar-reveal.e2e.ts": { "projects": ["desktop", "iphone-14", "iphone-se"] },
     "focus-small-round.e2e.ts": { "projects": ["desktop", "iphone-14", "iphone-se"] },
+    "focus-ui-log.e2e.ts": { "projects": ["desktop", "iphone-14", "iphone-se"] },
     "focus-split-visual.e2e.ts": { "projects": ["desktop", "iphone-14", "iphone-se"] },
     "focus-stopped.e2e.ts": { "projects": ["desktop", "iphone-14", "iphone-se"] },
     "focus-take.e2e.ts": { "projects": ["desktop", "iphone-14", "iphone-se"] },
