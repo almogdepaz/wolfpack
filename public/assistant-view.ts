@@ -768,7 +768,9 @@ export function createAssistantView(deps: {
     const live = document.getElementById("focus-status");
     if (live) live.textContent = focusUnavailable ? "" : error || assistantError || (focus?.assistant?.queued ? `${focus.assistant.queued} queued${terminalUnavailable() ? " · sends when the broker is back" : ""}` : notice);
     const setting = document.getElementById("assistant-setting-status");
-    if (setting) setting.textContent = enabled ? `on · background: ${focusUnavailable && !offline() ? unavailableInfo : info} · chat: ${focus?.assistant?.chat?.unavailableReason ? "unavailable" : focus?.assistant?.chat?.state ?? "starting"}` : focusUnavailable ? (offline() ? `${homeName} offline · read-only` : unavailableInfo) : "off";
+    const settingInfo = focusUnavailable && !offline() ? unavailableInfo
+      : `background: ${info} · chat: ${chatUnavailable() ? "unavailable" : focus?.assistant?.chat?.state ?? "starting"}`;
+    if (setting) setting.textContent = enabled ? `on · ${settingInfo}` : focusUnavailable ? (offline() ? `${homeName} offline · read-only` : unavailableInfo) : "off";
     const settingError = document.getElementById("assistant-setting-error");
     if (settingError) settingError.textContent = offline() ? "" : error || focus?.assistant?.error || focus?.assistant?.chat?.error || "";
     renderHomePicker(); syncTimingControls();
