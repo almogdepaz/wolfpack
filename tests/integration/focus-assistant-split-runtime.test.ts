@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test, setSystemTime } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -62,6 +62,54 @@ test.each(["assistant", "assistant-chat"] as const)("unproven %s is not exposed 
     }
     const status = await t.ctx.focusRuntime.status();
     expect((role === "assistant" ? status : status.chat).sessionId).toBeUndefined();
+  } finally { t.close(); }
+});
+
+test.each(["pi", "shell", "hermes"] as const)("custom-worker compatibility requires the matching live non-Pi harness: %s", async liveHarness => {
+  __resetSessionObservationForTests();
+  const root = mkdtempSync(join(tmpdir(), "focus-custom-role-"));
+  let config: Config = { devDir: root, port: 19643 };
+  const service = new AssistantService({ root, readConfig: () => config, writeConfig: next => { config = next; },
+    detectProviders: async () => [{ id: "pi", displayName: "Pi", command: "pi", status: "installed", executablePath: "/fake/pi", version: "1", authStatus: "unknown", loginCommand: "pi" }] });
+  await service.enable(true);
+  config.pinnedSessions![0] = { name: "assistant", cwd: service.folder, command: ["hermes", "--tui"], harness: "hermes" };
+  const backend = new MockBackend({ capturePane: async () => "› " });
+  await backend.createSession("assistant", service.folder, liveHarness, () => ({ agentCmd: liveHarness }), {
+    agentKind: liveHarness, ...(liveHarness === "pi" && { pinnedCommand: service.command("assistant-chat") }),
+  });
+  const at = Date.now();
+  backend.setProgramStatus("assistant", { id: "", state: "done", updatedAtMs: at });
+  const sends: { id: string; text: string }[] = [];
+  backend.sendAndObserveSubmission = async (id, options) => { sends.push({ id, text: options.text }); return { delivery: "delivered", outcome: "submitted", observedMs: 1 }; };
+  const journal = new ActivityJournal({ dir: join(root, "activity") });
+  const ctx = createServerContext({ backend, config, assistantService: service, activityJournal: journal });
+  try {
+    const initial = await ctx.focusRuntime.status();
+    setSystemTime(new Date(at + 6000)); // real generic-harness quiet fence, without a timer sleep
+    journal.append({ kind: ACTIVITY_KIND.TASK_UPDATED, taskId: "ordinary-work", eventType: "updated" });
+    await ctx.focusRuntime.routines.tick({ manual: true });
+    await ctx.focusRuntime.tick();
+    if (liveHarness === "hermes") {
+      expect(initial.sessionId).toBe("mock:assistant");
+      expect(sends).toHaveLength(1);
+      expect(sends[0]).toMatchObject({ id: "mock:assistant" });
+      expect(sends[0]!.text).toMatch(/process inbox inbox\/catch-up-.*\.json/);
+    } else {
+      expect(sends).toEqual([]);
+      expect(initial.sessionId).toBeUndefined();
+    }
+  } finally { setSystemTime(); ctx.focusRuntime.stop(); journal.close(); __resetSessionObservationForTests(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the final send fence rejects a live Pi chat even when the configured worker is custom", async () => {
+  const t = await fixture();
+  try {
+    t.ctx.config!.pinnedSessions![0] = { name: "assistant", cwd: t.service.folder, command: ["hermes", "--tui"], harness: "hermes" };
+    await t.backend.killSessionById("mock:assistant");
+    await t.backend.createSession("assistant", t.service.folder, "pi", () => ({ agentCmd: "pi" }), { agentKind: "pi", pinnedCommand: t.service.command("assistant-chat") });
+    t.ctx.focusRuntime.queue.enqueue("mock:assistant", "process inbox inbox/unsafe.json", undefined, "routine");
+    await t.ctx.focusRuntime.queue.tick({ id: "mock:assistant", idle: true, token: "previously-sampled-idle" });
+    expect(t.sends).toEqual([]);
   } finally { t.close(); }
 });
 

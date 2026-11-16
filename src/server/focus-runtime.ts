@@ -50,7 +50,7 @@ export class FocusRuntime {
       if (!(await isAllowedSession("assistant", ctx.backend))) throw new Error("assistant session unavailable");
       const worker = (await ctx.backend.listSessionFacts()).find(f => f.alive && f.name === "assistant"
         && f.identity?.projectPath === ctx.assistantService.folder && f.identity.wolfpackSessionId === id);
-      if (!worker || (this.requiresManagedProof("assistant") && !ctx.assistantService.isManagedSession(worker))) throw new Error("routine target is not the current assistant worker");
+      if (!worker || (this.requiresManagedProof("assistant", worker.identity?.agentKind) && !ctx.assistantService.isManagedSession(worker))) throw new Error("routine target is not the current assistant worker");
       const result = await ctx.backend.sendAndObserveSubmission(id, { text: prompt.text, noEnter: false, ensureSubmitted: true, observeMs: 1500 });
       const delivery = sendDelivery(result.outcome);
       ctx.assistantService.routineSent(prompt.generation);
@@ -92,17 +92,17 @@ export class FocusRuntime {
     return { ...worker, enabled: service.enabled && this.homeIsLocal(), folder: service.folder, queued: this.queue.size,
       error: service.enabled && this.homeIsLocal() ? this.queue.error ?? this.pins.errors.assistant : undefined, chat };
   }
-  /** Preserve the pre-existing custom worker adapter; Pi roles must prove their managed launch. */
-  private requiresManagedProof(role: FocusAssistantRole): boolean {
+  /** Only a matching live non-Pi worker gets the legacy adapter exemption; every live Pi needs role proof. */
+  private requiresManagedProof(role: FocusAssistantRole, liveHarness: string | undefined): boolean {
     const pin = this.ctx.assistantService.pins.find(p => p.name === role && p.cwd === this.ctx.assistantService.folder);
-    return role === "assistant-chat" || !pin || pin.harness === AGENT_KIND.PI.id;
+    return role === "assistant-chat" || !pin || liveHarness === AGENT_KIND.PI.id || pin.harness !== liveHarness;
   }
   private async roleStatus(role: FocusAssistantRole) {
     const { observeDashboardSessions } = await import("./session-observation.js");
     const service = this.ctx.assistantService;
     const enabled = service.enabled && this.homeIsLocal();
     const session = (await observeDashboardSessions(this.ctx)).find(s => s.name === role && s.identity?.projectPath === service.folder
-      && (!this.requiresManagedProof(role) || isFocusAssistantSession({ ...s, pinned: true })));
+      && (!this.requiresManagedProof(role, s.identity?.agentKind) || isFocusAssistantSession({ ...s, pinned: true })));
     const id = session?.identity?.wolfpackSessionId;
     // Focus is a local document; optional live terminal enrichment must not
     // make its reads fail when the broker disconnects (including mid-sample).
@@ -199,7 +199,7 @@ export class FocusRuntime {
     const session = (await observeDashboardSessions(this.ctx)).find(s => s.name === role && s.identity?.projectPath === service.folder);
     if (!session?.identity?.wolfpackSessionId) return undefined;
     const fact = (await this.ctx.backend.listSessionFacts()).find(f => f.alive && f.identity?.wolfpackSessionId === session.identity?.wolfpackSessionId);
-    if (!fact || (this.requiresManagedProof(role) && !service.isManagedSession(fact))) return undefined;
+    if (!fact || (this.requiresManagedProof(role, fact.identity?.agentKind) && !service.isManagedSession(fact))) return undefined;
     // A whole turn can finish between polls. The broker's current program timestamp
     // fences both stale idle projections and repeated done states without a sampled working state.
     const state = programStatusSource(fact.programStatus, { observedAt: new Date().toISOString() }) ?? session.runtimeState;
