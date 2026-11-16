@@ -1,0 +1,105 @@
+import { expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { AssistantService } from "../../src/server/assistant-service.ts";
+import { MockBackend } from "../../src/server/mock-backend.ts";
+import { ActivityJournal } from "../../src/server/activity-journal.ts";
+import { createServerContext } from "../../src/server/context.ts";
+import { ACTIVITY_KIND } from "../../src/activity-journal.ts";
+import type { Config } from "../../src/config.ts";
+
+async function fixture() {
+  const root = mkdtempSync(join(tmpdir(), "focus-split-runtime-"));
+  let config: Config = { devDir: root, port: 19643 };
+  const service = new AssistantService({ root, readConfig: () => config, writeConfig: next => { config = next; },
+    detectProviders: async () => [{ id: "pi", displayName: "Pi", command: "pi", status: "installed", executablePath: "/fake/pi", version: "1", authStatus: "unknown", loginCommand: "pi" }] });
+  await service.enable(true);
+  const backend = new MockBackend();
+  const journal = new ActivityJournal({ dir: join(root, "activity") });
+  const ctx = createServerContext({ backend, config, assistantService: service, activityJournal: journal });
+  const kills: string[] = [], sends: string[] = [];
+  const kill = backend.killSessionById.bind(backend);
+  backend.killSessionById = async id => { kills.push(id); return kill(id); };
+  backend.sendAndObserveSubmission = async id => { sends.push(id); return { delivery: "delivered", outcome: "submitted", observedMs: 1 }; };
+  ctx.focusRuntime.start();
+  await ctx.focusRuntime.pins.tick();
+  let at = Date.now();
+  const state = (role: string, state: "done" | "working" | "blocked" = "done") => backend.setProgramStatus(role, { id: "", state, ...(state === "blocked" && { kind: "question" as const }), updatedAtMs: ++at });
+  state("assistant"); state("assistant-chat");
+  return { root, service, backend, journal, ctx, kills, sends, state,
+    change(role: string) { writeFileSync(join(service.folder, ".pi/skills", role === "assistant" ? "wolfpack-focus" : "wolfpack-focus-chat", "SKILL.md"), "changed skill"); },
+    close() { ctx.focusRuntime.stop(); journal.close(); rmSync(root, { recursive: true, force: true }); } };
+}
+
+test("routine sends during an active chat go only to the worker; queue rejects a chat UUID", async () => {
+  const t = await fixture();
+  try {
+    t.state("assistant-chat", "working");
+    t.journal.append({ kind: ACTIVITY_KIND.TASK_UPDATED, taskId: "work", eventType: "updated" });
+    await t.ctx.focusRuntime.routines.tick({ manual: true });
+    await t.ctx.focusRuntime.tick();
+    expect(t.sends).toEqual(["mock:assistant"]);
+    t.state("assistant");
+    t.ctx.focusRuntime.queue.enqueue("mock:assistant-chat", "must not send", undefined, "routine");
+    await t.ctx.focusRuntime.tick();
+    expect(t.sends).toEqual(["mock:assistant"]);
+  } finally { t.close(); }
+});
+
+test("additive chat status reports its own dialog without changing the worker status", async () => {
+  const t = await fixture();
+  try {
+    t.state("assistant-chat", "blocked");
+    const status = await t.ctx.focusRuntime.status();
+    expect(status.state).not.toBe("needs-input");
+    expect(status.chat).toMatchObject({ state: "needs-input", session: "assistant-chat", sessionId: "mock:assistant-chat", needsInput: true });
+  } finally { t.close(); }
+});
+
+test("chat rotates independently of the busy worker queue and outstanding inbox, preserving the worker family", async () => {
+  const t = await fixture();
+  try {
+    const worker = join(t.service.folder, "sessions/20261116_focus-assistant.jsonl");
+    const chat = join(t.service.folder, "sessions/20261116_focus-chat.jsonl");
+    writeFileSync(worker, "worker history"); writeFileSync(chat, "chat history");
+    t.state("assistant", "working");
+    t.journal.append({ kind: ACTIVITY_KIND.TASK_UPDATED, taskId: "work", eventType: "updated" });
+    await t.ctx.focusRuntime.routines.tick({ manual: true });
+    expect(t.ctx.focusRuntime.queue.busy).toBe(true);
+    t.change("assistant-chat");
+    await t.ctx.focusRuntime.tick();
+    expect(t.kills).toEqual(["mock:assistant-chat"]);
+    expect(readFileSync(worker, "utf8")).toBe("worker history");
+    expect(t.ctx.focusRuntime.queue.busy).toBe(true);
+    expect(t.service.command("assistant-chat")).toContain("focus-chat");
+  } finally { t.close(); }
+});
+
+test.each(["working", "blocked", "viewer", "pendingViewer", "recent-input"] as const)("chat rotation preserves the role-local %s guard", async guard => {
+  const t = await fixture();
+  const { activePtySessions } = await import("../../src/server/websocket.ts");
+  const { default: WebSocket } = await import("ws");
+  const before = activePtySessions.get("assistant-chat");
+  try {
+    t.change("assistant-chat");
+    if (guard === "working" || guard === "blocked") t.state("assistant-chat", guard);
+    else if (guard === "recent-input") t.ctx.activityRecorder.notePresence("assistant-chat", "browser");
+    else activePtySessions.set("assistant-chat", { alive: true, viewer: null, pendingViewer: null, proc: null, [guard]: Object.create(WebSocket.prototype) });
+    await t.ctx.focusRuntime.tick();
+    expect(t.kills).toEqual([]);
+  } finally { if (before) activePtySessions.set("assistant-chat", before); else activePtySessions.delete("assistant-chat"); t.close(); }
+});
+
+test("a worker viewer does not prevent an idle chat from rotating", async () => {
+  const t = await fixture();
+  const { activePtySessions } = await import("../../src/server/websocket.ts");
+  const { default: WebSocket } = await import("ws");
+  const before = activePtySessions.get("assistant");
+  try {
+    t.change("assistant-chat");
+    activePtySessions.set("assistant", { alive: true, viewer: Object.create(WebSocket.prototype), pendingViewer: null, proc: null });
+    await t.ctx.focusRuntime.tick();
+    expect(t.kills).toEqual(["mock:assistant-chat"]);
+  } finally { if (before) activePtySessions.set("assistant", before); else activePtySessions.delete("assistant"); t.close(); }
+});
