@@ -181,9 +181,11 @@ for (const outage of ["home", "broker"] as const) test(`QA-27: ${outage} outage 
   await page.screenshot({ path: info.outputPath(`pane-${outage}-unavailable.png`), animations: "disabled" });
   const reasonInset = await page.locator("#assistant-pane-empty").evaluate(el => {
     const range = document.createRange(); range.setStart(el.firstChild!, 0); range.setEnd(el.firstChild!, 1);
-    return range.getBoundingClientRect().left - document.getElementById("assistant-pane-status")!.getBoundingClientRect().left;
+    // The header now leads with the visible role label (chat/background); the reason aligns with the header's leading text.
+    return range.getBoundingClientRect().left - document.getElementById("assistant-pane-role")!.getBoundingClientRect().left;
   });
-  expect.soft(Math.abs(reasonInset), "QA-31: empty reason aligns with the pane header status").toBeLessThanOrEqual(1);
+  await expect(page.locator("#assistant-pane-role")).toBeVisible();
+  expect.soft(Math.abs(reasonInset), "QA-31: empty reason aligns with the pane header's leading role label").toBeLessThanOrEqual(1);
   down = false;
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await hydrated(page);
