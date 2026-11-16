@@ -16,7 +16,7 @@ async function openFocus(page: Page) {
 async function tabToOverlay(page: Page, action: string) {
   // The header precedes both terminal input and its overlay in document order.
   // Focus is a test starting position, not an activation or pointer opt-in.
-  await pane(page).getByRole("button", { name: "Back to list", exact: true }).focus();
+  await pane(page).getByRole("button", { name: "Hide assistant terminal", exact: true }).focus();
   await page.keyboard.press("Tab");
   await expect(pane(page).getByRole("button", { name: action, exact: true })).toBeFocused();
 }
@@ -79,14 +79,14 @@ test("pane keyboard: Shift+Escape returns from terminal input to the list withou
   expect(inputFrames.length).toBe(before);
 });
 
-test("pane keyboard: Tab from Back to list explicitly enters terminal input", async ({ page }) => {
+test("pane keyboard: Tab from the last header control explicitly enters terminal input", async ({ page }) => {
   let binary = 0;
   page.on("websocket", ws => {
     if (ws.url().includes("/ws/pty")) ws.on("framesent", frame => { if (typeof frame.payload !== "string") binary++; });
   });
   await openFocus(page);
   await expect(page.locator("#assistant-pty")).toHaveClass(/hydrated/);
-  await pane(page).getByRole("button", { name: "Back to list", exact: true }).focus();
+  await pane(page).getByRole("button", { name: "Hide assistant terminal", exact: true }).focus();
   await page.keyboard.press("Tab");
   expect(await page.locator("#assistant-pty-input").evaluate(el => el.contains(document.activeElement))).toBe(true);
   await page.keyboard.type("tab opt-in");

@@ -97,8 +97,8 @@ test("QA-22/23: narrow pane rows yield context before kind text and pane control
   await page.screenshot({ path: info.outputPath("pane-1280.png"), animations: "disabled" });
   expect.soft(measure.available).toBeGreaterThanOrEqual(measure.label);
   const focus = (await pane(page).getByRole("button", { name: "Focus terminal", exact: true }).boundingBox())!;
-  const back = (await pane(page).getByRole("button", { name: "Back to list", exact: true }).boundingBox())!;
-  expect.soft(back.y).toBeCloseTo(focus.y, 0);
+  const hide = (await pane(page).getByRole("button", { name: "Hide assistant terminal", exact: true }).boundingBox())!;
+  expect.soft(hide.y).toBeCloseTo(focus.y, 0);
   expect((await pane(page).boundingBox())!.width).toBeGreaterThanOrEqual(420);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
@@ -176,7 +176,7 @@ for (const outage of ["home", "broker"] as const) test(`QA-27: ${outage} outage 
   await expect(page.locator("#assistant-pane-empty")).toBeVisible();
   await expect(page.locator("#assistant-pane-empty")).toContainText(outage === "home" ? "offline" : "broker");
   await expect(pane(page).locator("canvas")).toHaveCount(0);
-  await expect(pane(page).getByRole("button", { name: "Back to list", exact: true })).toBeEnabled();
+  await expect(pane(page).getByRole("button", { name: "Hide assistant terminal", exact: true })).toBeEnabled();
   await expect(page.locator(".assistant-column")).toBeFocused();
   await page.screenshot({ path: info.outputPath(`pane-${outage}-unavailable.png`), animations: "disabled" });
   const reasonInset = await page.locator("#assistant-pane-empty").evaluate(el => {
@@ -254,7 +254,7 @@ test("pane: attach on talk, disconnect on leave/hidden, require talk on page ret
   expect(stats.max).toBe(1);
 });
 
-test("pane: keyboard stays in the list, click to type, back to list never sends list input", async ({ page }, info) => {
+test("pane: keyboard stays in the list, click to type, clicking back into the list never sends list input", async ({ page }, info) => {
   test.skip(info.project.name !== "desktop", "desktop pane only");
   const stats = transport(page);
   await openFocus(page);
@@ -267,7 +267,7 @@ test("pane: keyboard stays in the list, click to type, back to list never sends 
   await page.keyboard.type("pane input");
   await expect.poll(() => stats.binary).toBeGreaterThan(0);
   const before = stats.binary;
-  await pane(page).getByRole("button", { name: "Back to list", exact: true }).click();
+  await page.locator("#assistant-content .focus-header").click();
   expect(await page.locator(".assistant-column").evaluate(el => el.contains(document.activeElement))).toBe(true);
   await add.pressSequentially("still list");
   expect(stats.binary).toBe(before);

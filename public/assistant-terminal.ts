@@ -27,7 +27,7 @@ export function createAssistantTerminal(deps: {
   const list = document.querySelector<HTMLElement>(".assistant-column")!;
   const status = document.getElementById("assistant-pane-status")!;
   const focusButton = document.getElementById("assistant-pane-focus") as HTMLButtonElement;
-  const listButton = document.getElementById("assistant-pane-list") as HTMLButtonElement;
+  const hideButton = document.getElementById("assistant-pane-hide") as HTMLButtonElement;
   const skipButton = document.getElementById("assistant-pane-skip")!;
   const empty = document.getElementById("assistant-pane-empty")!;
   let unavailableMessage = "the assistant terminal is not running yet.";
@@ -44,11 +44,11 @@ export function createAssistantTerminal(deps: {
     a?.session === b?.session && a?.machine === b?.machine && a?.sessionId === b?.sessionId;
   let inputRequested = false;
   const backToList = () => { inputRequested = false; list.focus({ preventScroll: true }); };
-  listButton.onclick = backToList;
-  document.getElementById("assistant-pane-hide")!.onclick = () => { expanded = false; sync(); backToList(); };
+  // Clicking the adjacent list or Shift+Escape returns there; no separate header control.
+  hideButton.onclick = () => { expanded = false; sync(); backToList(); };
   focusButton.onclick = () => { inputRequested = true; controller?.focus(); };
   skipButton.onclick = () => {
-    (overlay?.querySelector<HTMLButtonElement>("button") ?? (focusButton.disabled ? listButton : focusButton)).focus();
+    (overlay?.querySelector<HTMLButtonElement>("button") ?? (focusButton.disabled ? hideButton : focusButton)).focus();
   };
   function updateControls() {
     const disabled = !target || !controller?.term || !!overlay;
