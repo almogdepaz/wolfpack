@@ -52,7 +52,7 @@ import type {
   SessionSendOutcome,
 } from "../session-send-contract.js";
 import { NOTIFY_UNDELIVERED_REASON, notifyDelivery } from "../notify-contract.js";
-import { CHILD_WAIT_LIMITS, CHILD_WAIT_MODES, CHILD_WAIT_OUTCOMES, type ChildWaitMode } from "../child-event-contract.js";
+import { childEventLabel, CHILD_RUNTIME_SETTLED_TEXT, CHILD_WAIT_LIMITS, CHILD_WAIT_MODES, CHILD_WAIT_OUTCOME, CHILD_WAIT_OUTCOMES, type ChildWaitMode } from "../child-event-contract.js";
 import {
   NOTIFY_PARENT_PROMPT,
   PLAN_FILE_UNREADABLE,
@@ -132,7 +132,8 @@ notifies its parent's inbox and enrolled devices, or polls the current session's
 wait blocks until a child event arrives (any) or every live child is settled (all);
 timeout (default 180 s) is a check-in result with exit 0. Pass the returned cursor
 and bootId as --since/--boot-id to the next wait. children lists the current
-session's live children. wait and children run on this host only.
+session's live children. done/settled describe runtime or turn settlement, not task
+completion or parent acceptance. wait and children run on this host only.
 A spawned child is killed with its parent (POST /api/kill or parent exit), recursively;
 --outlive-parent keeps it running instead.`;
 }
@@ -1475,8 +1476,8 @@ async function runAgentWait(
     }
     if (parsed.output === "json") jsonOut(data);
     else {
-      print(`${data.outcome} (cursor ${data.cursor}, boot ${data.bootId})`);
-      for (const event of data.events) print(oneLine(`${event.seq} ${event.childName} ${event.event}${event.message ? `: ${event.message}` : ""}`));
+      print(`${data.outcome === CHILD_WAIT_OUTCOME.SETTLED ? CHILD_RUNTIME_SETTLED_TEXT : data.outcome} (cursor ${data.cursor}, boot ${data.bootId})`);
+      for (const event of data.events) print(oneLine(`${event.seq} ${event.childName} ${childEventLabel(event.event)}${event.message ? `: ${event.message}` : ""}`));
     }
     // Every outcome, including timeout, is a result: the caller decides what to do next.
     return SESSION_EXIT.OK;
@@ -1497,7 +1498,7 @@ async function runAgentChildren(
     }
     if (parsed.output === "json") jsonOut(data);
     else for (const child of data.children) {
-      print(oneLine(`${child.session} ${child.state}${child.settled ? " settled" : ""}${child.lastEvent ? ` (last: ${child.lastEvent.event})` : ""}`));
+      print(oneLine(`${child.session} ${child.state}${child.settled ? ` ${CHILD_RUNTIME_SETTLED_TEXT}` : ""}${child.lastEvent ? ` (last: ${childEventLabel(child.lastEvent.event)})` : ""}`));
     }
     return SESSION_EXIT.OK;
   } catch (error: unknown) {

@@ -3,7 +3,8 @@
  * these events from observation and lineage; they reach the parent inbox, the
  * `child_event` SSE kind and, in later phases, relay envelopes. Shared by the
  * server and the CLI. Optional fields may be added; existing fields keep their
- * names and meaning.
+ * names and meaning. `done` means runtime/turn settlement, not task completion
+ * or parent-verified acceptance. A child can resume work and emit `done` again.
  */
 import type { AgentStatusAuthority, AgentStatusState } from "./agent-status-contract.js";
 import type { ProgramStatusKind } from "./program-status-contract.js";
@@ -79,6 +80,13 @@ export function boundedChildEventText(value: string, maximum: number): string {
   return codePoints.length <= maximum ? cleaned : codePoints.slice(0, maximum).join("");
 }
 
+/** Human-facing text only; wire event names and wait outcomes stay unchanged. */
+export const CHILD_RUNTIME_SETTLED_TEXT = "runtime settled (not task completion)";
+
+export function childEventLabel(event: string): string {
+  return event === CHILD_EVENT.DONE ? CHILD_RUNTIME_SETTLED_TEXT : event;
+}
+
 /** One-line inbox text for an event; the inbox `from` field names the child. */
 export function childEventSummary(payload: Pick<ChildEventPayload, "event" | "state" | "inputKind" | "message" | "reason" | "exitCode" | "signal">): string {
   let text: string;
@@ -93,7 +101,7 @@ export function childEventSummary(payload: Pick<ChildEventPayload, "event" | "st
       text = `error${payload.message ? `: ${payload.message}` : ""}`;
       break;
     case CHILD_EVENT.DONE:
-      text = `done${payload.message ? `: ${payload.message}` : ""}`;
+      text = `${childEventLabel(payload.event)}${payload.message ? `: ${payload.message}` : ""}`;
       break;
     case CHILD_EVENT.EXITED: {
       const detail = payload.exitCode !== undefined
@@ -119,6 +127,8 @@ export type ChildWaitMode = typeof CHILD_WAIT_MODES[number];
 /**
  * Why a child wait returned. `timeout` is a check-in, not a failure: the
  * caller looks at the children and waits again with the returned cursor.
+ * `settled` describes runtime states (including blocked/error/exit), never a
+ * terminal task result or parent acceptance. Task protocols own those separately.
  */
 export const CHILD_WAIT_OUTCOME = {
   EVENTS: "events",

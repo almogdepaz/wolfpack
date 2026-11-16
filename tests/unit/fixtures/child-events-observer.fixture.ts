@@ -30,7 +30,7 @@ test("a child's program done reaches the parent inbox with no push or event subs
     await context.sessionObservation.runSessionNotificationObservation();
     const inbox = listParentNotifications(parent.wolfpackSessionId);
     expect(inbox).toHaveLength(1);
-    expect(inbox[0]).toMatchObject({ message: "done: tests pass", from: "worker" });
+    expect(inbox[0]).toMatchObject({ message: "runtime settled (not task completion): tests pass", from: "worker" });
     expect(inbox[0]!.childEvent).toMatchObject({
       kind: "wolfpack.child_event/v1",
       event: "done",
@@ -89,7 +89,7 @@ test("a queued typed note keeps the observer running and reaches the parent once
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(sends).toHaveLength(1);
     expect(sends[0]).toMatchObject({ sessionId: parent.wolfpackSessionId, sessionName: "lead" });
-    expect(sends[0]!.text).toContain("worker done");
+    expect(sends[0]!.text).toContain("worker runtime settled");
 
     // Nothing queued and no live child: the observer is idle again.
     expect(await context.sessionObservation.runSessionNotificationObservation()).toEqual([]);

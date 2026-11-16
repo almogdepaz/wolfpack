@@ -51,7 +51,7 @@ export const CHILD_EVENT_NOTE_LIMITS = {
 /** The relay envelope id is derived from the stable event id, so a resend deduplicates. */
 const ENVELOPE_ID_PREFIX = "wolfpack.child_event:";
 const NOTE_PREFIX = "[wolfpack] child events:";
-const NOTE_SUFFIX = "(details: wolfpack agent inbox --json)";
+const NOTE_SUFFIX = "(runtime notice, not task completion; details: wolfpack agent inbox --json)";
 const NOTE_STATES: ReadonlySet<AgentStatusState> = new Set([AGENT_STATUS_STATE.IDLE, AGENT_STATUS_STATE.DONE]);
 /** The same states, judged at each write from the root program status (never `blocked`). */
 const NOTE_PROGRAM_STATES: ReadonlySet<ProgramStatusState> = new Set([PROGRAM_STATUS_STATE.IDLE, PROGRAM_STATUS_STATE.DONE]);
@@ -126,7 +126,7 @@ function noteItem(payload: ChildEventPayload): string {
     case CHILD_EVENT.ERROR:
       return `${name} error`;
     case CHILD_EVENT.DONE:
-      return `${name} done`;
+      return `${name} runtime settled`;
     case CHILD_EVENT.MESSAGE:
       return `${name} message`;
   }
