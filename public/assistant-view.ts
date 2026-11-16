@@ -192,7 +192,8 @@ export function createAssistantView(deps: {
   const doc = () => focus?.document ?? emptyFocus();
   const routines = () => focusUnavailable || terminalUnavailable() || !focus?.assistant?.enabled ? undefined : focus.routines;
   // An error beside a live session (a dropped queue, an unverified send) is a note under the live state; "failed" is the assistant not running.
-  const status = () => focusUnavailable ? (offline() ? `${homeName} offline` : "focus unavailable") : terminalUnavailable() ? "unavailable" : focus?.assistant?.error && !focus.assistant.session ? "failed" : focus?.assistant?.enabled ? (focus.assistant.state === "needs-input" ? "needs you" : routines()?.catchingUp ? "catching up" : focus.assistant.state) : "off";
+  // A dialog in either terminal (worker or chat) is the user's move, so both read as "needs you" (amber dot and launcher).
+  const status = () => focusUnavailable ? (offline() ? `${homeName} offline` : "focus unavailable") : terminalUnavailable() ? "unavailable" : focus?.assistant?.error && !focus.assistant.session ? "failed" : focus?.assistant?.enabled ? (attentionRole() ? "needs you" : routines()?.catchingUp ? "catching up" : focus.assistant.state) : "off";
   // Today's times need no weekday; older catching-up / stale / not-reached times keep it.
   const when = (at: string) => new Date(at).toLocaleString([], { weekday: localDay(Date.parse(at)) === localDay(Date.now()) ? undefined : "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
   const localDay = (ms: number) => { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };

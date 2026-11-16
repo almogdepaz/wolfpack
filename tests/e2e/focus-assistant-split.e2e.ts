@@ -66,7 +66,7 @@ test("plan pastes only into chat while the worker is busy or waiting on a dialog
   expect(sends[0]).toMatchObject({ session: "assistant-chat", noEnter: true });
 });
 
-for (const role of ["assistant", "assistant-chat"]) test(`needs-you opens the ${role} dialog; the dot remains the worker's`, async ({ page }) => {
+for (const role of ["assistant", "assistant-chat"]) test(`needs-you opens the ${role} dialog; either role's dialog turns the dot amber`, async ({ page }) => {
   const opened = sockets(page);
   await page.route(url => url.pathname === "/api/focus", async route => {
     const response = await route.fetch(), body = await response.json();
@@ -75,7 +75,8 @@ for (const role of ["assistant", "assistant-chat"]) test(`needs-you opens the ${
     await route.fulfill({ response, json: body });
   });
   await open(page);
-  await expect(page.locator("#assistant-content .focus-header .dot")).toHaveClass(role === "assistant" ? /yellow/ : /green/);
+  // User decision (2026-11-16): a chat dialog is the user's move too, so the dot is amber for either role.
+  await expect(page.locator("#assistant-content .focus-header .dot")).toHaveClass(/yellow/);
   await page.locator("#assistant-content .focus-header").getByRole("button", { name: "assistant needs you ›", exact: true }).click();
   await expect.poll(() => opened.at(-1)).toBe(role);
 });

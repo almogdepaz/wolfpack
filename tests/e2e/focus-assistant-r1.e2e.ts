@@ -66,6 +66,9 @@ for (const role of ["assistant", "assistant-chat"]) test(`needs-you evidence ope
   await open(page);
   const action = page.locator("#assistant-content").getByRole("button", { name: "assistant needs you ›", exact: true });
   await expect(action).toBeVisible();
+  // Either terminal's dialog is the user's move: the header dot and the sidebar launcher turn amber for both roles.
+  await expect(page.locator("#assistant-content .focus-header .dot").first()).toHaveClass(/yellow/);
+  await expect(page.locator("#sidebar-assistant")).toHaveAttribute("data-tone", "attn");
   await shot(page, `needs-you-${role}`, info.project.name);
   await action.click();
   await expect(page.locator(info.project.name === "desktop" ? "#assistant-pane-role" : "#assistant-terminal-role")).toHaveText(role === "assistant" ? "background" : "chat");
