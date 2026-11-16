@@ -116,6 +116,7 @@ return {
     const sessions = await observeDashboardSessions(ctx);
     json(res, { sessions: sessions.map(session => ({ ...session, changedAt: session.runtimeState.changedAt,
       pinned: ctx.assistantService.pins.some(pin => pin.name === session.name),
+      focusAssistant: ctx.focusRuntime.homeIsLocal() && ctx.assistantService.config?.pinnedSessions?.some(pin => pin.name === session.name && ctx.assistantService.isManagedPin(pin)) ? session.focusAssistant : undefined,
       organization: session.identity ? ctx.sessionOrganization.project(session.identity.wolfpackSessionId) : { status: "unavailable" },
     })) });
   },

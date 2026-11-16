@@ -45,6 +45,7 @@ import {
   recordQuietAlertEmission,
 } from "./push.js";
 import { loadSettings } from "./project-settings-routes.js";
+import type { FocusAssistantOwnership } from "../focus-session.js";
 import type { PublicSessionIdentity } from "./session-identity.js";
 import { WOLFPACK_EVENT_KIND } from "../events-contract.js";
 import type { EventBus } from "../event-bus.js";
@@ -180,6 +181,7 @@ onQuietAlertPolicyInvalidation((kind) => {
 });
 
 interface KnownSessionSummary {
+  readonly focusAssistant?: FocusAssistantOwnership;
   readonly name: string;
   readonly lastLine: string;
   readonly summary?: readonly string[];
@@ -196,6 +198,7 @@ const BUSY_DESCENDANT_STATES: ReadonlySet<AgentStatusState> = new Set([
 ]);
 
 interface ObservedSessionSummary {
+  readonly focusAssistant?: FocusAssistantOwnership;
   readonly name: string;
   readonly lastLine: string;
   readonly meta?: SessionMeta;
@@ -569,7 +572,7 @@ function observeUnavailableSessions(policyEpoch: number, observationOwnership: n
   for (const sessionKey of Object.keys(store.snapshot().sessions)) {
     if (!summariesBySessionKey.has(sessionKey)) summariesBySessionKey.set(sessionKey, { name: sessionKey, lastLine: "" });
   }
-  const sessions = Array.from(summariesBySessionKey.entries()).map<ObservedSessionSummary>(([sessionKey, { name, lastLine, identity }]) => {
+  const sessions = Array.from(summariesBySessionKey.entries()).map<ObservedSessionSummary>(([sessionKey, { name, lastLine, identity, focusAssistant }]) => {
     const previous = store.get(sessionKey);
     const runtimeState = store.reduce({
       sessionKey,
@@ -589,6 +592,7 @@ function observeUnavailableSessions(policyEpoch: number, observationOwnership: n
       triage: "idle" as TriageStatus,
       runtimeState,
       activity: { freshness: "unknown", observedAt, display: "activity unavailable" },
+      ...(focusAssistant && { focusAssistant }),
       ...(identity && { identity }),
     };
   }).sort((a, b) => a.name.localeCompare(b.name));
@@ -612,6 +616,7 @@ function staleSessionProjection(
     return [{
       name: session.name,
       lastLine: known?.lastLine ?? "",
+      ...(known?.focusAssistant && { focusAssistant: known.focusAssistant }),
       triage: "idle" as TriageStatus,
       runtimeState,
       activity: reduceActivityObservation(undefined, { alive: false, observedAt }).activity,
@@ -1058,7 +1063,13 @@ async function collectSessionObservation(
 
   const sessions = reduceCollectedQuietAlerts(
     observedSessions.filter((session): session is PendingSessionObservation => session !== undefined),
-  );
+  ).map(session => {
+    const fact = sessionFacts.find(f => f.identity?.wolfpackSessionId === session.identity?.wolfpackSessionId);
+    const focusAssistant = fact && ctx.focusRuntime.homeIsLocal() ? ctx.assistantService.managedOwnership(fact) : undefined;
+    const known = knownSessionSummaries.get(session.name);
+    if (known && known.identity?.wolfpackSessionId === session.identity?.wolfpackSessionId) knownSessionSummaries.set(session.name, { ...known, focusAssistant });
+    return { ...session, ...(focusAssistant && { focusAssistant }) };
+  });
   sessions.sort((a, b) => a.name.localeCompare(b.name));
   if (pass === "full") pruneSessionObservationState(fingerprints, activeSessionKeys, activeNames, store, authority);
   return { sessions, unreliableSessionKeys, authoritative: ownsObservationAuthority(authority) };

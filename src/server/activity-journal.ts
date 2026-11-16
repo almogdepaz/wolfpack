@@ -8,6 +8,7 @@ import {
   activityFileName,
   expiredActivityFiles,
   isActivityFileName,
+  isFocusAssistantActivity,
   pageActivity,
   parseActivityLines,
   serializeActivityRow,
@@ -54,6 +55,7 @@ export class ActivityJournal {
   private journalId = "";
   /** Newest input time per session, so the quiet gate can ignore the assistant's own typing. */
   private lastInputBySession = new Map<string, string>();
+  private lastUserInputBySession = new Map<string, string>();
   /** Highest seq per day file: a read skips files with nothing after its cursor, in any file order. */
   private fileMaxSeq = new Map<string, number>();
   private buffer: ActivityRow[] = [];
@@ -120,6 +122,10 @@ export class ActivityJournal {
     if (!this.lastInputAt || row.at > this.lastInputAt) this.lastInputAt = row.at;
     const last = this.lastInputBySession.get(row.session);
     if (!last || row.at > last) this.lastInputBySession.set(row.session, row.at);
+    if (!isFocusAssistantActivity(row)) {
+      const userInput = this.lastUserInputBySession.get(row.session);
+      if (!userInput || row.at > userInput) this.lastUserInputBySession.set(row.session, row.at);
+    }
   }
 
   append(body: ActivityRowBody): ActivityRow {
@@ -164,12 +170,13 @@ export class ActivityJournal {
   inputAt(session: string): string | undefined { this.open(); return this.lastInputBySession.get(session); }
 
   /** Exclude helper terminals' own input from the user's quiet timing. */
-  status(options: { exceptSession?: string; exceptSessions?: readonly string[] } = {}): ActivityJournalStatus {
+  status(options: { exceptSession?: string; exceptSessions?: readonly string[]; excludeFocusAssistant?: boolean } = {}): ActivityJournalStatus {
     this.open();
     let lastInputAt = this.lastInputAt;
-    if (options.exceptSession !== undefined || options.exceptSessions !== undefined) {
+    if (options.exceptSession !== undefined || options.exceptSessions !== undefined || options.excludeFocusAssistant) {
       lastInputAt = null;
-      for (const [session, at] of this.lastInputBySession) if (session !== options.exceptSession && !options.exceptSessions?.includes(session) && (!lastInputAt || at > lastInputAt)) lastInputAt = at;
+      const inputs = options.excludeFocusAssistant ? this.lastUserInputBySession : this.lastInputBySession;
+      for (const [session, at] of inputs) if (session !== options.exceptSession && !options.exceptSessions?.includes(session) && (!lastInputAt || at > lastInputAt)) lastInputAt = at;
     }
     return { journalId: this.journalId, headSeq: this.seq, oldestSeq: this.oldestSeq, lastRowAt: this.lastRowAt, lastInputAt };
   }

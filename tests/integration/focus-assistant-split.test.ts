@@ -14,9 +14,11 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createServerContext } from "../../src/server/context.ts";
 import { createRoutes } from "../../src/server/routes.ts";
+import { __resetSessionObservationForTests } from "../../src/server/session-observation.ts";
 import type { Config } from "../../src/config.ts";
 
 function fixture() {
+  __resetSessionObservationForTests();
   const root = mkdtempSync(join(tmpdir(), "focus-split-"));
   let config: Config = { devDir: root, port: 19643 };
   const service = new AssistantService({ root, readConfig: () => config, writeConfig: next => { config = next; },
@@ -192,15 +194,49 @@ test("seeded roles retain shared safety while chat cannot write worker state and
   } finally { t.close(); }
 });
 
-test("both assistants are excluded from cards/counts and routine rows and own-input quiet timing", async () => {
+test("quiet timing preserves ordinary namesake history even after later managed input with the same name", async () => {
   const t = fixture();
   let now = Date.now();
   const journal = new ActivityJournal({ dir: join(t.root, "activity"), now: () => now += 1000 });
   try {
-    const rows = ["work", "assistant", "assistant-chat"].map((session, i) => journal.append({ kind: ACTIVITY_KIND.INPUT, session, source: "browser", bucket: new Date(Date.now() + i * 1000).toISOString() }));
-    expect(withoutFocusAssistant(["work", "assistant", "assistant-chat"].map(name => ({ name, pinned: true }))).map(s => s.name)).toEqual(["work"]);
-    const page = await localActivitySource("home", "home", journal).read(0, 100);
-    expect(withoutAssistantRows(page.rows).map(r => "session" in r && r.session)).toEqual(["work"]);
-    expect(page.lastInputAt).toBe(rows[0]!.at);
+    const ordinary = journal.append({ kind: ACTIVITY_KIND.INPUT, session: "assistant-chat", sessionId: "ordinary", source: "browser", bucket: new Date(now).toISOString() });
+    journal.append({ kind: ACTIVITY_KIND.INPUT, session: "assistant-chat", sessionId: "managed", source: "browser", bucket: new Date(now).toISOString(),
+      focusAssistant: { name: "assistant-chat", folder: t.service.folder, sessionId: "managed" } });
+    expect((await localActivitySource("home", "home", journal).read(0, 100)).lastInputAt).toBe(ordinary.at);
   } finally { journal.close(); t.close(); }
+});
+
+for (const role of ["assistant", "assistant-chat"] as const) test.each(["managed", "other-cwd", "unpinned", "peer"] as const)(`${role}: owning-home exclusions and journal history (%s)`, async scenario => {
+  const t = fixture();
+  let now = Date.now();
+  const dir = join(t.root, "activity");
+  const journal = new ActivityJournal({ dir, now: () => now += 1000 });
+  await t.service.enable(true);
+  if (scenario === "unpinned") t.config.pinnedSessions = t.config.pinnedSessions!.filter(p => p.name !== role);
+  if (scenario === "peer") t.config.focus = { home: "another-home" };
+  await t.backend.createSession("work", t.root, "sh", () => ({ agentCmd: "sh" }));
+  await t.backend.createSession(role, scenario === "other-cwd" ? t.root : t.service.folder, "pi", () => ({ agentCmd: "pi" }), { agentKind: "pi", pinnedCommand: t.service.command(role) });
+  const ctx = createServerContext({ backend: t.backend, config: t.config, assistantService: t.service, activityJournal: journal });
+  const routes = createRoutes(ctx);
+  const server = createServer((req, res) => { void routes["GET /api/sessions"]!(req, res); });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const expected = scenario === "managed" ? ["work"] : [role, "work"].sort();
+  try {
+    const body = await (await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/sessions`)).json();
+    expect(withoutFocusAssistant(body.sessions).map(s => s.name).sort()).toEqual(expected);
+    await ctx.activityRecorder.reconcile();
+    ctx.activityRecorder.notePresence("work", "browser");
+    ctx.activityRecorder.notePresence(role, "browser");
+    const page = await localActivitySource("home", "home", journal).read(0, 100);
+    const inputs = page.rows.filter(row => row.kind === ACTIVITY_KIND.INPUT);
+    expect(withoutAssistantRows(inputs).map(row => "session" in row && row.session).sort()).toEqual(expected);
+    expect(page.lastInputAt).toBe(inputs[scenario === "managed" ? 0 : 1]!.at);
+    journal.close();
+    const restored = new ActivityJournal({ dir });
+    try {
+      const history = await localActivitySource("home", "home", restored).read(0, 100);
+      expect(withoutAssistantRows(history.rows.filter(row => row.kind === ACTIVITY_KIND.INPUT)).map(row => "session" in row && row.session).sort()).toEqual(expected);
+      expect(history.lastInputAt).toBe(page.lastInputAt);
+    } finally { restored.close(); }
+  } finally { ctx.focusRuntime.stop(); journal.close(); await new Promise<void>(resolve => server.close(() => resolve())); t.close(); }
 });

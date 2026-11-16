@@ -1,3 +1,4 @@
+import type { FocusAssistantOwnership } from "../focus-session.js";
 import { realpathSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { ACTIVITY_KIND, PRESENCE_BUCKET_MS, presenceBucket, type ActivityRowBody, type InputSource, type ActivityGitRepo } from "../activity-journal.js";
@@ -23,7 +24,7 @@ export function readGitHead(cwd: string): Promise<GitHead> {
   });
 }
 
-interface Known { name: string; cwd: string }
+interface Known { name: string; cwd: string; fact?: SessionListFact; focusAssistant?: FocusAssistantOwnership }
 
 /**
  * Turns this server's live events, PTY input presence and startup state into
@@ -41,13 +42,16 @@ export class ActivityRecorder {
     journal: ActivityJournal;
     events: EventBus;
     facts: () => Promise<readonly SessionListFact[]>;
+    managedAssistant?: (fact: SessionListFact) => FocusAssistantOwnership | undefined;
     git?: (cwd: string) => Promise<GitHead>;
     now?: () => number;
   }) {}
 
   private git(cwd: string): Promise<GitHead> { return (this.options.git ?? readGitHead)(cwd); }
   private append(body: ActivityRowBody): void {
-    try { this.options.journal.append(body); } catch (error) { log.warn("activity append failed", { kind: body.kind, error: errMsg(error) }); }
+    const fact = "sessionId" in body && body.sessionId ? this.known.get(body.sessionId)?.fact : undefined;
+    const owner = fact && this.options.managedAssistant?.(fact);
+    try { this.options.journal.append({ ...body, ...(owner && { focusAssistant: owner }) }); } catch (error) { log.warn("activity append failed", { kind: body.kind, error: errMsg(error) }); }
   }
   private later(work: () => Promise<void>): void {
     const task = work().catch(error => { log.warn("activity enrichment failed", { error: errMsg(error) }); }).finally(() => { this.pending.delete(task); });
@@ -62,8 +66,13 @@ export class ActivityRecorder {
   /** Test and shutdown helper: resolves when queued enrichments have been appended. */
   async settled(): Promise<void> { while (this.pending.size) await Promise.all([...this.pending]); }
 
-  private harness(id: string): Promise<string | undefined> {
-    return this.options.facts().then(facts => facts.find(f => f.identity?.wolfpackSessionId === id)?.identity?.agentKind, () => undefined);
+  private async harness(id: string): Promise<string | undefined> {
+    try {
+      const fact = (await this.options.facts()).find(f => f.identity?.wolfpackSessionId === id);
+      const known = this.known.get(id);
+      if (known && fact) { known.fact = fact; known.focusAssistant = this.options.managedAssistant?.(fact); }
+      return fact?.identity?.agentKind;
+    } catch { return undefined; }
   }
 
   private onEvent(event: WolfpackEvent): void {
@@ -87,7 +96,7 @@ export class ActivityRecorder {
           const git = known ? await this.git(known.cwd) : {};
           const session = event.session ?? known?.name;
           this.append({ kind: ACTIVITY_KIND.SESSION_EXITED, ...(session && { session }), sessionId: event.sessionId, reason: event.reason,
-            ...(event.exitCode !== undefined && { exitCode: event.exitCode }), ...(event.signal !== undefined && { signal: event.signal }), ...(git.head && { head: git.head }) });
+            ...(event.exitCode !== undefined && { exitCode: event.exitCode }), ...(event.signal !== undefined && { signal: event.signal }), ...(git.head && { head: git.head }), ...(known?.focusAssistant && { focusAssistant: known.focusAssistant }) });
         });
         return;
       }
@@ -126,7 +135,7 @@ export class ActivityRecorder {
     const enriched = await Promise.all(live.map(async fact => ({ fact, git: await this.git(fact.identity!.projectPath) })));
     for (const { fact, git } of enriched) {
       const identity = fact.identity!;
-      this.known.set(identity.wolfpackSessionId, { name: fact.name, cwd: identity.projectPath });
+      this.known.set(identity.wolfpackSessionId, { name: fact.name, cwd: identity.projectPath, fact, focusAssistant: this.options.managedAssistant?.(fact) });
       this.append({ kind: ACTIVITY_KIND.SESSION_LIVE, session: fact.name, sessionId: identity.wolfpackSessionId, cwd: identity.projectPath,
         ...(identity.agentKind && { harness: identity.agentKind }), ...git });
     }

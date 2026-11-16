@@ -1,3 +1,5 @@
+import { isFocusAssistantOwnership, isFocusAssistantSession, type FocusAssistantOwnership } from "./focus-session.js";
+
 /**
  * Per-machine activity journal contract: append-only JSONL rows with a
  * monotonic `seq`, day-partitioned files, tail recovery and cursor paging.
@@ -19,12 +21,12 @@ export const INPUT_SOURCE = { BROWSER: "browser", CLI: "cli" } as const;
 export type InputSource = typeof INPUT_SOURCE[keyof typeof INPUT_SOURCE];
 
 interface SessionStart { session: string; sessionId: string; cwd: string; harness?: string; branch?: string; head?: string; state?: string }
-export type ActivityRowBody =
+export type ActivityRowBody = (
   | ({ kind: typeof ACTIVITY_KIND.SESSION_CREATED | typeof ACTIVITY_KIND.SESSION_LIVE } & SessionStart)
   | { kind: typeof ACTIVITY_KIND.SESSION_STATE; session: string; sessionId?: string; state: string; label: string; message?: string; inputKind?: string }
   | { kind: typeof ACTIVITY_KIND.SESSION_EXITED; session?: string; sessionId: string; reason: string; exitCode?: number; signal?: number; head?: string }
   | { kind: typeof ACTIVITY_KIND.TASK_UPDATED; taskId: string; eventType: string }
-  | { kind: typeof ACTIVITY_KIND.INPUT; session: string; sessionId?: string; source: InputSource; bucket: string };
+  | { kind: typeof ACTIVITY_KIND.INPUT; session: string; sessionId?: string; source: InputSource; bucket: string }) & { focusAssistant?: FocusAssistantOwnership };
 export type ActivityRow = ActivityRowBody & { seq: number; at: string };
 
 export const PRESENCE_BUCKET_MS = 5 * 60_000;
@@ -42,10 +44,18 @@ const opt = (v: unknown, max = 4096) => v === undefined || str(v, max);
 const optInt = (v: unknown) => v === undefined || Number.isSafeInteger(v);
 const iso = (v: unknown) => typeof v === "string" && /^\d{4}-\d\d-\d\dT/.test(v) && Number.isFinite(Date.parse(v));
 const only = (v: Record<string, unknown>, keys: readonly string[]) => Object.keys(v).every(k => keys.includes(k));
-const BASE = ["seq", "at", "kind"];
+const BASE = ["seq", "at", "kind", "focusAssistant"];
+
+/** Historical ownership is captured by the recorder, never guessed from a reusable name. */
+export function isFocusAssistantActivity(row: ActivityRowBody): boolean {
+  const owner = row.focusAssistant;
+  return "session" in row && isFocusAssistantSession({ name: row.session ?? "", pinned: true, focusAssistant: owner,
+    identity: { wolfpackSessionId: "sessionId" in row ? row.sessionId : undefined, projectPath: "cwd" in row ? row.cwd : owner?.folder } });
+}
 
 export function isActivityRow(v: unknown): v is ActivityRow {
   if (!object(v) || !Number.isSafeInteger(v.seq) || (v.seq as number) < 1 || !iso(v.at)) return false;
+  if (v.focusAssistant !== undefined && (!isFocusAssistantOwnership(v.focusAssistant) || !isFocusAssistantActivity(v as unknown as ActivityRowBody))) return false;
   switch (v.kind) {
     case ACTIVITY_KIND.SESSION_CREATED: case ACTIVITY_KIND.SESSION_LIVE:
       return only(v, [...BASE, "session", "sessionId", "cwd", "harness", "branch", "head", "state"]) && str(v.session, 256) && str(v.sessionId, 256)

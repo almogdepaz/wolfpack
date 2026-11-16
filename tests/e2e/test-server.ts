@@ -130,8 +130,11 @@ if (process.env.WOLFPACK_E2E_FOCUS_ASSISTANT === "1") {
   const { saveConfig } = await import("../../src/config.ts");
   const { FocusStore } = await import("../../src/server/focus-store.ts");
   const folder = join(process.env.WOLFPACK_DIR, "assistant");
-  saveConfig({ devDir: "/tmp", port: 19792, pinnedSessions: ["assistant", "assistant-chat"].map(name => ({ name, cwd: folder, command: ["pi"], harness: "pi" })) });
-  for (const role of ["assistant", "assistant-chat"]) await mock.createSession(role, folder, "pi", () => ({ agentCmd: "pi" }), { agentKind: "pi" });
+  const { AssistantService } = await import("../../src/server/assistant-service.ts");
+  const assistant = new AssistantService();
+  const pins = (["assistant", "assistant-chat"] as const).map(name => ({ name, cwd: folder, command: assistant.command(name), harness: "pi" }));
+  saveConfig({ devDir: "/tmp", port: 19792, pinnedSessions: pins });
+  for (const pin of pins) await mock.createSession(pin.name, folder, "pi", () => ({ agentCmd: "pi" }), { agentKind: "pi", pinnedCommand: pin.command });
   paneContent.assistant = "pi · focus-assistant · skill: wolfpack-focus\n\n› broker leak first, the focus view can wait a day\n\n  Moving fix broker leak to the top.\n  prompt-project is still waiting on your answer.\n\n  $ wolfpack focus note 'Broker leak first. Answer the blocked session.'\n\n  Focus saved. Your conversation stays in this terminal.\n\n› ".replace(/\n/g, "\r\n");
   paneContent["assistant-chat"] = "pi · focus-chat · skill: wolfpack-focus-chat\n\n  Your priorities, current next actions and today's day note are loaded.\n  What would you like to work on?\n\n› ".replace(/\n/g, "\r\n");
   // capturePane is display text (CR stripped); a PTY prefill must restore line starts.

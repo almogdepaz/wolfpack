@@ -15,6 +15,23 @@ function sockets(page: Page) {
   return sessions;
 }
 
+test("proven helpers are excluded, but a pinned namesake in another folder remains a card and ranks", async ({ page }) => {
+  await page.route("**/api/sessions", async route => {
+    const response = await route.fetch(), body = await response.json();
+    const namesake = body.sessions.find((s: { name: string }) => s.name === "assistant-chat");
+    namesake.identity = { ...namesake.identity, projectPath: "/work/ordinary", agentKind: "shell" };
+    delete namesake.focusAssistant;
+    namesake.runtimeState = { ...namesake.runtimeState, state: "needs-input", inputKind: "question" };
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(server.baseUrl);
+  await expect(page.locator("#session-summary")).toContainText("5 sessions");
+  await expect(page.locator("#session-list .card-name-text").filter({ hasText: /^assistant-chat$/ }).first()).toBeVisible();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  await expect(page.locator("#assistant-content .focus-next > li").filter({ hasText: "assistant-chat" })).toBeVisible();
+  await expect(page.locator("#session-list .card-name-text").filter({ hasText: /^assistant$/ })).toHaveCount(0);
+});
+
 test("talk and take-reply attach chat, never the worker", async ({ page }) => {
   const opened = sockets(page);
   await page.route(url => url.pathname === "/api/focus", async route => {

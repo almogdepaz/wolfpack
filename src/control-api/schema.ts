@@ -1,3 +1,4 @@
+import { FOCUS_ASSISTANT_SESSION_NAMES } from "../focus-session.ts";
 import { AGENT_KIND, CREATABLE_HARNESSES } from "../agent-kind.ts";
 import { EXTENSION_BLOB_LIMITS } from "../extensions/blob-store.ts";
 import { EXTENSION_PEER_ERROR } from "../extensions/selected-host-contract.ts";
@@ -872,6 +873,9 @@ export const controlApiSource: ControlApiSource = {
       runtimeState: ref("AgentRuntimeState"),
       changedAt: string(),
       pinned: boolean(),
+      focusAssistant: object({ name: { enum: [...FOCUS_ASSISTANT_SESSION_NAMES] }, folder: string(), sessionId: ref("SessionId") }, ["name", "folder", "sessionId"], {
+        description: "Owning focus home's managed-role provenance, bound to this UUID and configured folder; absent for unrelated namesakes and unproven launches",
+      }),
       activity: ref("ActivityObservation"),
       quietAlert: ref("QuietAlertFact"),
       quietSuppressedBy: ref("QuietSuppression"),

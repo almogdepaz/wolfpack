@@ -1,4 +1,4 @@
-import { isFocusAssistantName } from "./focus-session.js";
+import { isFocusAssistantActivity } from "./activity-journal.js";
 
 /**
  * Routine bookkeeping owned by the home server (never by the assistant):
@@ -154,7 +154,7 @@ export function settledProvisional(coverage: FocusCoverage): ProvisionalReview |
 
 /** The assistant's own turns journal state rows on the home machine; they must never trigger or feed it. */
 export function withoutAssistantRows(rows: readonly ActivityRow[]): ActivityRow[] {
-  return rows.filter(row => !("session" in row && row.session !== undefined && isFocusAssistantName(row.session)));
+  return rows.filter(row => !isFocusAssistantActivity(row));
 }
 
 export type InboxMachine =

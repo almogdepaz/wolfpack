@@ -62,7 +62,9 @@ function setup(now = at(6, 15)) {
   const inbox = (file: string) => JSON.parse(readFileSync(join(root, "assistant", "inbox", file), "utf8"));
   return { root, clock, journal, home, peer, sends, assistant, routines, append, coverage, inbox, setBusy: (b: boolean) => { busy = b; } };
 }
-const state = (session: string, label = "Working"): ActivityRowBody => ({ kind: ACTIVITY_KIND.SESSION_STATE, session, sessionId: `${session}-id`, state: "working", label });
+const ownWorker = { name: "assistant" as const, folder: "/test/assistant", sessionId: "assistant-id" };
+const state = (session: string, label = "Working"): ActivityRowBody => ({ kind: ACTIVITY_KIND.SESSION_STATE, session, sessionId: `${session}-id`, state: "working", label,
+  ...(session === "assistant" && { focusAssistant: ownWorker }) });
 const input = (session: string): ActivityRowBody => ({ kind: ACTIVITY_KIND.INPUT, session, source: "browser", bucket: new Date(at(6, 14, 50)).toISOString() });
 const fileOf = (text: string) => text.replace("process inbox inbox/", "");
 
@@ -692,7 +694,8 @@ describe("focus routines runtime", () => {
 });
 
 const task = (id: string): ActivityRowBody => ({ kind: ACTIVITY_KIND.TASK_UPDATED, taskId: id, eventType: "task.completed" });
-const inputAt = (session: string, when: number): ActivityRowBody => ({ kind: ACTIVITY_KIND.INPUT, session, source: "browser", bucket: new Date(when).toISOString() });
+const inputAt = (session: string, when: number): ActivityRowBody => ({ kind: ACTIVITY_KIND.INPUT, session, source: "browser", bucket: new Date(when).toISOString(),
+  ...(session === "assistant" && { sessionId: ownWorker.sessionId, focusAssistant: ownWorker }) });
 const noteOf = (t: ReturnType<typeof setup>, date: string) => readFileSync(join(t.root, "assistant", "days", `${date}.md`), "utf8");
 /** Boot at 09:00 with no history: the gap check closes yesterday and nothing is outstanding. */
 async function booted(t: ReturnType<typeof setup>) {

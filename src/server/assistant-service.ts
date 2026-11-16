@@ -6,7 +6,7 @@ import { loadConfig, saveConfig, type Config } from "../config.js";
 import { resolveWolfpackDir } from "../wolfpack-dir.js";
 import { readValidatedJsonFile, writePrivateFile, writePrivateJsonFile } from "../persistence.js";
 import type { PinnedSession, PreparedPinnedSession } from "../pinned-sessions.js";
-import { FOCUS_ASSISTANT_SESSION_NAMES, isFocusAssistantName, type FocusAssistantRole } from "../focus-session.js";
+import { FOCUS_ASSISTANT_SESSION_NAMES, isFocusAssistantName, type FocusAssistantRole, type FocusAssistantOwnership } from "../focus-session.js";
 import { detectProviderReadiness, type ProviderReadiness } from "../provider-readiness.js";
 import type { SessionListFact } from "./backend-contract.js";
 import { focusAssistantSkill } from "../focus-skill.js";
@@ -37,6 +37,9 @@ export class AssistantService {
     return isFocusAssistantName(fact.name) && !!fact.identity?.wolfpackSessionId && fact.identity.projectPath === this.folder
       && fact.identity.agentKind === AGENT_KIND.PI.id && this.isManagedCommand(fact.name, fact.pinnedCommand)
       && (this.config?.pinnedSessions ?? []).some(pin => pin.name === fact.name && this.isManagedPin(pin));
+  }
+  managedOwnership(fact: SessionListFact): FocusAssistantOwnership | undefined {
+    return this.isManagedSession(fact) ? { name: fact.name as FocusAssistantRole, folder: this.folder, sessionId: fact.identity!.wolfpackSessionId } : undefined;
   }
   private isManagedCommand(role: FocusAssistantRole, command: readonly string[] | undefined): boolean {
     if (!command) return false;

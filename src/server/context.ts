@@ -98,7 +98,8 @@ export function createServerContext(overrides: ServerContextOptions = {}): Serve
       return cache.viewerRedraw.tracker;
     },
     get activityRecorder() {
-      return overrides.activityRecorder ?? (cache.activityRecorder ??= new ActivityRecorder({ journal: context.activityJournal, events, facts: () => context.backend.listSessionFacts() }));
+      return overrides.activityRecorder ?? (cache.activityRecorder ??= new ActivityRecorder({ journal: context.activityJournal, events, facts: () => context.backend.listSessionFacts(),
+        managedAssistant: fact => context.focusRuntime.homeIsLocal() ? context.assistantService.managedOwnership(fact) : undefined }));
     },
     get taskGateway() {
       return cache.taskGateway ??= new TaskGateway({ root: overrides.taskRoot ?? process.env.WOLFPACK_TASK_ROOT, inspectSession: selector => context.backend.inspectSession(selector) });
