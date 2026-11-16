@@ -32,6 +32,8 @@ export interface TestServerOptions {
   readonly canonicalSessionIds?: boolean;
   /** Synthetic focus data and a mock Pi terminal; never launches a provider process. */
   readonly focusAssistant?: boolean;
+  /** Record synthetic worker submissions and finish mock routine turns for split routing checks. */
+  readonly focusRoutine?: boolean;
 }
 
 // ── Server startup ───────────────────────────────────────────────────────────
@@ -77,6 +79,7 @@ export function startTestServer(options: TestServerOptions = {}): Promise<TestSe
           WOLFPACK_E2E_LIFECYCLE_EVENTS: options.lifecycleEvents ? "1" : undefined,
           WOLFPACK_E2E_CANONICAL_SESSION_IDS: options.canonicalSessionIds ? "1" : undefined,
           WOLFPACK_E2E_FOCUS_ASSISTANT: options.focusAssistant ? "1" : undefined,
+          WOLFPACK_E2E_FOCUS_ROUTINE: options.focusRoutine ? "1" : undefined,
         },
       },
     );

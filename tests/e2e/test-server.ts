@@ -6,6 +6,7 @@
  * Prints `READY:<port>` to stdout when listening.
  * Exits on SIGTERM or when stdin closes (parent process dies).
  */
+import { appendFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -129,16 +130,17 @@ if (process.env.WOLFPACK_E2E_FOCUS_ASSISTANT === "1") {
   const { saveConfig } = await import("../../src/config.ts");
   const { FocusStore } = await import("../../src/server/focus-store.ts");
   const folder = join(process.env.WOLFPACK_DIR, "assistant");
-  saveConfig({ devDir: "/tmp", port: 19792, pinnedSessions: [{ name: "assistant", cwd: folder, command: ["pi"], harness: "pi" }] });
-  await mock.createSession("assistant", folder, "pi", () => ({ agentCmd: "pi" }));
+  saveConfig({ devDir: "/tmp", port: 19792, pinnedSessions: ["assistant", "assistant-chat"].map(name => ({ name, cwd: folder, command: ["pi"], harness: "pi" })) });
+  for (const role of ["assistant", "assistant-chat"]) await mock.createSession(role, folder, "pi", () => ({ agentCmd: "pi" }), { agentKind: "pi" });
   paneContent.assistant = "pi · focus-assistant · skill: wolfpack-focus\n\n› broker leak first, the focus view can wait a day\n\n  Moving fix broker leak to the top.\n  prompt-project is still waiting on your answer.\n\n  $ wolfpack focus note 'Broker leak first. Answer the blocked session.'\n\n  Focus saved. Your conversation stays in this terminal.\n\n› ".replace(/\n/g, "\r\n");
+  paneContent["assistant-chat"] = "pi · focus-chat · skill: wolfpack-focus-chat\n\n  Your priorities, current next actions and today's day note are loaded.\n  What would you like to work on?\n\n› ".replace(/\n/g, "\r\n");
   // capturePane is display text (CR stripped); a PTY prefill must restore line starts.
   const getPrefill = mock.getSessionPrefill.bind(mock);
   mock.getSessionPrefill = async (...args) => {
     const prefill = await getPrefill(...args);
-    return args[0] === "assistant" ? { ...prefill, data: Buffer.from(prefill.data.toString().replace(/\r?\n/g, "\r\n")) } : prefill;
+    return args[0] === "assistant" || args[0] === "assistant-chat" ? { ...prefill, data: Buffer.from(prefill.data.toString().replace(/\r?\n/g, "\r\n")) } : prefill;
   };
-  mock.setProgramStatus("assistant", { id: "", state: "done", app: "pi", updatedAtMs: Date.now() });
+  for (const role of ["assistant", "assistant-chat"]) mock.setProgramStatus(role, { id: "", state: "done", app: "pi", updatedAtMs: Date.now() });
   mock.setProgramStatus("prompt-project", { id: "", state: "blocked", kind: "question", updatedAtMs: Date.now() - 7200000 });
   mock.setProgramStatus("another-project", { id: "", state: "working", updatedAtMs: Date.now() });
   new FocusStore().update(0, [
@@ -147,6 +149,20 @@ if (process.env.WOLFPACK_E2E_FOCUS_ASSISTANT === "1") {
     { type: "add", intention: { id: "reply", title: "reply to the release issue" } },
     { type: "done", id: "reply" },
   ]);
+}
+if (process.env.WOLFPACK_E2E_FOCUS_ROUTINE === "1") {
+  const send = mock.sendAndObserveSubmission.bind(mock);
+  const sendLog = join(process.env.WOLFPACK_DIR, "focus-sends.jsonl");
+  let at = Date.now();
+  mock.sendAndObserveSubmission = async (id, options) => {
+    const result = await send(id, options);
+    appendFileSync(sendLog, JSON.stringify({ id, text: options.text }) + "\n", { mode: 0o600 });
+    if (options.text.includes("process inbox ")) {
+      mock.setProgramStatus("assistant", { id: "", state: "done", app: "pi", updatedAtMs: ++at });
+      return { delivery: "delivered", outcome: "submitted", observedMs: result.observedMs };
+    }
+    return result;
+  };
 }
 __setTestBackend(mock);
 

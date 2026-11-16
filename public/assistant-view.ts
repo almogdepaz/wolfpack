@@ -1,3 +1,4 @@
+import { FOCUS_ASSISTANT_SESSION_NAMES, type FocusAssistantRole as AssistantRole } from "../src/focus-session";
 import { esc, escAttr, isDesktop } from "./app-state";
 import { focusCards, mergeFocus, takeVisible, stoppedUnseen, linkedFocusSessions, doneToday, groupFocusDone, type FocusDoneGroup, focusSessionLabel, focusActionVerb, type FocusAction, type FocusSession } from "../src/focus-ranking";
 import { emptyFocus, isFocusDocument, focusNextRefKey, focusPastedReply, focusReplyHasHiddenControl, type FocusDocument, type FocusIntention, type FocusOp } from "../src/focus-contract";
@@ -12,7 +13,9 @@ import { createFocusMobileDisclosure, FOCUS_DESKTOP_EXPANDED_KEY } from "./focus
 import { isRequestTimeout } from "./fetch-timeout";
 import { isFocusHomeIdentity, type FocusHomeIdentity } from "../src/focus-home-contract";
 import { AGENT_CONTEXT_DOCUMENT_PATH, agentContextEnabled, extensionUnavailable, summarizeAgentContext } from "../src/focus-context";
-interface AssistantStatus { enabled: boolean; folder: string; state: string; session?: string; sessionId?: string; queued: number; error?: string; unavailableReason?: string }
+interface AssistantTerminalStatus { state: string; session?: string; sessionId?: string; needsInput?: boolean; error?: string; unavailableReason?: string }
+interface AssistantStatus extends AssistantTerminalStatus { enabled: boolean; folder: string; queued: number; chat?: AssistantTerminalStatus }
+const TERMINAL_CONTROLS = [["assistant-setting-chat", "assistant-chat"], ["assistant-setting-worker", "assistant"]] as const;
 interface RoutineStatus { catchingUp: { machines: number; since: string | null; unconfirmed?: true } | null; yesterday?: { date: string; note: boolean; endsAt: string }; stale: { since: string } | null; unreachable: { name: string; since: string | null }[]; surfaced: { sends: number } | null; notice?: string; error?: string }
 interface FocusResponse extends FocusHomeIdentity { document: FocusDocument | null; revision: number; assistant?: AssistantStatus; routines?: RoutineStatus; nextOrderTtlHours?: number }
 interface Machine { key: string; name: string }
@@ -34,6 +37,7 @@ export function createAssistantView(deps: {
   sessions: () => FocusSession[];
   /** Verify a cached assistant incarnation against the current owning session list. */
   terminalSessionAvailable: (target: AssistantTerminalTarget) => boolean;
+  currentTerminal: () => { session: string; machine: string } | undefined;
   terminalTarget: (target: AssistantTerminalTarget | null, unavailableMessage?: string) => void;
   expandTerminal: () => boolean;
   /** False means the local session projection is unavailable, not that every session stopped. */
@@ -48,6 +52,12 @@ export function createAssistantView(deps: {
   confirm: (enabled: boolean) => Promise<boolean>;
 }) {
   let focus: FocusResponse | undefined;
+  let selectedRole: AssistantRole = "assistant-chat";
+  const roleStatus = (role: AssistantRole) => role === "assistant" ? focus?.assistant : focus?.assistant?.chat;
+  const attentionRole = (): AssistantRole | undefined => {
+    if (focusUnavailable || !focus?.assistant?.enabled) return undefined;
+    return FOCUS_ASSISTANT_SESSION_NAMES.find(role => roleStatus(role)?.state === "needs-input");
+  };
   let localOwner: FocusHomeIdentity | undefined;
   let homeGeneration = 0;
   let homeChanging = false;
@@ -123,11 +133,12 @@ export function createAssistantView(deps: {
     return changed;
   }
   const terminalUnavailable = () => focus?.assistant?.unavailableReason;
+  const chatUnavailable = () => focus?.assistant?.chat?.unavailableReason;
   const locked = () => focusUnavailable || busy || !answered;
   const sessionLocked = () => locked() || !deps.sessionsAvailable();
-  function terminalTarget(): AssistantTerminalTarget | null {
-    const assistant = focus?.assistant;
-    if (!answered || terminalOwner === "rejected" || !assistant?.enabled || !assistant.session || offline() || (!focusUnavailable && terminalUnavailable())) return null;
+  function terminalTarget(role: AssistantRole = "assistant-chat"): AssistantTerminalTarget | null {
+    const assistant = roleStatus(role);
+    if (!answered || terminalOwner === "rejected" || !focus?.assistant?.enabled || !assistant?.session || offline() || (!focusUnavailable && assistant.unavailableReason)) return null;
     // A remote /focus response is local to its own server, not this browser.
     const home = machine || deps.homeMachine(focus!.home)?.key || "";
     if (home && !deps.sessionMachineKnown(home)) return null;
@@ -138,7 +149,7 @@ export function createAssistantView(deps: {
   }
   const planLabel = (intention: FocusIntention) => `Plan “${intention.title}” with the assistant`;
   const planUnavailable = () => !terminalTarget() ? "The assistant terminal is unavailable."
-    : focus?.assistant?.state === "needs-input" ? "Answer the assistant's dialog before planning; a paste could answer it."
+    : focus?.assistant?.chat?.state === "needs-input" ? "Answer the assistant's dialog before planning; a paste could answer it."
     : sessionLocked() ? "Focus session actions are unavailable." : "";
   const planAttributes = (intention: FocusIntention) => {
     const reason = planUnavailable();
@@ -692,7 +703,7 @@ export function createAssistantView(deps: {
     const needsYouCount = actionCards;
     const suggestions = replyReady;
     const attentionLabel = nextSummary;
-    dashboardAttention = needsYouCount > 0 || suggestions > 0 || sessions().some(session => session.state === "failed") || state === "needs you" || state === "failed" || !!r?.surfaced;
+    dashboardAttention = needsYouCount > 0 || suggestions > 0 || sessions().some(session => session.state === "failed") || !!attentionRole() || state === "failed" || !!r?.surfaced;
     if (answered && deps.sessionsAvailable()) {
       const attentionKeys = new Set(attentionCards.map(({ row }) => row.session
         ? focusReplyKey({ machine: row.session.machineInstallationId ?? "", sessionId: row.session.id }, row.session.stoppedAt ?? row.session.changedAt ?? "")
@@ -702,7 +713,7 @@ export function createAssistantView(deps: {
       if (isDesktop() && desktopAttentionKeys && [...attentionKeys].some(key => !desktopAttentionKeys!.has(key)) && !desktopDisclosure.expanded(dashboardAttention)) desktopDisclosure.toggle(dashboardAttention);
       desktopAttentionKeys = attentionKeys;
     }
-    mobileAttention = dashboardAttention && (!mobileOverCap || attentionCards.length > 0 || state === "needs you");
+    mobileAttention = dashboardAttention && (!mobileOverCap || attentionCards.length > 0 || !!attentionRole());
     const dashboardExpanded = isDesktop() ? desktopDisclosure.expanded(dashboardAttention) : mobileDisclosure.expanded(mobileAttention);
     const sidebarExpanded = desktopDisclosure.expanded(dashboardAttention);
     // Keep frame buttons attached across polls: replacing a focused button between Space down/up cancels native activation.
@@ -735,7 +746,7 @@ export function createAssistantView(deps: {
     const block = document.getElementById("dashboard-focus");
     if (block) { block.hidden = !enabled; block.dataset.mobileCollapsed = String(!dashboardExpanded); }
     const assistantState = `<span title="${escAttr(info)}">${tone}<span class="visually-hidden">assistant ${esc(info)}</span></span>`;
-    const attn = state === "needs you" ? `<button type="button" class="focus-attn" data-focus-action="talk" data-focus-key="action:attn">assistant needs you ›</button>` : assistantState;
+    const attn = assistantState + (attentionRole() ? `<button type="button" class="focus-attn" data-focus-action="attention" data-focus-key="action:attn">assistant needs you ›</button>` : "");
     const whyOrder = next.length ? `<details class="focus-context-more" data-focus-card="order"${openCards.has("order") ? ' open=""' : ""}><summary data-focus-key="card:order">why this order</summary><p>${esc(orderLabel())}</p><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details>` : "";
     if (enabled && block && !block.firstElementChild) replace("dashboard-focus", `${disclosureFrame("dashboard-focus-toggle")}<div id="dashboard-focus-details" class="focus-dashboard-body"></div>`);
     if (!enabled) replace("dashboard-focus", "");
@@ -746,20 +757,20 @@ export function createAssistantView(deps: {
     }
     const dashboardBody = !enabled ? "" : `<div class="focus-header"><h2 class="focus-count">${esc(needsLabel)}</h2>${attn}${sessionNotice}${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${focus?.document ? nextHtml("d", 3) + takeHtml() + whyOrder : `<p>Set your focus</p>${addForm(true)}`}${error && !focusUnavailable ? `<p role="status">${esc(error)}</p>` : ""}`;
     replace("dashboard-focus-details", dashboardBody);
-    replace("assistant-content", !enabled ? "" : `<div class="focus-header"><h2 class="focus-count">${esc(needsLabel)}</h2>${attn}${sessionNotice}<span class="focus-header-actions"><button type="button" class="focus-talk" data-focus-action="talk" data-focus-key="action:talk" aria-label="Talk to assistant"${terminalUnavailable() ? ` title="${escAttr(terminalUnavailable()!)}"` : ""}${!terminalTarget() ? " disabled" : ""}>talk<span aria-hidden="true"> ›</span></button>${button("settings", "settings", "Assistant settings")}</span></div>${notes}${nextHtml("p", pageNextCap(), showAllNext, todayCount ? `today ${summary}` : "")}${moreNext}${takeHtml()}${whyOrder}${todayCount ? `<h2>today</h2>${todayHtml(open)}` : ""}${addForm(!focus?.document)}<small>reorder or reword: tell the assistant</small>${removed ? `<p class="focus-caption" role="status">removed “${esc(removed.intention.title)}” · <button type="button" data-focus-action="restore-removed" data-focus-key="action:restore-removed" aria-label="Undo remove: ${escAttr(removed.intention.title)}"${locked() ? " disabled" : ""}>undo</button></p>` : ""}${doneHtml}${yesterday}`);
+    replace("assistant-content", !enabled ? "" : `<div class="focus-header"><h2 class="focus-count">${esc(needsLabel)}</h2>${attn}${sessionNotice}<span class="focus-header-actions"><button type="button" class="focus-talk" data-focus-action="talk" data-focus-key="action:talk" aria-label="Talk to assistant"${chatUnavailable() ? ` title="${escAttr(chatUnavailable()!)}"` : ""}${!terminalTarget() ? " disabled" : ""}>talk<span aria-hidden="true"> ›</span></button>${button("settings", "settings", "Assistant settings")}</span></div>${notes}${nextHtml("p", pageNextCap(), showAllNext, todayCount ? `today ${summary}` : "")}${moreNext}${takeHtml()}${whyOrder}${todayCount ? `<h2>today</h2>${todayHtml(open)}` : ""}${addForm(!focus?.document)}<small>reorder or reword: tell the assistant</small>${removed ? `<p class="focus-caption" role="status">removed “${esc(removed.intention.title)}” · <button type="button" data-focus-action="restore-removed" data-focus-key="action:restore-removed" aria-label="Undo remove: ${escAttr(removed.intention.title)}"${locked() ? " disabled" : ""}>undo</button></p>` : ""}${doneHtml}${yesterday}`);
     // Initial session/peer lists can arrive separately. Latch the oversized default
     // from rendered content; a stored/in-memory user preference still wins.
     if (!isDesktop() && mobileDefaultPending && !mobileOverCap && dashboardExpanded && answered && deps.sessionsAvailable() && block?.clientHeight) {
       mobileOverCap = block.scrollHeight > innerHeight * .6;
-      if (mobileOverCap && !attentionCards.length && state !== "needs you" && dashboardExpanded && !mobileDisclosure.expanded(false)) { render(); return; }
+      if (mobileOverCap && !attentionCards.length && !attentionRole() && dashboardExpanded && !mobileDisclosure.expanded(false)) { render(); return; }
     }
     syncReplyControls();
     const live = document.getElementById("focus-status");
     if (live) live.textContent = focusUnavailable ? "" : error || assistantError || (focus?.assistant?.queued ? `${focus.assistant.queued} queued${terminalUnavailable() ? " · sends when the broker is back" : ""}` : notice);
     const setting = document.getElementById("assistant-setting-status");
-    if (setting) setting.textContent = enabled ? `on · ${focusUnavailable && !offline() ? unavailableInfo : info}` : focusUnavailable ? (offline() ? `${homeName} offline · read-only` : unavailableInfo) : "off";
+    if (setting) setting.textContent = enabled ? `on · background: ${focusUnavailable && !offline() ? unavailableInfo : info} · chat: ${focus?.assistant?.chat?.unavailableReason ? "unavailable" : focus?.assistant?.chat?.state ?? "starting"}` : focusUnavailable ? (offline() ? `${homeName} offline · read-only` : unavailableInfo) : "off";
     const settingError = document.getElementById("assistant-setting-error");
-    if (settingError) settingError.textContent = offline() ? "" : error || focus?.assistant?.error || "";
+    if (settingError) settingError.textContent = offline() ? "" : error || focus?.assistant?.error || focus?.assistant?.chat?.error || "";
     renderHomePicker(); syncTimingControls();
     const settingHome = document.getElementById("assistant-setting-home");
     if (settingHome) settingHome.textContent = `Home: ${homeName}${focus?.assistant?.folder ? ` · ${focus.assistant.folder}` : ""}. Needs pi installed and logged in there (pi, then /login).`;
@@ -767,11 +778,23 @@ export function createAssistantView(deps: {
     if (toggle) { toggle.textContent = enabled ? "Disable assistant…" : "Enable assistant…"; toggle.disabled = locked() || !!terminalUnavailable(); toggle.title = terminalUnavailable() ?? ""; }
     const settingOpen = document.getElementById("assistant-setting-open");
     if (settingOpen) settingOpen.hidden = !enabled;
+    for (const [id, role] of TERMINAL_CONTROLS) {
+      const control = document.getElementById(id) as HTMLButtonElement | null;
+      if (control) { control.hidden = !enabled; control.disabled = !terminalTarget(role); }
+    }
+    const activeTerminal = deps.currentTerminal();
+    const headerRole = activeTerminal?.machine === machine && activeTerminal.session === focus?.assistant?.session ? "assistant" : "assistant-chat";
+    const currentStatus = roleStatus(headerRole);
+    const label = document.getElementById("assistant-terminal-role");
+    if (label) label.textContent = headerRole === "assistant" ? "assistant · background" : "assistant · chat";
     const terminalState = document.getElementById("assistant-terminal-state");
-    if (terminalState) terminalState.textContent = terminalUnavailable() ? "sessions unavailable" : focus?.assistant?.queued ? `${focus.assistant.queued} queued` : focus?.assistant?.error ?? state;
+    if (terminalState) terminalState.textContent = currentStatus?.unavailableReason ? "sessions unavailable"
+      : headerRole === "assistant" && focus?.assistant?.queued ? `${focus.assistant.queued} queued` : currentStatus?.error ?? currentStatus?.state ?? "starting";
+    const paneLabel = document.getElementById("assistant-pane-role");
+    if (paneLabel) paneLabel.hidden = selectedRole !== "assistant";
     // The existing focus/session refresh owns this projection; the pane never polls or watches work.
-    deps.terminalTarget(terminalTarget(),
-      offline() ? `${homeName} is offline. the terminal reconnects when it is back.` : terminalUnavailable() ? "the terminal is unavailable while the broker reconnects." : focusUnavailable ? "the assistant terminal is unavailable. check sessions and focus settings." : "the assistant terminal is not running yet.");
+    deps.terminalTarget(terminalTarget(selectedRole),
+      offline() ? `${homeName} is offline. the terminal reconnects when it is back.` : roleStatus(selectedRole)?.unavailableReason ? "the terminal is unavailable while the broker reconnects." : focusUnavailable ? "the assistant terminal is unavailable. check sessions and focus settings." : "the assistant terminal is not running yet.");
     if (fitChips()) render();
   }
   async function refresh(open = !opened) {
@@ -1002,7 +1025,14 @@ export function createAssistantView(deps: {
       await loadTiming();
     }).finally(() => { homeChanging = false; render(); });
   });
-  function talk() { const target = terminalTarget(); if (target && !deps.expandTerminal()) deps.open(target.session, target.machine); }
+  function talk(role: AssistantRole = "assistant-chat") {
+    const target = terminalTarget(role);
+    if (!target) return;
+    selectedRole = role;
+    deps.terminalTarget(target);
+    render();
+    if (!deps.expandTerminal()) deps.open(target.session, target.machine);
+  }
   async function planIntention(id: string) {
     const owner = captureOwner();
     // Revalidate the home and assistant state before pasting into a potentially changed dialog.
@@ -1010,7 +1040,7 @@ export function createAssistantView(deps: {
     await refresh(); requireOwner(owner);
     if (focusUnavailable) throw new Error(error || "focus is unavailable; nothing was pasted");
     const target = terminalTarget();
-    if (!target || focus?.assistant?.state === "needs-input" || !deps.sessionsAvailable()) return;
+    if (!target || focus?.assistant?.chat?.state === "needs-input" || !deps.sessionsAvailable()) return;
     const intention = doc().intentions.find(i => i.id === id && !i.done);
     if (!intention || linkedFocusSessions(intention, sessions()).length) return;
     const line = (text: string) => text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").replace(/\s+/gu, " ").trim();
@@ -1102,7 +1132,7 @@ export function createAssistantView(deps: {
         (id === "sidebar-assistant" ? desktopDisclosure : dashboardDisclosure()).toggle(isDesktop() ? dashboardAttention : mobileAttention); render();
         return;
       }
-      if (action === "view") deps.show("assistant");
+      if (action === "view") { selectedRole = "assistant-chat"; render(); deps.show("assistant"); }
       if (action === "settings") deps.show("settings");
       if (action === "more-next") {
         const firstNew = isDesktop() ? 5 : 3;
@@ -1119,6 +1149,7 @@ export function createAssistantView(deps: {
         return;
       }
       if (action === "talk") { talk(); return; }
+      if (action === "attention") { const role = attentionRole(); if (role) talk(role); return; }
       if (locked()) return;
       if (target.dataset.focusSeenAll) {
         if (sessionLocked()) return;
@@ -1221,6 +1252,9 @@ export function createAssistantView(deps: {
   document.getElementById("assistant-back")!.onclick = () => deps.show("sessions");
   document.getElementById("assistant-terminal-focus")!.onclick = () => deps.show("assistant");
   document.getElementById("assistant-setting-open")!.onclick = () => deps.show("assistant");
+  for (const [id, role] of TERMINAL_CONTROLS) {
+    document.getElementById(id)!.onclick = () => { deps.show("assistant"); talk(role); };
+  }
   document.getElementById("assistant-setting-toggle")!.onclick = () => { void run(async () => {
     const owner = captureOwner();
     const enabled = !focus?.assistant?.enabled;
@@ -1242,5 +1276,5 @@ export function createAssistantView(deps: {
   return { refresh, render, loadTiming,
     setSidebarOwner(owns: boolean) { sidebarOwnsChooser = owns; updateSidebarVisibility(); },
     enabled: () => !!focus?.assistant?.enabled,
-    isAssistant: (name: string, key: string) => name === focus?.assistant?.session && key === machine };
+    isAssistant: (name: string, key: string) => key === machine && [focus?.assistant?.session, focus?.assistant?.chat?.session].some(session => !!session && session === name) };
 }

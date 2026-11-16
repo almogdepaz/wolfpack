@@ -40,7 +40,7 @@ async function setup(page: Page) {
   });
   await page.route("**/api/sessions", async route => {
     const response = await route.fetch(); const body = await response.json();
-    body.sessions = body.sessions.filter((s: { name: string }) => ["assistant", "prompt-project"].includes(s.name));
+    body.sessions = body.sessions.filter((s: { name: string }) => ["assistant", "assistant-chat", "prompt-project"].includes(s.name));
     for (const s of body.sessions) if (s.name === "prompt-project") s.runtimeState = { ...s.runtimeState,
       state: state.answered ? "working" : "needs-input", inputKind: "question", changedAt: episode, stoppedAt: episode,
       unseen: true, stoppedSequence: 5, acknowledgedSequence: 0, stale: false, freshness: "fresh" };

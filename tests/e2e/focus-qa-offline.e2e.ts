@@ -168,7 +168,8 @@ test("QA-18: broker-only outage leaves focus writable but terminal actions unava
     if (route.request().method() !== "GET") return route.continue();
     const response = await route.fetch();
     const body = await response.json();
-    body.assistant = { ...body.assistant, state: "unknown", unavailableReason: "sessions unavailable; reconnecting to the terminal broker" };
+    const unavailable = { state: "unknown", unavailableReason: "sessions unavailable; reconnecting to the terminal broker" };
+    body.assistant = { ...body.assistant, ...unavailable, chat: { ...body.assistant.chat, ...unavailable } };
     await route.fulfill({ response, json: body });
   });
   await page.goto(server.baseUrl);
@@ -197,7 +198,10 @@ test("R3: broker outage overrides a pending catch-up on every surface and recove
     const body = await response.json();
     body.routines.catchingUp = { machines: 1, since: null, unconfirmed: true };
     body.assistant.queued = 3;
-    if (down) body.assistant = { ...body.assistant, state: "unknown", unavailableReason: "sessions unavailable; reconnecting to the terminal broker" };
+    if (down) {
+      const unavailable = { state: "unknown", unavailableReason: "sessions unavailable; reconnecting to the terminal broker" };
+      body.assistant = { ...body.assistant, ...unavailable, chat: { ...body.assistant.chat, ...unavailable } };
+    }
     await route.fulfill({ response, json: body });
   });
   await page.goto(server.baseUrl);
@@ -466,8 +470,8 @@ for (const change of ["removed", "replaced", "broker unavailable"] as const) tes
   await page.route("**/api/sessions", async route => {
     if (changed && change === "broker unavailable") return route.fulfill({ status: 503, json: { error: "broker unavailable" } });
     const response = await route.fetch(); const body = await response.json();
-    if (changed && change === "removed") body.sessions = body.sessions.filter((s: { name: string }) => s.name !== "assistant");
-    if (changed && change === "replaced") body.sessions.find((s: { name: string }) => s.name === "assistant").identity.wolfpackSessionId = "mock:replacement-assistant";
+    if (changed && change === "removed") body.sessions = body.sessions.filter((s: { name: string }) => s.name !== "assistant-chat");
+    if (changed && change === "replaced") body.sessions.find((s: { name: string }) => s.name === "assistant-chat").identity.wolfpackSessionId = "mock:replacement-assistant-chat";
     await route.fulfill({ response, json: body });
   });
   await page.goto(server.baseUrl);

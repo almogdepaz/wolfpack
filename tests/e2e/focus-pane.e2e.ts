@@ -156,7 +156,10 @@ for (const outage of ["home", "broker"] as const) test(`QA-27: ${outage} outage 
     if (down && outage === "home") return route.abort();
     const response = await route.fetch();
     const body = await response.json();
-    if (down) body.assistant = { ...body.assistant, state: "unknown", session: undefined, sessionId: undefined, unavailableReason: "sessions unavailable; reconnecting to the terminal broker" };
+    if (down) {
+      const unavailable = { state: "unknown", session: undefined, sessionId: undefined, unavailableReason: "sessions unavailable; reconnecting to the terminal broker" };
+      body.assistant = { ...body.assistant, ...unavailable, chat: { ...body.assistant.chat, ...unavailable } };
+    }
     await route.fulfill({ response, json: body });
   });
   await openFocus(page);

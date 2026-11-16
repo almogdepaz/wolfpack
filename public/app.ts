@@ -1239,11 +1239,12 @@ async function api<TResponse = unknown>(path: string, opts?: RequestInit, machin
 }
 
 // One copy for the settings toggle and the terminal header / kill path.
-const DISABLE_ASSISTANT_MESSAGE = "Stop the assistant? Its conversation and your focus list are kept; enable it again any time.";
+const DISABLE_ASSISTANT_MESSAGE = "Stop the assistant's chat and background terminals? Both conversations and your focus list are kept; enable it again any time.";
 const assistantPane = createAssistantTerminal({ createController: createPtyTerminalController, scrollback: DESKTOP_TERMINAL_SCROLLBACK, createConflictOverlay });
 const focusUi = createAssistantView({
   request: api,
   terminalTarget: (target, reason) => assistantPane.setTarget(target, reason),
+  currentTerminal: () => state.currentView === "terminal" ? { session: state.currentSession, machine: state.currentMachine } : undefined,
   expandTerminal: () => assistantPane.expand(),
   terminalSessionAvailable: target => !!target.sessionId && state.lastSessionGroups.some(g => g.online && (g.machine.url || "") === target.machine
     && g.sessions.some(s => isFocusAssistantSession(s) && s.name === target.session && s.identity?.wolfpackSessionId === target.sessionId)),
@@ -1269,7 +1270,7 @@ const focusUi = createAssistantView({
     await acknowledgeTerminalRuntimeState(session.name, target.machineUrl ?? "", true);
   },
   show: view => { if (view === "sessions") backToSessions(); else showView(view); },
-  confirm: async enabled => !!await showAppDialog({ title: enabled ? "Enable assistant" : "Disable assistant", message: enabled ? "Wolfpack starts one persistent pi terminal on the home machine and keeps it running across restarts. If pi is not logged in there yet, run pi and /login first; the assistant opens right after so you can see it start." : DISABLE_ASSISTANT_MESSAGE, confirmLabel: enabled ? "Enable" : "Disable", destructive: !enabled }),
+  confirm: async enabled => !!await showAppDialog({ title: enabled ? "Enable assistant" : "Disable assistant", message: enabled ? "Wolfpack starts two persistent pi terminals on the home machine: uninterrupted chat and a background worker. Both stay running across restarts. If pi is not logged in there yet, run pi and /login first; the assistant opens right after so you can see it start." : DISABLE_ASSISTANT_MESSAGE, confirmLabel: enabled ? "Enable" : "Disable", destructive: !enabled }),
 });
 document.getElementById("assistant-terminal-inspect").onclick = event => {
   const target = pinnedSessionInspectionTarget(state.currentSession, state.currentMachine);
@@ -1607,6 +1608,7 @@ function showView(requested: string, skipAnimation?: boolean, refreshSessions = 
   teardownTerminalForViewChange(previousView, viewName);
   setState({ currentView: viewName });
   document.getElementById("assistant-terminal-header").hidden = viewName !== "terminal" || !focusUi.isAssistant(state.currentSession, state.currentMachine);
+  if (viewName === "terminal" && focusUi.isAssistant(state.currentSession, state.currentMachine)) focusUi.render();
   if (viewName === "assistant") void focusUi.refresh(true);
   if (viewName === "settings") void focusUi.loadTiming();
   document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
