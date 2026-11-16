@@ -22,6 +22,12 @@ test("client logs visible visits with duration, ordered exposures only on change
   expect(f.sent[1]!.body.events[0].visit).not.toBe(f.sent[0]!.body.events[0].visit);
   expect(f.sent[1]!.body.events.map(e => e.action)).toEqual([A.OPEN, A.VIEW, A.SHOWN]);
 });
+test("pending home does not consume the first visible visit or exposure", () => {
+  const f = fixture(); f.target();
+  f.log.setVisible(true, true); f.log.shown([]);
+  f.target("http://home/api/focus/ui-events"); f.log.setVisible(true, true); f.log.shown([]); f.tick();
+  expect(f.sent[0]!.body.events.map(e => e.action)).toEqual([A.OPEN, A.VIEW, A.SHOWN]);
+});
 test("batch count, byte bounds, home fencing, timer, and failure dropping", async () => {
   const f = fixture();
   for (let i = 0; i < 40; i++) f.log.record({ action: A.SETTINGS, control: S.OPEN });

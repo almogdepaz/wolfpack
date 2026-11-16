@@ -1,6 +1,6 @@
 import { createAssistantView } from "./assistant-view";
 import { createAssistantTerminal } from "./assistant-terminal";
-import { FOCUS_UI_PATH } from "../src/focus-ui-log";
+import { FOCUS_UI_PATH, FOCUS_UI_ASSISTANT } from "../src/focus-ui-log";
 import { stoppedUnseen } from "../src/focus-ranking";
 import { isFocusAssistantSession, withoutFocusAssistant } from "../src/focus-session";
 import { sessionMetaHtml } from "./session-meta";
@@ -1277,6 +1277,9 @@ const focusUi = createAssistantView({
   show: view => { if (view === "sessions") backToSessions(); else showView(view); },
   confirm: async enabled => !!await showAppDialog({ title: enabled ? "Enable assistant" : "Disable assistant", message: enabled ? "Wolfpack starts two persistent pi terminals on the home machine: uninterrupted chat and a background worker. Both stay running across restarts. If pi is not logged in there yet, run pi and /login first; the assistant opens right after so you can see it start." : DISABLE_ASSISTANT_MESSAGE, confirmLabel: enabled ? "Enable" : "Disable", destructive: !enabled }),
 });
+document.getElementById("desktop-terminal-container").addEventListener("focusin", () => {
+  if (state.currentView === "terminal" && focusUi.isAssistant(state.currentSession, state.currentMachine)) focusUi.logAssistant(FOCUS_UI_ASSISTANT.FOCUS);
+});
 document.getElementById("assistant-terminal-inspect").onclick = event => {
   const target = pinnedSessionInspectionTarget(state.currentSession, state.currentMachine);
   if (target) inspectSession(target.session, target.sessionId, target.machine, event.currentTarget as HTMLElement);
@@ -1612,13 +1615,13 @@ function showView(requested: string, skipAnimation?: boolean, refreshSessions = 
   if (viewName !== "assistant") assistantPane.setActive(false);
   teardownTerminalForViewChange(previousView, viewName);
   setState({ currentView: viewName });
-  focusUi.setVisible(viewName === "assistant");
   document.getElementById("assistant-terminal-header").hidden = viewName !== "terminal" || !focusUi.isAssistant(state.currentSession, state.currentMachine);
   if (viewName === "terminal" && focusUi.isAssistant(state.currentSession, state.currentMachine)) focusUi.render();
   if (viewName === "assistant") void focusUi.refresh(true);
   if (viewName === "settings") void focusUi.loadTiming();
   document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
   applyViewVisibility(previousElement, nextElement, animate, goingForward);
+  focusUi.setVisible(viewName === "assistant");
 
   // Stop timers immediately (don't defer these).
   if (state.sessionRefreshTimer) { clearInterval(state.sessionRefreshTimer); state.sessionRefreshTimer = null; }

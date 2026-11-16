@@ -27,6 +27,7 @@ export class DayJournal<R extends JournalStamp, B> {
   private lastRowAt: string | null = null;
   private journalId = "";
   private fileMaxSeq = new Map<string, number>();
+  private appendReady = new Set<string>();
   private buffer: R[] = [];
   private flushTimer?: ReturnType<typeof setTimeout>;
   private retentionTimer?: ReturnType<typeof setInterval>;
@@ -54,6 +55,7 @@ export class DayJournal<R extends JournalStamp, B> {
         truncateSync(path, statSync(path).size - partialTailBytes);
         log.warn("truncated unfinished journal row", { dir: this.dir, file: newest, bytes: partialTailBytes });
       }
+      this.appendReady.add(newest);
     }
     for (const name of files) for (const row of this.readFile(name)) this.observe(row);
     this.opened = true;
@@ -103,10 +105,13 @@ export class DayJournal<R extends JournalStamp, B> {
       for (const [name, rows] of byFile) {
         // A clock step or delayed batch can return to an older day file after a crash.
         const path = join(this.dir, name);
-        try {
-          const { partialTailBytes } = this.codec.parse(readFileSync(path, "utf8"));
-          if (partialTailBytes) truncateSync(path, statSync(path).size - partialTailBytes);
-        } catch (error) { if (!missing(error)) throw error; }
+        if (!this.appendReady.has(name)) {
+          try {
+            const { partialTailBytes } = this.codec.parse(readFileSync(path, "utf8"));
+            if (partialTailBytes) truncateSync(path, statSync(path).size - partialTailBytes);
+          } catch (error) { if (!missing(error)) throw error; }
+          this.appendReady.add(name);
+        }
         appendFileSync(path, rows.map(row => this.codec.serialize(row)).join(""), { mode: 0o600 });
         const written = new Set(rows);
         this.buffer = this.buffer.filter(row => !written.has(row));

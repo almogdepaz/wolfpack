@@ -5,9 +5,9 @@ export const FOCUS_UI_ACTION = {
   OPEN: "page.open", LEFT: "page.left", VIEW: "view", SHOWN: "cards.shown",
   CARD: "card", INTENTION: "intention", ASSISTANT: "assistant", SETTINGS: "settings", DISCLOSURE: "disclosure",
 } as const;
-export const FOCUS_UI_CARD = { EXPAND: "expand", COLLAPSE: "collapse", OPEN: "open", TAKE: "take", REPLY: "reply", SEEN: "seen", RESET: "reset" } as const;
+export const FOCUS_UI_CARD = { EXPAND: "expand", COLLAPSE: "collapse", OPEN: "open", TAKE: "take", REPLY: "reply", SEEN: "seen", DONE: "done", RESET: "reset" } as const;
 export const FOCUS_UI_INTENTION = { ADD: "add", DONE: "done", UNDO: "undo", EDIT: "edit", REORDER: "reorder", DROP: "drop" } as const;
-export const FOCUS_UI_ASSISTANT = { TALK: "talk", PLAN: "plan", SHOW: "show", HIDE: "hide", FOCUS: "focus", TAKE_CONTROL: "take-control", RECONNECT: "reconnect", SKIP: "skip" } as const;
+export const FOCUS_UI_ASSISTANT = { TALK: "talk", REPLY: "reply", PLAN: "plan", SHOW: "show", HIDE: "hide", FOCUS: "focus", TAKE_CONTROL: "take-control", RECONNECT: "reconnect", SKIP: "skip" } as const;
 export const FOCUS_UI_SETTINGS = { OPEN: "open", ENABLE: "enable", DISABLE: "disable", BACKGROUND: "background", CHAT: "chat", TIMING: "timing", HOME: "home", CATCH_UP: "catch-up", DAY_NOTE: "day-note", DAY_NOTE_READ: "day-note-read", DISMISS_TAKE: "dismiss-take" } as const;
 export const FOCUS_UI_DISCLOSURE = { EXPAND: "expand", COLLAPSE: "collapse", MORE: "more" } as const;
 export interface FocusUiCard { session: string; sessionId: string; machine: string; rank: number; kind: "action" | "suggest" | "done"; reason: "needs-you" | "suggest" | "quiet" | "rules" | "new-rules"; }

@@ -22,8 +22,9 @@ export function createFocusUiLog(options: Options) {
     if (leaving && !getBrowserAuthToken(url) && navigator.sendBeacon?.(url, new Blob([body], { type: "application/json" }))) return;
     return browserAuthFetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body, keepalive: leaving, signal: AbortSignal.timeout(2000) });
   });
-  let visit = id();
+  let visit = "";
   let active = false;
+  let activeTarget: string | undefined;
   let start = 0;
   let docked: boolean | undefined;
   let shown = "";
@@ -44,6 +45,7 @@ export function createFocusUiLog(options: Options) {
     try {
       const target = options.target();
       if (!target) return;
+      if (!visit) visit = id();
       if (destination !== target) { queue = []; bytes = 0; destination = target; }
       const event = { ...payload, visit, at: new Date(now()).toISOString() } as FocusUiEvent;
       const size = new Blob([JSON.stringify(event)]).size + 1;
@@ -54,14 +56,19 @@ export function createFocusUiLog(options: Options) {
     } catch { /* best effort; never log content or failures to the console */ }
   }
   function setVisible(visible: boolean, isDocked: boolean) {
-    if (visible && !active) {
-      active = true; visit = id(); start = elapsed(); shown = ""; docked = undefined;
-      record({ action: A.OPEN });
-    } else if (!visible && active) {
-      record({ action: A.LEFT, visibleMs: Math.min(86_400_000, Math.max(0, Math.round(elapsed() - start))) });
-      active = false; shown = ""; flush(true);
-    }
-    if (visible && docked !== isDocked) { docked = isDocked; record({ action: A.VIEW, docked: isDocked }); }
+    try {
+      const target = options.target();
+      if (active && activeTarget !== target) { active = false; shown = ""; flush(); }
+      const show = visible && !!target;
+      if (show && !active) {
+        active = true; activeTarget = target; visit = id(); start = elapsed(); shown = ""; docked = undefined;
+        record({ action: A.OPEN });
+      } else if (!show && active) {
+        record({ action: A.LEFT, visibleMs: Math.min(86_400_000, Math.max(0, Math.round(elapsed() - start))) });
+        active = false; shown = ""; flush(true);
+      }
+      if (show && docked !== isDocked) { docked = isDocked; record({ action: A.VIEW, docked: isDocked }); }
+    } catch { /* lifecycle bookkeeping is best effort too */ }
   }
   return { record, flush, setVisible,
     shown(cards: FocusUiCard[]) {

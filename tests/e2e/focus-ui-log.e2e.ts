@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { startTestServer, type TestServer } from "./helpers";
-import { FOCUS_UI_ACTION as A, FOCUS_UI_CARD as C, FOCUS_UI_INTENTION as I, type FocusUiRow } from "../../src/focus-ui-log";
+import { FOCUS_UI_ACTION as A, FOCUS_UI_CARD as C, FOCUS_UI_INTENTION as I, FOCUS_UI_ASSISTANT as AS, FOCUS_UI_SETTINGS as S, type FocusUiRow } from "../../src/focus-ui-log";
 let server: TestServer;
 test.beforeEach(async () => { server = await startTestServer({ focusAssistant: true }); });
 test.afterEach(async () => { await server?.close(); });
@@ -56,4 +56,45 @@ test("real focus controls write ordered content-free rows, deduplicate refreshes
   expect(rows.find(r => r.action === A.LEFT)).toMatchObject({ visibleMs: expect.any(Number) });
   expect(rows.map(r => r.seq)).toEqual(rows.map((_, index) => index + 1));
   for (const secret of [secretTitle, secretReply, secretPreview, "ship the focus assistant", "Do you want to continue?"]) expect(text).not.toContain(secret);
+});
+
+test("shown kind matches the rendered reply-ready card, not its underlying attention classification", async ({ page }) => {
+  const current = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
+  const sessions = await (await page.request.get(`${server.baseUrl}/api/sessions`)).json();
+  const session = sessions.sessions.find((s: { name: string }) => s.name === "prompt-project");
+  const updated = await page.request.post(`${server.baseUrl}/api/focus`, { data: { expectedRevision: current.revision, ops: [{ type: "next", author: "assistant", rows: [{ ref: { machine: current.installationId, sessionId: "mock:prompt-project" }, stoppedAt: session.runtimeState.stoppedAt ?? session.runtimeState.changedAt, verdict: "suggest", reason: "PRIVATE_REASON_CANARY", suggestion: "PRIVATE_SUGGESTION_CANARY" }] }] } });
+  expect(updated.ok(), await updated.text()).toBe(true);
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  const row = page.locator("#assistant-content .focus-next > li").filter({ hasText: "prompt-project" });
+  await expect(row).toHaveAttribute("data-kind", "suggest");
+  await expect.poll(() => journal().rows.flatMap(r => r.action === A.SHOWN ? r.cards : []).find(c => c.session === "prompt-project")?.kind).toBe("suggest");
+  expect(journal().text).not.toContain("PRIVATE_REASON_CANARY");
+  expect(journal().text).not.toContain("PRIVATE_SUGGESTION_CANARY");
+});
+
+test("assistant pane, reply-to-chat, settings and visibility segments are journaled without terminal/take content", async ({ page }) => {
+  const current = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
+  expect((await page.request.post(`${server.baseUrl}/api/focus`, { data: { expectedRevision: current.revision, ops: [{ type: "next", rows: [], author: "assistant", take: { text: "PRIVATE_TAKE_CANARY", about: [] } }] } })).ok()).toBe(true);
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  await page.getByRole("button", { name: "Talk to assistant", exact: true }).click();
+  await expect(page.locator("#assistant-pty")).toHaveClass(/hydrated/);
+  await page.getByRole("button", { name: "Focus terminal", exact: true }).click();
+  await page.getByRole("button", { name: "Hide assistant terminal", exact: true }).click();
+  await page.locator("#assistant-content .focus-take").getByRole("button", { name: "Reply to assistant", exact: true }).click();
+  await page.locator("#assistant-content").getByRole("button", { name: "Assistant settings", exact: true }).click();
+  await page.getByRole("button", { name: "Inspect background terminal", exact: true }).click();
+  await expect(page.locator("#assistant-pane-role")).toHaveText("background");
+  await page.evaluate(() => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect.poll(() => journal().rows.filter(r => r.action === A.LEFT).length).toBe(2);
+  const { rows, text } = journal();
+  for (const control of [AS.TALK, AS.REPLY, AS.SHOW, AS.HIDE, AS.FOCUS]) expect(rows.some(r => r.action === A.ASSISTANT && r.control === control), control).toBe(true);
+  for (const control of [S.OPEN, S.BACKGROUND]) expect(rows.some(r => r.action === A.SETTINGS && r.control === control), control).toBe(true);
+  expect(rows.filter(r => r.action === A.OPEN)).toHaveLength(2);
+  expect(text).not.toContain("PRIVATE_TAKE_CANARY");
+  expect(text).not.toContain("mock-terminal-ready");
 });

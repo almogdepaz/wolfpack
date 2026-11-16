@@ -76,9 +76,9 @@ export function createAssistantView(deps: {
   } });
   let pageVisible = false;
   const syncUiVisibility = () => uiLog.setVisible(pageVisible && document.visibilityState === "visible", matchMedia("(min-width: 1280px)").matches);
-  document.addEventListener("visibilitychange", () => { syncUiVisibility(); if (pageVisible) render(); });
+  document.addEventListener("visibilitychange", () => { syncUiVisibility(); logShownCards(); if (document.visibilityState !== "visible") uiLog.flush(true); });
   window.addEventListener("pagehide", () => { uiLog.setVisible(false, false); uiLog.flush(true); });
-  window.addEventListener("pageshow", () => { syncUiVisibility(); if (pageVisible) render(); });
+  window.addEventListener("pageshow", () => { syncUiVisibility(); logShownCards(); });
   const logSetting = (control: Extract<FocusUiPayload, { action: typeof UI.SETTINGS }>["control"]) => uiLog.record({ action: UI.SETTINGS, control });
   const logAssistant = (control: Extract<FocusUiPayload, { action: typeof UI.ASSISTANT }>["control"], id?: string) => uiLog.record({ action: UI.ASSISTANT, control, ...(id && { id }) });
   function logCard(session: FocusSession, control: Extract<FocusUiPayload, { action: typeof UI.CARD }>["control"]) {
@@ -640,6 +640,22 @@ export function createAssistantView(deps: {
       }
     }
   }
+  function logShownCards(cards = cardOrder().cards) {
+    if (!pageVisible || !focus?.assistant?.enabled) return;
+    // Only the rendered page set (not the dashboard copy or CSS-hidden overflow).
+    const shown: FocusUiCard[] = [];
+    for (const element of document.querySelectorAll<HTMLElement>("#assistant-content .focus-next > li, #assistant-content .focus-finished > li")) {
+      if (!element.getClientRects().length) continue;
+      const key = element.querySelector<HTMLElement>("details.focus-card")?.dataset.focusCard;
+      const session = key && renderedSessions.get(key);
+      if (!session) continue;
+      const card = cards.find(c => c.row.session?.id === session.id && c.row.session?.machineInstallationId === session.machineInstallationId);
+      const kind = element.dataset.kind;
+      if (!card || (kind !== "action" && kind !== "suggest" && kind !== "done")) continue;
+      shown.push({ session: session.name, sessionId: session.id, machine: session.machineInstallationId || session.machine || localInstallationId || "local", rank: shown.length + 1, kind, reason: card.row.triage?.verdict ?? (card.row.source === "new-rules" ? "new-rules" : "rules") });
+    }
+    uiLog.shown(shown);
+  }
   function render() {
     foldOpenCards();
     renderedSessions.clear();
@@ -785,20 +801,7 @@ export function createAssistantView(deps: {
     }
     syncReplyControls();
     syncUiVisibility();
-    if (pageVisible && enabled) {
-      // Only the rendered page set (not the dashboard copy or CSS-hidden overflow).
-      const shown: FocusUiCard[] = [];
-      for (const element of document.querySelectorAll<HTMLElement>("#assistant-content .focus-next > li, #assistant-content .focus-finished > li")) {
-        if (!element.getClientRects().length) continue;
-        const key = element.querySelector<HTMLElement>("details.focus-card")?.dataset.focusCard;
-        const session = key && renderedSessions.get(key);
-        if (!session) continue;
-        const card = cards.find(c => c.row.session?.id === session.id && c.row.session?.machineInstallationId === session.machineInstallationId);
-        if (!card) continue;
-        shown.push({ session: session.name, sessionId: session.id, machine: session.machineInstallationId || session.machine || localInstallationId || "local", rank: shown.length + 1, kind: card.kind, reason: card.row.triage?.verdict ?? (card.row.source === "new-rules" ? "new-rules" : "rules") });
-      }
-      uiLog.shown(shown);
-    }
+    logShownCards(cards);
     const live = document.getElementById("focus-status");
     if (live) live.textContent = focusUnavailable ? "" : error || assistantError || (focus?.assistant?.queued ? `${focus.assistant.queued} queued${terminalUnavailable() ? " · sends when the broker is back" : ""}` : notice);
     const setting = document.getElementById("assistant-setting-status");
@@ -1210,7 +1213,7 @@ export function createAssistantView(deps: {
         host.querySelector<HTMLElement>(`details[data-focus-card="${CSS.escape(expand)}"] > summary`)?.focus();
         return;
       }
-      if (action === "talk") { logAssistant(ASSISTANT.TALK); talk(); return; }
+      if (action === "talk") { logAssistant(target.closest(".focus-take") ? ASSISTANT.REPLY : ASSISTANT.TALK); talk(); return; }
       if (action === "attention") { const role = attentionRole(); if (role) { logAssistant(ASSISTANT.TALK); talk(role); } return; }
       if (locked()) return;
       if (target.dataset.focusSeenAll) {
@@ -1273,7 +1276,7 @@ export function createAssistantView(deps: {
           return;
         }
         if (kind === "seen" && row.session) { logCard(row.session, CARD.SEEN); void run(() => deps.acknowledge(row.session!)); return; }
-        if (kind === "done") { void run(() => write({ type: "done", id: row.triage!.doneIntention! })); return; }
+        if (kind === "done") { if (row.session) logCard(row.session, CARD.DONE); void run(() => write({ type: "done", id: row.triage!.doneIntention! })); return; }
         if (kind === "open" && row.session) { logCard(row.session, CARD.TAKE); deps.open(row.session.name, row.session.machineUrl); }
         else if (kind === "start" && row.intention) { if (!planUnavailable()) void run(() => planIntention(row.intention!.id)); }
         else if (row.intention) { openCard(`start:${row.intention.id}`); render(); }
@@ -1340,7 +1343,7 @@ export function createAssistantView(deps: {
   });
   render();
   return { refresh, render, loadTiming, logAssistant,
-    setVisible(visible: boolean) { pageVisible = visible; syncUiVisibility(); if (visible) render(); },
+    setVisible(visible: boolean) { pageVisible = visible; syncUiVisibility(); logShownCards(); },
     setSidebarOwner(owns: boolean) { sidebarOwnsChooser = owns; updateSidebarVisibility(); },
     enabled: () => !!focus?.assistant?.enabled,
     isAssistant: (name: string, key: string) => key === machine && [focus?.assistant?.session, focus?.assistant?.chat?.session].some(session => !!session && session === name) };

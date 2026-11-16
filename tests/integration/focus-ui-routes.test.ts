@@ -32,6 +32,7 @@ test("ui endpoint uses owner auth, rejects unknown/content keys atomically and r
     expect((await post({ events: [...body.events, { ...body.events[0], text: "SECRET" }] })).status).toBe(400);
     expect(journal.readAll()).toHaveLength(1);
     expect((await post({ events: [{ ...body.events[0], at: "2000-01-01T00:00:00.000Z" }] })).status).toBe(400);
+    expect((await post({ events: [], padding: "x".repeat(70_000) })).status).toBe(413);
     config.focus = { home: "other-install" };
     expect((await post(body)).status).toBe(409);
     expect(journal.readAll()).toHaveLength(1);

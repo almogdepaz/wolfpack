@@ -24,7 +24,7 @@ export function createFocusRoutes(ctx: ServerContext) {
   return {
     [`POST ${FOCUS_UI_PATH}`]: async (req: IncomingMessage, res: ServerResponse) => {
       if (!identity().local) return json(res, { error: "ui events live on the focus home machine" }, 409);
-      const body = await parseObjectBody(req, res);
+      const body = await parseObjectBody(req, res, { respondOnTooLarge: true });
       if (!body) return;
       const events = parseFocusUiBatch(body);
       const now = Date.now();
