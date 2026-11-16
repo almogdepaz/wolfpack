@@ -1,4 +1,5 @@
 import { FOCUS_ASSISTANT_SESSION_NAMES } from "../focus-session.ts";
+import { FOCUS_UI_ACTION, FOCUS_UI_BATCH_MAX, FOCUS_UI_PATH } from "../focus-ui-log.ts";
 import { AGENT_KIND, CREATABLE_HARNESSES } from "../agent-kind.ts";
 import { EXTENSION_BLOB_LIMITS } from "../extensions/blob-store.ts";
 import { EXTENSION_PEER_ERROR } from "../extensions/selected-host-contract.ts";
@@ -1467,6 +1468,14 @@ export const controlApiSource: ControlApiSource = {
         ok: { const: true }, taskId: ref("TaskId"), eventId: ref("TaskId"), sequence: { type: "string", pattern: "^[1-9][0-9]*$" }, event: ref("CanonicalTaskEvent"),
       }, ["ok", "taskId", "eventId", "sequence", "event"]),
       errors: ["400 TaskApiErrorEnvelope", "404 TaskApiErrorEnvelope", "409 TaskApiErrorEnvelope", "413 TaskApiErrorEnvelope", "502 TaskApiErrorEnvelope", "503 TaskApiErrorEnvelope"],
+    },
+    [`POST ${FOCUS_UI_PATH}`]: {
+      operationId: "recordFocusUiEvents", stable: true, auth: "jwt-when-configured",
+      request: object({ events: { type: "array", minItems: 1, maxItems: FOCUS_UI_BATCH_MAX, items: {
+        type: "object", properties: { action: { enum: Object.values(FOCUS_UI_ACTION) }, visit: string(), at: string() }, required: ["action", "visit", "at"],
+        description: "Strict action-specific content-free shapes and bounds validated by src/focus-ui-log.ts. Unknown fields rejected. Event time must be within the past day or five minutes ahead.",
+      } } }, ["events"], { description: "Home-only local UX journal, never shared with peers. Best-effort buffered append; no content fields." }),
+      response: object({ accepted: integer() }, ["accepted"]), errors: ["400 ErrorEnvelope", "409 ErrorEnvelope", "413 ErrorEnvelope", "503 ErrorEnvelope"],
     },
     "POST /api/focus/home": {
       operationId: "configureFocusHome", stable: true, auth: "jwt-when-configured",

@@ -1,5 +1,6 @@
 import { createAssistantView } from "./assistant-view";
 import { createAssistantTerminal } from "./assistant-terminal";
+import { FOCUS_UI_PATH, FOCUS_UI_ASSISTANT } from "../src/focus-ui-log";
 import { stoppedUnseen } from "../src/focus-ranking";
 import { isFocusAssistantSession, withoutFocusAssistant } from "../src/focus-session";
 import { sessionMetaHtml } from "./session-meta";
@@ -1240,9 +1241,13 @@ async function api<TResponse = unknown>(path: string, opts?: RequestInit, machin
 
 // One copy for the settings toggle and the terminal header / kill path.
 const DISABLE_ASSISTANT_MESSAGE = "Stop the assistant's chat and background terminals? Both conversations and your focus list are kept; enable it again any time.";
-const assistantPane = createAssistantTerminal({ createController: createPtyTerminalController, scrollback: DESKTOP_TERMINAL_SCROLLBACK, createConflictOverlay });
+const assistantPane = createAssistantTerminal({ createController: createPtyTerminalController, scrollback: DESKTOP_TERMINAL_SCROLLBACK, createConflictOverlay, onUiAction: control => focusUi.logAssistant(control) });
 const focusUi = createAssistantView({
   request: api,
+  uiEventUrl: machine => {
+    const origin = resolveReadyMachineOrigin(machine);
+    return machine && !origin ? undefined : new URL(FOCUS_UI_PATH, origin || location.origin).href;
+  },
   terminalTarget: (target, reason) => assistantPane.setTarget(target, reason),
   currentTerminal: () => state.currentView === "terminal" ? { session: state.currentSession, machine: state.currentMachine } : undefined,
   expandTerminal: () => assistantPane.expand(),
@@ -1271,6 +1276,9 @@ const focusUi = createAssistantView({
   },
   show: view => { if (view === "sessions") backToSessions(); else showView(view); },
   confirm: async enabled => !!await showAppDialog({ title: enabled ? "Enable assistant" : "Disable assistant", message: enabled ? "Wolfpack starts two persistent pi terminals on the home machine: uninterrupted chat and a background worker. Both stay running across restarts. If pi is not logged in there yet, run pi and /login first; the assistant opens right after so you can see it start." : DISABLE_ASSISTANT_MESSAGE, confirmLabel: enabled ? "Enable" : "Disable", destructive: !enabled }),
+});
+document.getElementById("desktop-terminal-container").addEventListener("focusin", () => {
+  if (state.currentView === "terminal" && focusUi.isAssistant(state.currentSession, state.currentMachine)) focusUi.logAssistant(FOCUS_UI_ASSISTANT.FOCUS);
 });
 document.getElementById("assistant-terminal-inspect").onclick = event => {
   const target = pinnedSessionInspectionTarget(state.currentSession, state.currentMachine);
@@ -1613,6 +1621,7 @@ function showView(requested: string, skipAnimation?: boolean, refreshSessions = 
   if (viewName === "settings") void focusUi.loadTiming();
   document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
   applyViewVisibility(previousElement, nextElement, animate, goingForward);
+  focusUi.setVisible(viewName === "assistant");
 
   // Stop timers immediately (don't defer these).
   if (state.sessionRefreshTimer) { clearInterval(state.sessionRefreshTimer); state.sessionRefreshTimer = null; }

@@ -18,7 +18,7 @@ export const TAILNET_NODE_ID_PATTERN = "^[A-Za-z0-9_:-]{1,256}$";
 export const TAILNET_ORIGIN_PATTERN = "^https://(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.ts\\.net$";
 
 const MACHINE_CAPABILITY_SET = new Set<string>(MACHINE_CAPABILITIES);
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TAILNET_NODE_ID_REGEXP = new RegExp(TAILNET_NODE_ID_PATTERN);
 const TAILNET_ORIGIN_REGEXP = new RegExp(TAILNET_ORIGIN_PATTERN);
 const CONTROL_CHARACTER_PATTERN = /[\x00-\x1f\x7f-\x9f]/;

@@ -11,8 +11,9 @@ import { dirname, join } from "node:path";
 import { verifyMachineTarget, type VerifiedMachineTarget } from "./machine-target.js";
 import { print, printError } from "../terminal-output.js";
 import { printJson } from "./formatting.js";
+import { formatFocusRetro, parseFocusRetroCommand, readLocalFocusRetro } from "./focus-retro.js";
 
-export const FOCUS_USAGE = `Usage: wolfpack focus show|add|edit|done|undo|drop|reorder|next|nudge|note|day-summary|catch-up [--json]
+export const FOCUS_USAGE = `Usage: wolfpack focus show|add|edit|done|undo|drop|reorder|next|nudge|note|day-summary|catch-up|retro [--json]
   add <title> [--id id] [--project /path] [--on machine] [--sessions id,id]
   edit <id> [title] [--project /path] [--on machine] [--sessions id,id]
   done|undo|drop <id>
@@ -21,6 +22,7 @@ export const FOCUS_USAGE = `Usage: wolfpack focus show|add|edit|done|undo|drop|r
   nudge|note <text>
   day-summary <YYYY-MM-DD> <done> <carried> <questions>
   catch-up   request re-triage on the focus home machine
+  retro [--date YYYY-MM-DD]   replay the local UTC day's UI/actions and session activity (offline)
   home [<installation-id>|--clear]   show or set this machine's focus home (config.json; restart to apply)`;
 export function parseFocusCommand(args: readonly string[]): { json: boolean; op?: FocusOp; catchUp?: true } {
   const json = args.includes("--json");
@@ -124,6 +126,13 @@ export async function focusHomeCommand(parsed: { json?: boolean; home?: string |
 export async function focusCommand(args: readonly string[], target?: VerifiedMachineTarget): Promise<number> {
   if (args.length === 0 || args.includes("--help")) { print(FOCUS_USAGE); return 0; }
   try {
+    if (args[0] === "retro") {
+      if (target) throw new Error("focus retro reads local logs only; --machine is not supported");
+      const parsed = parseFocusRetroCommand(args.slice(1));
+      const retro = readLocalFocusRetro(parsed.date);
+      if (parsed.json) printJson(retro); else print(formatFocusRetro(retro));
+      return 0;
+    }
     if (args[0] === "home") {
       const result = await focusHomeCommand(parseFocusHomeCommand(args));
       if (args.includes("--json")) printJson(result);

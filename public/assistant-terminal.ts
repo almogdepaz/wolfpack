@@ -1,3 +1,4 @@
+import { FOCUS_UI_ASSISTANT as UI } from "../src/focus-ui-log";
 import type { FocusAssistantRole } from "../src/focus-session";
 import type { PtyTerminalController, PtyTerminalControllerOpts } from "./pty-terminal-controller";
 import { classifyDisconnect, handleTakeControlClick } from "../src/take-control-logic";
@@ -19,6 +20,7 @@ export interface AssistantTerminalTarget {
 export function createAssistantTerminal(deps: {
   createController: (opts: PtyTerminalControllerOpts) => PtyTerminalController;
   scrollback: number;
+  onUiAction?: (control: typeof UI[keyof typeof UI]) => void;
   createConflictOverlay: (message: string, label: string, click: () => void) => HTMLElement;
 }) {
   const pane = document.getElementById("assistant-pane")!;
@@ -27,7 +29,7 @@ export function createAssistantTerminal(deps: {
   const list = document.querySelector<HTMLElement>(".assistant-column")!;
   const status = document.getElementById("assistant-pane-status")!;
   const focusButton = document.getElementById("assistant-pane-focus") as HTMLButtonElement;
-  const listButton = document.getElementById("assistant-pane-list") as HTMLButtonElement;
+  const hideButton = document.getElementById("assistant-pane-hide") as HTMLButtonElement;
   const skipButton = document.getElementById("assistant-pane-skip")!;
   const empty = document.getElementById("assistant-pane-empty")!;
   let unavailableMessage = "the assistant terminal is not running yet.";
@@ -44,11 +46,12 @@ export function createAssistantTerminal(deps: {
     a?.session === b?.session && a?.machine === b?.machine && a?.sessionId === b?.sessionId;
   let inputRequested = false;
   const backToList = () => { inputRequested = false; list.focus({ preventScroll: true }); };
-  listButton.onclick = backToList;
-  document.getElementById("assistant-pane-hide")!.onclick = () => { expanded = false; sync(); backToList(); };
+  // Clicking the adjacent list or Shift+Escape returns there; no separate header control.
+  hideButton.onclick = () => { expanded = false; sync(); backToList(); };
   focusButton.onclick = () => { inputRequested = true; controller?.focus(); };
   skipButton.onclick = () => {
-    (overlay?.querySelector<HTMLButtonElement>("button") ?? (focusButton.disabled ? listButton : focusButton)).focus();
+    deps.onUiAction?.(UI.SKIP);
+    (overlay?.querySelector<HTMLButtonElement>("button") ?? (focusButton.disabled ? hideButton : focusButton)).focus();
   };
   function updateControls() {
     const disabled = !target || !controller?.term || !!overlay;
@@ -75,7 +78,7 @@ export function createAssistantTerminal(deps: {
   // Ghostty.open() focuses its element, including a deferred focus, independently
   // of the controller's hydration shouldFocus. Gate that native mount focus here;
   // explicit pointer / Focus terminal actions still use Ghostty's real input.
-  input.addEventListener("focusin", () => { if (!inputRequested) backToList(); });
+  input.addEventListener("focusin", () => { if (!inputRequested) backToList(); else deps.onUiAction?.(UI.FOCUS); });
 
   function clearOverlay() {
     const hadFocus = overlay?.contains(document.activeElement);
@@ -121,6 +124,7 @@ export function createAssistantTerminal(deps: {
     status.textContent = "active elsewhere";
     overlay = deps.createConflictOverlay("Session active on another device", "Take Control", () => {
       if (controller !== owner) return;
+      deps.onUiAction?.(UI.TAKE_CONTROL);
       if (handleTakeControlClick(owner.isConnected) === "send-take-control") {
         owner.sendTakeControl();
         clearTimeout(takeoverTimer);
@@ -142,6 +146,7 @@ export function createAssistantTerminal(deps: {
     status.textContent = message;
     overlay = deps.createConflictOverlay(message, "Reconnect", () => {
       if (controller !== owner) return;
+      deps.onUiAction?.(UI.RECONNECT);
       release();
       sync();
     });
@@ -194,6 +199,7 @@ export function createAssistantTerminal(deps: {
   }
   function sync() {
     const show = visible();
+    if (pane.hidden === show) deps.onUiAction?.(show ? UI.SHOW : UI.HIDE);
     pane.hidden = !show;
     list.parentElement!.classList.toggle("assistant-terminal-expanded", show);
     if (!show || !target) {

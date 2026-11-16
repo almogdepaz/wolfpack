@@ -281,7 +281,7 @@ function isMachineHelpRequest(argv: readonly string[]): boolean {
       "create", "open", "organization", "status", "inbox", "read", "send", "wait", "prompt",
     ].includes(action ?? ""));
   }
-  if (family === "focus") return command.length === 1 || (command.length === 2 && ["show", "add", "edit", "done", "undo", "drop", "reorder", "nudge", "note", "day-summary"].includes(action ?? ""));
+  if (family === "focus") return command.length === 1 || (command.length === 2 && ["show", "add", "edit", "done", "undo", "drop", "reorder", "nudge", "note", "day-summary", "retro"].includes(action ?? ""));
   if (family === "extension-data") return command.length === 1 || (command.length === 2 && ["read", "publish", "put-blob", "delete-blob"].includes(action ?? ""));
   if (family === "file") return command.length === 1 || (command.length === 2 && ["read", "write", "edit"].includes(action ?? ""));
   if (family === "exec") return command.length === 1;
@@ -291,7 +291,8 @@ function isMachineHelpRequest(argv: readonly string[]): boolean {
 
 function isMachineCommandSupported(argv: readonly string[]): boolean {
   const [family, action] = argv;
-  if (["list", "ls", "kill", "events", "focus"].includes(family ?? "")) return true;
+  if (family === "focus") return action !== "retro";
+  if (["list", "ls", "kill", "events"].includes(family ?? "")) return true;
   if (family === "activity") return action !== "ack";
   if (family === "session") {
     return ["create", "open", "organization", "status", "inbox", "read", "send", "wait", "prompt"].includes(action ?? "");

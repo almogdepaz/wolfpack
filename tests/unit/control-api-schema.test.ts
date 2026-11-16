@@ -89,6 +89,13 @@ describe("control api schema generation", () => {
     expect(readFileSync(CONTROL_API_SCHEMA_ARTIFACT, "utf-8")).toBe(generateControlApiSchemaText());
   });
 
+  test("focus UI writes are documented as bounded local-only events", () => {
+    const operation = httpOperation("recordFocusUiEvents");
+    expect(operation.auth).toBe("jwt-when-configured");
+    expect(validate(httpResponse("recordFocusUiEvents"), { accepted: 2 }, artifact)).toEqual([]);
+    expect(validate(httpRequest("recordFocusUiEvents"), { events: [] }, artifact).length).toBeGreaterThan(0);
+  });
+
   test("artifact has no duplicate contracts or unsupported field types", () => {
     expect(validateControlApiSchemaArtifact(artifact)).toEqual([]);
   });

@@ -8,6 +8,7 @@ import { errMsg } from "../log.js";
 import { InvalidInboxFile, UnknownInboxFile } from "../focus-coverage.js";
 import { join } from "node:path";
 import { FOCUS_HOME_DISABLE_FIRST, isFocusHome, writeFocusHome } from "../focus-home.js";
+import { FOCUS_UI_PATH, parseFocusUiBatch } from "../focus-ui-log.js";
 
 export function createFocusRoutes(ctx: ServerContext) {
   const identity = () => {
@@ -21,6 +22,17 @@ export function createFocusRoutes(ctx: ServerContext) {
     return { ...owner, document, revision: document?.revision ?? 0 };
   };
   return {
+    [`POST ${FOCUS_UI_PATH}`]: async (req: IncomingMessage, res: ServerResponse) => {
+      if (!identity().local) return json(res, { error: "ui events live on the focus home machine" }, 409);
+      const body = await parseObjectBody(req, res, { respondOnTooLarge: true });
+      if (!body) return;
+      const events = parseFocusUiBatch(body);
+      const now = Date.now();
+      if (!events || events.some(event => Date.parse(event.at) < now - 86_400_000 || Date.parse(event.at) > now + 300_000)) return json(res, { error: "invalid focus ui events" }, 400);
+      if (!identity().local) return json(res, { error: "ui events live on the focus home machine" }, 409);
+      try { for (const event of events) ctx.focusUiJournal.append(event); json(res, { accepted: events.length }); }
+      catch (error) { json(res, { error: errMsg(error) }, 503); }
+    },
     "GET /api/focus": async (req: IncomingMessage, res: ServerResponse) => {
       res.setHeader("Cache-Control", "no-store");
       try {

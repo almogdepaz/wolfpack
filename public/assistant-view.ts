@@ -1,3 +1,5 @@
+import { createFocusUiLog, type FocusUiPayload } from "./focus-ui-log";
+import { FOCUS_UI_ACTION as UI, FOCUS_UI_CARD as CARD, FOCUS_UI_INTENTION as INTENTION, FOCUS_UI_ASSISTANT as ASSISTANT, FOCUS_UI_SETTINGS as SETTINGS, FOCUS_UI_DISCLOSURE as DISCLOSURE, type FocusUiCard, type FocusUiCardData } from "../src/focus-ui-log";
 import { FOCUS_ASSISTANT_SESSION_NAMES, type FocusAssistantRole as AssistantRole } from "../src/focus-session";
 import { esc, escAttr, isDesktop } from "./app-state";
 import { focusCards, mergeFocus, takeVisible, stoppedUnseen, linkedFocusSessions, doneToday, groupFocusDone, type FocusDoneGroup, focusSessionLabel, focusActionVerb, type FocusAction, type FocusSession } from "../src/focus-ranking";
@@ -30,6 +32,7 @@ const isTransportFailure = (error: unknown) => !(error instanceof FocusOwnership
 export function createAssistantView(deps: {
   request: <T>(path: string, init?: RequestInit, machine?: string, interactive?: boolean) => Promise<T>;
   homeMachine: (id: string) => Machine | undefined;
+  uiEventUrl: (machine: string) => string | undefined;
   homeMachines: () => { id: string; name: string; online: boolean }[];
   localMachineName: () => string;
   machineHostname?: (identity: string) => string | undefined;
@@ -66,6 +69,34 @@ export function createAssistantView(deps: {
   let timingLoad = 0;
   let machine = "";
   let localInstallationId = "";
+  const uiLog = createFocusUiLog({ target: () => {
+    if (!localOwner || !answered || focusUnavailable || focus?.home !== localOwner.home) return undefined;
+    const target = localOwner.local ? "" : deps.homeMachine(localOwner.home)?.key;
+    return target === undefined ? undefined : deps.uiEventUrl(target);
+  } });
+  let pageVisible = false;
+  const syncUiVisibility = () => uiLog.setVisible(pageVisible && document.visibilityState === "visible", matchMedia("(min-width: 1280px)").matches);
+  document.addEventListener("visibilitychange", () => { syncUiVisibility(); logShownCards(); if (document.visibilityState !== "visible") uiLog.flush(true); });
+  window.addEventListener("pagehide", () => { uiLog.setVisible(false, false); uiLog.flush(true); });
+  window.addEventListener("pageshow", () => { syncUiVisibility(); logShownCards(); });
+  const logSetting = (control: Extract<FocusUiPayload, { action: typeof UI.SETTINGS }>["control"]) => uiLog.record({ action: UI.SETTINGS, control });
+  const logAssistant = (control: Extract<FocusUiPayload, { action: typeof UI.ASSISTANT }>["control"], id?: string) => uiLog.record({ action: UI.ASSISTANT, control, ...(id && { id }) });
+  function logDisclosure(control: Extract<FocusUiPayload, { action: typeof UI.DISCLOSURE }>["control"], key?: string) {
+    const id = key?.match(/^(?:intention|start):(.+)$/)?.[1];
+    uiLog.record({ action: UI.DISCLOSURE, control, ...(id && { id }) });
+  }
+  const uiSessionTarget = (session: FocusSession) => ({ session: session.name, sessionId: session.id, machine: session.machineInstallationId || session.machineUrl || localInstallationId || "local" });
+  function logCard(session: FocusSession, control: Extract<FocusUiPayload, { action: typeof UI.CARD }>["control"]) {
+    uiLog.record({ action: UI.CARD, control, ...uiSessionTarget(session) });
+  }
+  function logRenderedCard(element: HTMLElement, control: Extract<FocusUiPayload, { action: typeof UI.CARD }>["control"]) {
+    const details = element.closest<HTMLElement>("details.focus-card") ?? element.closest("li")?.querySelector<HTMLElement>("details.focus-card");
+    const card = renderedUiCards.get(details?.dataset.focusCard ?? "");
+    if (!card) return;
+    const { kind: _kind, reason: _reason, ...target } = card;
+    uiLog.record({ action: UI.CARD, control, ...target });
+    return card;
+  }
   let homeName = "sgt";
   let focusUnavailable = false;
   // A later store fault cannot revive an explicitly rejected owner.
@@ -263,6 +294,7 @@ export function createAssistantView(deps: {
   const openCard = (key: string) => { openCards.delete(key); openCards.add(key); if (openCards.size > OPEN_CARDS_MAX) openCards.delete(openCards.values().next().value!); };
   // Session cards emitted by the last render (either host): only these fetch their context.
   const renderedSessions = new Map<string, FocusSession>();
+  const renderedUiCards = new Map<string, FocusUiCardData>();
   const stamp = (at: string) => new Date(at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
   const field = (label: string, value: string) => value ? `<div><dt>${label}</dt><dd>${value}</dd></div>` : "";
   const project = (path?: string) => path ? `<span title="${escAttr(path)}">${esc(path.replace(/\/+$/, "").split("/").pop() || path)}</span>` : "";
@@ -488,6 +520,8 @@ export function createAssistantView(deps: {
       // A start row and the same intention's today card are separate cards: `start:` here, `intention:` in today.
       const key = row.session ? `session:${row.session.machineInstallationId ?? ""}:${row.session.id}` : row.intention ? `start:${row.intention.id}` : `unavailable:${JSON.stringify(row.triage?.ref)}`;
       if (row.session) renderedSessions.set(key, row.session);
+      const target = row.session ? uiSessionTarget(row.session) : row.intention ? { intentionId: row.intention.id } : undefined;
+      if (target) renderedUiCards.set(key, { ...target, kind, reason: row.triage?.verdict ?? (row.source === "new-rules" ? "new-rules" : "rules") });
       const actionName = replyBox ? `Send to ${row.session?.name ?? title}` : done ? `Mark done: ${done.title}` : row.session ? `${verb} ${title}` : title;
       const action = replyBox && (receipt?.state === "sent" || receipt?.state === "check") ? "" : `<button type="button"${replyBox ? ` aria-describedby="${messageId}-description"` : ' class="focus-action"'}${!planning && (sessionLocked() || row.unavailable || (replyBox && (!reply.trim() || receipt && receipt.state !== "retry"))) ? " disabled" : ""} data-focus-next="${escAttr(actionKey)}" data-focus-key="${escAttr(`act:${key}`)}" ${planning ? planAttributes(row.intention!) : `aria-label="${escAttr(actionName)}"`}>${esc(verb)}${verb === "sending…" ? "" : '<span aria-hidden="true"> ›</span>'}</button>`;
       const open = row.session ? `<button type="button" data-focus-session="${escAttr(row.session.id)}" data-focus-key="${escAttr(`open:${key}`)}" aria-label="${escAttr(`Open ${name}`)}"${sessionLocked() || row.unavailable ? " disabled" : ""}>open<span aria-hidden="true"> ›</span></button>` : "";
@@ -622,9 +656,22 @@ export function createAssistantView(deps: {
       }
     }
   }
+  function logShownCards() {
+    if (!pageVisible || !focus?.assistant?.enabled) return;
+    // All rendered card variants, not dashboard copies or CSS-hidden overflow.
+    const shown: FocusUiCard[] = [];
+    for (const element of document.querySelectorAll<HTMLElement>("#assistant-content .focus-next > li, #assistant-content .focus-finished > li, #assistant-content .focus-today > li")) {
+      if (!element.getClientRects().length) continue;
+      const key = element.querySelector<HTMLElement>("details.focus-card")?.dataset.focusCard;
+      const card = renderedUiCards.get(key ?? "");
+      if (card) shown.push({ ...card, rank: shown.length + 1 });
+    }
+    uiLog.shown(shown);
+  }
   function render() {
     foldOpenCards();
     renderedSessions.clear();
+    renderedUiCards.clear();
     renderedActions.clear();
     const current = doc();
     for (const id of compactChips.keys()) if (!current.intentions.some(intention => intention.id === id && linkedFocusSessions(intention, sessions()).length > 0)) compactChips.delete(id);
@@ -654,6 +701,7 @@ export function createAssistantView(deps: {
     const fullCount = nextCount - doneCards;
     const moreNext = !showAllNext && fullCount > visibleNext ? `<p>${button("more-next", `show ${fullCount - visibleNext} more`)}</p>` : "";
     const open = current.intentions.filter(i => !i.done);
+    for (const intention of open) renderedUiCards.set(`intention:${intention.id}`, { intentionId: intention.id, surface: "today", kind: "action", reason: "rules" });
     const finishedToday = current.intentions.filter(i => i.done && i.doneAt && doneDay(i.doneAt) === localDay(Date.now()));
     const todayCount = open.length + finishedToday.length;
     const summary = `${finishedToday.length} of ${todayCount} done`;
@@ -766,6 +814,8 @@ export function createAssistantView(deps: {
       if (mobileOverCap && !attentionCards.length && !attentionRole() && dashboardExpanded && !mobileDisclosure.expanded(false)) { render(); return; }
     }
     syncReplyControls();
+    syncUiVisibility();
+    logShownCards();
     const live = document.getElementById("focus-status");
     if (live) live.textContent = focusUnavailable ? "" : error || assistantError || (focus?.assistant?.queued ? `${focus.assistant.queued} queued${terminalUnavailable() ? " · sends when the broker is back" : ""}` : notice);
     const setting = document.getElementById("assistant-setting-status");
@@ -868,6 +918,15 @@ export function createAssistantView(deps: {
       if (!answered) throw new Error("focus is still loading; changes were not saved");
       try {
         const next = typeof op === "function" ? op() : op;
+        if (attempt === 0) for (const change of (Array.isArray(next) ? next : [next]) as readonly FocusOp[]) {
+          switch (change.type) {
+            case "add": uiLog.record({ action: UI.INTENTION, control: INTENTION.ADD, id: change.intention.id }); break;
+            case "done": case "undo": case "edit": case "drop": uiLog.record({ action: UI.INTENTION, control: change.type, id: change.id }); break;
+            case "reorder": for (const id of change.ids) uiLog.record({ action: UI.INTENTION, control: INTENTION.REORDER, id }); break;
+            case "seen-take": logSetting(SETTINGS.DISMISS_TAKE); break;
+            case "seen-day-note": logSetting(SETTINGS.DAY_NOTE_READ); break;
+          }
+        }
         const saved = await deps.request<FocusResponse>("/focus", { method: "POST", body: JSON.stringify({ expectedRevision: doc().revision, ops: Array.isArray(next) ? next : [next] }) }, owner.machine);
         requireOwner(owner, OLD_HOME_COMPLETED);
         if (saved.home !== owner.home) throw new FocusHomeChanged();
@@ -975,6 +1034,7 @@ export function createAssistantView(deps: {
     const owner = timingOwner;
     if (!owner || !ownerIsCurrent(owner)) { timingStatus(HOME_CHANGED, "error"); return; }
     if (timingSave) return;
+    logSetting(SETTINGS.TIMING);
     const values = Object.fromEntries([...new FormData(timingForm)].map(([key, value]) => [key, key === "fallbackTime" ? String(value) : Number(value)]));
     for (const input of timingForm.querySelectorAll("input")) input.setAttribute("aria-invalid", "false");
     timingSave = owner; syncTimingControls();
@@ -1011,6 +1071,7 @@ export function createAssistantView(deps: {
   document.getElementById("assistant-setting-home-select")?.addEventListener("change", event => {
     const select = event.target as HTMLSelectElement;
     if (!localOwner || busy || homeChanging) return;
+    logSetting(SETTINGS.HOME);
     const chosen = select.value;
     const name = select.selectedOptions[0]!.textContent;
     homeChanging = true;
@@ -1037,6 +1098,7 @@ export function createAssistantView(deps: {
     if (!deps.expandTerminal()) deps.open(target.session, target.machine);
   }
   async function planIntention(id: string) {
+    logAssistant(ASSISTANT.PLAN, id);
     const owner = captureOwner();
     // Revalidate the home and assistant state before pasting into a potentially changed dialog.
     await flight; requireOwner(owner);
@@ -1128,16 +1190,26 @@ export function createAssistantView(deps: {
     });
     host.addEventListener("click", event => {
       if (id === "dashboard-focus") mobileDefaultPending = false;
-      const target = (event.target as HTMLElement).closest<HTMLButtonElement>("button");
-      if (!target) return;
+      const element = event.target as HTMLElement;
+      const target = element.closest<HTMLButtonElement>("button");
+      if (!target) {
+        const summary = element.closest<HTMLElement>("summary");
+        const details = summary?.parentElement as HTMLDetailsElement | undefined;
+        if (details?.dataset.focusCard) {
+          if (!logRenderedCard(details, details.open ? CARD.COLLAPSE : CARD.EXPAND)) logDisclosure(details.open ? DISCLOSURE.COLLAPSE : DISCLOSURE.EXPAND, details.dataset.focusCard);
+        }
+        return;
+      }
       const action = target.dataset.focusAction;
       if (action === "toggle-dashboard") {
+        uiLog.record({ action: UI.DISCLOSURE, control: target.getAttribute("aria-expanded") === "true" ? DISCLOSURE.COLLAPSE : DISCLOSURE.EXPAND });
         (id === "sidebar-assistant" ? desktopDisclosure : dashboardDisclosure()).toggle(isDesktop() ? dashboardAttention : mobileAttention); render();
         return;
       }
       if (action === "view") { selectedRole = "assistant-chat"; render(); deps.show("assistant"); }
-      if (action === "settings") deps.show("settings");
+      if (action === "settings") { logSetting(SETTINGS.OPEN); deps.show("settings"); }
       if (action === "more-next") {
+        uiLog.record({ action: UI.DISCLOSURE, control: DISCLOSURE.MORE });
         const firstNew = isDesktop() ? 5 : 3;
         showAllNext = true;
         render();
@@ -1146,13 +1218,14 @@ export function createAssistantView(deps: {
       }
       const expand = target.dataset.focusExpand;
       if (expand) {
+        if (!logRenderedCard(target, CARD.EXPAND)) logDisclosure(DISCLOSURE.EXPAND, expand);
         openCard(expand);
         render();
         host.querySelector<HTMLElement>(`details[data-focus-card="${CSS.escape(expand)}"] > summary`)?.focus();
         return;
       }
-      if (action === "talk") { talk(); return; }
-      if (action === "attention") { const role = attentionRole(); if (role) talk(role); return; }
+      if (action === "talk") { logAssistant(target.closest(".focus-take") ? ASSISTANT.REPLY : ASSISTANT.TALK); talk(); return; }
+      if (action === "attention") { const role = attentionRole(); if (role) { logAssistant(ASSISTANT.TALK); talk(role); } return; }
       if (locked()) return;
       if (target.dataset.focusSeenAll) {
         if (sessionLocked()) return;
@@ -1164,6 +1237,7 @@ export function createAssistantView(deps: {
             requireOwner(owner);
             const action = currentAction(key);
             if (!action?.row.session || action.kind !== "seen") continue;
+            logCard(action.row.session, CARD.SEEN);
             try { await deps.acknowledge(action.row.session); }
             catch (e) { failures.push(`${action.row.session.name}: ${e instanceof Error ? e.message : "could not mark seen"}`); }
           }
@@ -1172,20 +1246,21 @@ export function createAssistantView(deps: {
         });
         return;
       }
-      if (target.dataset.focusRemove) { void removeIntention(target.dataset.focusRemove, host); return; }
+      if (target.dataset.focusRemove) { logRenderedCard(target, CARD.DROP); void removeIntention(target.dataset.focusRemove, host); return; }
       if (action === "restore-removed") { void restoreRemoved(host); return; }
       if (target.dataset.focusReset) {
         const action = currentAction(target.dataset.focusReset);
-        if (action?.kind === "reply") { drafts.delete(action.key); render(); }
+        if (action?.kind === "reply") { if (action.row.session) logCard(action.row.session, CARD.RESET); drafts.delete(action.key); render(); }
         return;
       }
       if (action === "catch-up") void run(async () => {
+        logSetting(SETTINGS.CATCH_UP);
         const owner = captureOwner();
         const next = await deps.request<RoutineStatus>("/focus/catch-up", { method: "POST" }, owner.machine);
         requireOwner(owner, OLD_HOME_COMPLETED);
         if (focus) focus.routines = next;
       });
-      if (action === "day-note") void run(readDayNote);
+      if (action === "day-note") { logSetting(SETTINGS.DAY_NOTE); void run(readDayNote); }
       if (action === "seen-take" && target.dataset.focusAt) {
         const at = target.dataset.focusAt;
         void run(() => write({ type: "seen-take", at }));
@@ -1193,7 +1268,7 @@ export function createAssistantView(deps: {
       if (target.dataset.focusUndo) void run(() => write({ type: "undo", id: target.dataset.focusUndo! }));
       if (target.dataset.focusComplete) void run(() => write({ type: "done", id: target.dataset.focusComplete! }));
       if (target.dataset.focusPlan) {
-        if (!planUnavailable()) void run(() => planIntention(target.dataset.focusPlan!));
+        if (!planUnavailable()) { logRenderedCard(target, CARD.PLAN); void run(() => planIntention(target.dataset.focusPlan!)); }
         return;
       }
       const rowAction = target.dataset.focusNext ?? target.dataset.focusMarkDone;
@@ -1207,19 +1282,20 @@ export function createAssistantView(deps: {
           if (!text.trim() || text.length > FOCUS_REPLY_MAX_LENGTH) return;
           // Paste already strips these; anything else (IME, autofill, script) is refused with a reason.
           if (focusReplyHasHiddenControl(text)) { void run(async () => { throw new Error("remove hidden control characters (tabs, line breaks, escapes or invisible formatting) before sending"); }); return; }
+          if (row.session) logCard(row.session, CARD.REPLY);
           void run(() => sendReply(row, rowAction, text));
           return;
         }
-        if (kind === "seen" && row.session) { void run(() => deps.acknowledge(row.session!)); return; }
-        if (kind === "done") { void run(() => write({ type: "done", id: row.triage!.doneIntention! })); return; }
-        if (kind === "open" && row.session) deps.open(row.session.name, row.session.machineUrl);
-        else if (kind === "start" && row.intention) { if (!planUnavailable()) void run(() => planIntention(row.intention!.id)); }
-        else if (row.intention) { openCard(`start:${row.intention.id}`); render(); }
+        if (kind === "seen" && row.session) { logCard(row.session, CARD.SEEN); void run(() => deps.acknowledge(row.session!)); return; }
+        if (kind === "done") { logRenderedCard(target, CARD.DONE); void run(() => write({ type: "done", id: row.triage!.doneIntention! })); return; }
+        if (kind === "open" && row.session) { logCard(row.session, CARD.TAKE); deps.open(row.session.name, row.session.machineUrl); }
+        else if (kind === "start" && row.intention) { if (!planUnavailable()) { logRenderedCard(target, CARD.PLAN); void run(() => planIntention(row.intention!.id)); } }
+        else if (row.intention) { logRenderedCard(target, CARD.REVIEW); openCard(`start:${row.intention.id}`); render(); }
       }
       if (target.dataset.focusSession) {
         if (sessionLocked()) return;
         const session = sessions().find(s => s.id === target.dataset.focusSession);
-        if (session) deps.open(session.name, session.machineUrl);
+        if (session) { const card = logRenderedCard(target, CARD.OPEN); if (!card || card.intentionId) logCard(session, CARD.OPEN); deps.open(session.name, session.machineUrl); }
       }
     });
     // toggle does not bubble: listen in the capture phase.
@@ -1238,7 +1314,7 @@ export function createAssistantView(deps: {
     }, true);
     host.addEventListener("change", event => {
       const target = event.target as HTMLInputElement;
-      if (target.dataset.focusDone) void run(() => write({ type: target.checked ? "done" : "undo", id: target.dataset.focusDone! }));
+      if (target.dataset.focusDone) { logRenderedCard(target, target.checked ? CARD.DONE : CARD.UNDO); void run(() => write({ type: target.checked ? "done" : "undo", id: target.dataset.focusDone! })); }
     });
     host.addEventListener("submit", event => {
       event.preventDefault();
@@ -1256,12 +1332,13 @@ export function createAssistantView(deps: {
   document.getElementById("assistant-terminal-focus")!.onclick = () => deps.show("assistant");
   document.getElementById("assistant-setting-open")!.onclick = () => deps.show("assistant");
   for (const [id, role] of TERMINAL_CONTROLS) {
-    document.getElementById(id)!.onclick = () => { deps.show("assistant"); talk(role); };
+    document.getElementById(id)!.onclick = () => { logSetting(role === "assistant" ? SETTINGS.BACKGROUND : SETTINGS.CHAT); deps.show("assistant"); talk(role); };
   }
   document.getElementById("assistant-setting-toggle")!.onclick = () => { void run(async () => {
     const owner = captureOwner();
     const enabled = !focus?.assistant?.enabled;
     if (!await deps.confirm(enabled)) return;
+    logSetting(enabled ? SETTINGS.ENABLE : SETTINGS.DISABLE);
     await refresh(); requireOwner(owner);
     const assistant = await deps.request<AssistantStatus>("/focus/assistant", { method: "POST", body: JSON.stringify({ enabled, loginConfirmed: enabled }) }, owner.machine);
     requireOwner(owner, OLD_HOME_COMPLETED);
@@ -1276,7 +1353,8 @@ export function createAssistantView(deps: {
     resizeFrame = requestAnimationFrame(() => { resizeFrame = undefined; render(); });
   });
   render();
-  return { refresh, render, loadTiming,
+  return { refresh, render, loadTiming, logAssistant,
+    setVisible(visible: boolean) { pageVisible = visible; syncUiVisibility(); logShownCards(); },
     setSidebarOwner(owns: boolean) { sidebarOwnsChooser = owns; updateSidebarVisibility(); },
     enabled: () => !!focus?.assistant?.enabled,
     isAssistant: (name: string, key: string) => key === machine && [focus?.assistant?.session, focus?.assistant?.chat?.session].some(session => !!session && session === name) };

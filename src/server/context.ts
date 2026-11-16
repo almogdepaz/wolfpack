@@ -3,6 +3,7 @@ import { FocusRuntime } from "./focus-runtime.js";
 import { ViewerRedrawTracker } from "./viewer-redraw.js";
 import { FocusStore } from "./focus-store.js";
 import { ActivityJournal } from "./activity-journal.js";
+import { FocusUiJournal } from "./focus-ui-journal.js";
 import { ActivityRecorder } from "./activity-recorder.js";
 import { readLocalTailscaleStatus } from "./tailscale-status.js";
 import { enumerateLocalTailnetCandidates } from "./http.js";
@@ -71,6 +72,7 @@ export interface ServerContext {
   readonly assistantService: AssistantService;
   readonly focusRuntime: FocusRuntime;
   readonly activityJournal: ActivityJournal;
+  readonly focusUiJournal: FocusUiJournal;
   readonly activityRecorder: ActivityRecorder;
   readonly viewerRedraw: ViewerRedrawTracker;
   readonly agentRuntimeStateStore: AgentRuntimeStateStore;
@@ -99,6 +101,7 @@ interface ServiceCache {
   sessionOrganization?: SessionOrganizationService;
   focusRuntime?: FocusRuntime;
   activityJournal?: ActivityJournal;
+  focusUiJournal?: FocusUiJournal;
   activityRecorder?: ActivityRecorder;
   viewerRedraw?: { backend: ServerBackend | null; tracker: ViewerRedrawTracker };
   agentRuntimeStateStore?: AgentRuntimeStateStore;
@@ -159,6 +162,7 @@ export function createServerContext(overrides: ServerContextOptions = {}): Serve
     assistantService: overrides.assistantService ?? new AssistantService(),
     get focusRuntime() { return overrides.focusRuntime ?? (cache.focusRuntime ??= new FocusRuntime(context)); },
     get activityJournal() { return overrides.activityJournal ?? (cache.activityJournal ??= new ActivityJournal()); },
+    get focusUiJournal() { return overrides.focusUiJournal ?? (cache.focusUiJournal ??= new FocusUiJournal()); },
     get viewerRedraw() {
       if (overrides.viewerRedraw) return overrides.viewerRedraw;
       // Observation/CLI retain a proxy while websocket viewers pin the raw backend.
@@ -260,6 +264,7 @@ export const defaultServerContext: ServerContext = {
   get assistantService() { return getDefaultServerContext().assistantService; },
   get focusRuntime() { return getDefaultServerContext().focusRuntime; },
   get activityJournal() { return getDefaultServerContext().activityJournal; },
+  get focusUiJournal() { return getDefaultServerContext().focusUiJournal; },
   get activityRecorder() { return getDefaultServerContext().activityRecorder; },
   get viewerRedraw() { return getDefaultServerContext().viewerRedraw; },
   get agentRuntimeStateStore() { return getDefaultServerContext().agentRuntimeStateStore; },
