@@ -328,6 +328,7 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Pa
   ctx.backend.cleanupOrphans();
   // The journal subscribes to the event bus before observation starts, so state transitions are journaled.
   ctx.activityJournal.startRetention(ACTIVITY_RETENTION_INTERVAL_MS, () => loadSettings().assistant.journalRetentionDays);
+  ctx.focusUiJournal.startRetention(ACTIVITY_RETENTION_INTERVAL_MS, () => loadSettings().assistant.journalRetentionDays);
   ctx.activityRecorder.start();
   let activityReconciled = false;
   const reconcileActivity = () => {
@@ -367,6 +368,7 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Pa
     stopPinnedReconnect?.();
     ctx.activityRecorder.stop();
     ctx.activityJournal.close();
+    ctx.focusUiJournal.close();
     ctx.focusRuntime.stop();
     taskRelay.close();
     stopSessionNotificationObserver();
@@ -381,7 +383,7 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Pa
     process.exit(1);
   });
 
-  installShutdownSignalHandlers(wss, () => ctx.activityJournal.flush());
+  installShutdownSignalHandlers(wss, () => { ctx.activityJournal.flush(); ctx.focusUiJournal.flush(); });
 
   server.listen(port, host, () => {
     log.info("server started", { url: `http://localhost:${port}/` });

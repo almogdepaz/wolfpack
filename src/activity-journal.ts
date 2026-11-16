@@ -1,3 +1,4 @@
+import { parseJournalLines } from "./journal-lines.js";
 import { isFocusAssistantOwnership, isFocusAssistantSession, type FocusAssistantOwnership } from "./focus-session.js";
 
 /**
@@ -90,13 +91,7 @@ export function serializeActivityRow(row: ActivityRow): string { return JSON.str
  * reported in bytes so the writer can truncate it before appending again.
  */
 export function parseActivityLines(text: string): { rows: ActivityRow[]; partialTailBytes: number } {
-  const end = text.lastIndexOf("\n") + 1;
-  const rows: ActivityRow[] = [];
-  for (const line of text.slice(0, end).split("\n")) {
-    if (!line) continue;
-    try { const value = JSON.parse(line) as unknown; if (isActivityRow(value)) rows.push(value); } catch { /* malformed line: skipped */ }
-  }
-  return { rows, partialTailBytes: Buffer.byteLength(text.slice(end)) };
+  return parseJournalLines(text, isActivityRow);
 }
 
 export function activityFileDay(at: string): string { return new Date(at).toISOString().slice(0, 10); }
