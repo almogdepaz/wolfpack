@@ -11,25 +11,32 @@ export function isRetroDate(date: string): boolean {
   const ms = Date.parse(`${date}T00:00:00.000Z`);
   return /^\d{4}-\d\d-\d\d$/.test(date) && Number.isFinite(ms) && new Date(ms).toISOString().slice(0, 10) === date;
 }
+export const FOCUS_RETRO_LOOKAHEAD_MS = 86_400_000;
 const timeOrder = (a: { at: string; seq: number }, b: { at: string; seq: number }) => Date.parse(a.at) - Date.parse(b.at) || a.seq - b.seq;
 const identity = (card: FocusUiTarget & { surface?: FocusUiSurface }) => JSON.stringify([card.intentionId === undefined ? [card.machine, card.sessionId] : [card.intentionId], card.surface ?? "next"]);
-/** Day-bounded, observational attribution, not proof that a click caused a state transition.
+/** Attribute items to the UTC day they began, with at most 24h of continuation.
+ * Prior-day context prevents carry-ins becoming new items; attribution is observational.
  * A continuous impression survives unrelated set changes; rank/kind/reason changes start a new one.
  */
 export function buildFocusRetro(date: string, ui: readonly FocusUiRow[], activity: readonly ActivityRow[], localMachine?: string): FocusRetro {
   if (!isRetroDate(date)) throw new Error("date must be YYYY-MM-DD (UTC)");
   const result: FocusRetro = { date, visits: [], cards: [], needsInput: [] };
-  const uiRows = ui.filter(row => row.at.slice(0, 10) === date).sort(timeOrder);
+  const dayStart = Date.parse(`${date}T00:00:00.000Z`), dayEnd = dayStart + FOCUS_RETRO_LOOKAHEAD_MS;
+  const startsToday = (at: string) => Date.parse(at) >= dayStart && Date.parse(at) < dayEnd;
+  const inWindow = (row: { at: string }) => Date.parse(row.at) >= dayStart - FOCUS_RETRO_LOOKAHEAD_MS && Date.parse(row.at) < dayEnd + FOCUS_RETRO_LOOKAHEAD_MS;
+  const continues = (openedAt: string, at: string) => Date.parse(at) <= Date.parse(openedAt) + FOCUS_RETRO_LOOKAHEAD_MS;
+  const uiRows = ui.filter(inWindow).sort(timeOrder);
   const visits = new Map<string, FocusRetro["visits"][number]>();
   const impressions = new Map<string, Map<string, FocusRetro["cards"][number]>>();
   for (const row of uiRows) {
     if (row.action === A.OPEN) {
       const visit = { visit: row.visit, openedAt: row.at, leftAt: null, visibleMs: null };
-      visits.set(row.visit, visit); result.visits.push(visit);
+      visits.set(row.visit, visit);
+      if (startsToday(row.at)) result.visits.push(visit);
       impressions.set(row.visit, new Map());
     } else if (row.action === A.LEFT) {
       const visit = visits.get(row.visit);
-      if (visit) { visit.leftAt = row.at; visit.visibleMs = row.visibleMs; }
+      if (visit && continues(visit.openedAt, row.at)) { visit.leftAt = row.at; visit.visibleMs = row.visibleMs; }
       impressions.delete(row.visit);
     } else if (row.action === A.SHOWN) {
       const prior = impressions.get(row.visit) ?? new Map<string, FocusRetro["cards"][number]>();
@@ -38,20 +45,20 @@ export function buildFocusRetro(date: string, ui: readonly FocusUiRow[], activit
         const key = identity(card), previous = prior.get(key);
         const same = previous && previous.rank === card.rank && previous.kind === card.kind && previous.reason === card.reason;
         const impression = same ? previous : { ...card, visit: row.visit, shownSeq: row.seq, shownAt: row.at, firstAction: null };
-        if (!same) result.cards.push(impression);
+        if (!same && startsToday(row.at)) result.cards.push(impression);
         current.set(key, impression);
       }
       impressions.set(row.visit, current);
     } else if (row.action === A.CARD) {
       const impression = impressions.get(row.visit)?.get(identity(row));
-      if (impression && !impression.firstAction) impression.firstAction = { control: row.control, at: row.at, latencyMs: Date.parse(row.at) - Date.parse(impression.shownAt) };
+      if (impression && !impression.firstAction && continues(impression.shownAt, row.at)) impression.firstAction = { control: row.control, at: row.at, latencyMs: Date.parse(row.at) - Date.parse(impression.shownAt) };
     }
   }
   const pending = new Map<string, FocusRetro["needsInput"][number]>();
   const aliases = new Map<string, string>();
   const inputs: { key: string; at: string; source: string }[] = [];
   const resolvedStates: readonly string[] = [STATE.WORKING, STATE.RUNNING, STATE.AUDIT, STATE.CLEANUP, STATE.DONE, STATE.IDLE, STATE.FAILED, STATE.STOPPED, STATE.OFF];
-  for (const row of activity.filter(row => row.at.slice(0, 10) === date).sort(timeOrder)) {
+  for (const row of activity.filter(inWindow).sort(timeOrder)) {
     if (row.kind === K.TASK_UPDATED) continue;
     const session = "session" in row ? row.session : undefined;
     const sessionId = "sessionId" in row ? row.sessionId : undefined;
@@ -63,11 +70,15 @@ export function buildFocusRetro(date: string, ui: readonly FocusUiRow[], activit
     if (state === STATE.NEEDS_INPUT && session) {
       if (!pending.has(key)) {
         const episode: FocusRetro["needsInput"][number] = { session, ...(knownId && { sessionId: knownId }), startedAt: row.at, resolvedAt: null, resolutionMs: null, via: "unknown", focusAction: null };
-        pending.set(key, episode); result.needsInput.push(episode);
+        pending.set(key, episode);
+        if (startsToday(row.at)) result.needsInput.push(episode);
       }
     } else if (row.kind === K.SESSION_EXITED || state && resolvedStates.includes(state)) {
       const episode = pending.get(key);
-      if (episode) { episode.resolvedAt = row.at; episode.resolutionMs = Date.parse(row.at) - Date.parse(episode.startedAt); pending.delete(key); }
+      if (episode) {
+        if (continues(episode.startedAt, row.at)) { episode.resolvedAt = row.at; episode.resolutionMs = Date.parse(row.at) - Date.parse(episode.startedAt); }
+        pending.delete(key);
+      }
     }
   }
   for (const episode of result.needsInput) {

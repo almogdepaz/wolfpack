@@ -59,7 +59,50 @@ test("needs-input resolution excludes unknown, deduplicates episodes, and attrib
   expect(JSON.stringify(result)).not.toContain("PRIVATE_LABEL");
   expect(buildFocusRetro(date, ui, activity).needsInput.every(e => e.via !== "focus")).toBe(true);
 });
-test("names cannot alias a different incarnation; exit resolves only its UUID; cross-day rows are excluded", () => {
+test("midnight continuations resolve the originating day's visit, card and input episode only once", () => {
+  const start = "2026-11-16T23:59:50.000Z", refresh = "2026-11-17T00:00:00.000Z", end = "2026-11-17T00:00:10.000Z";
+  const ui: FocusUiRow[] = [
+    { seq: 1, at: start, visit: "midnight", action: A.OPEN },
+    { seq: 2, at: start, visit: "midnight", action: A.SHOWN, cards: [card("a")] },
+    { seq: 3, at: refresh, visit: "midnight", action: A.SHOWN, cards: [card("a")] },
+    { seq: 4, at: end, visit: "midnight", action: A.CARD, control: C.REPLY, ...cardIdentity("a") },
+    { seq: 5, at: end, visit: "midnight", action: A.LEFT, visibleMs: 20_000 },
+  ];
+  const activity: ActivityRow[] = [
+    { ...state("a", "needs-input", 0), at: start, seq: 1 },
+    { ...state("a", "needs-input", 0), at: refresh, seq: 2 },
+    { ...state("a", "working", 0), at: end, seq: 3 },
+  ];
+  const result = buildFocusRetro(date, ui, activity, "home");
+  expect(result.visits).toEqual([{ visit: "midnight", openedAt: start, leftAt: end, visibleMs: 20_000 }]);
+  expect(result.cards).toHaveLength(1);
+  expect(result.cards[0]!.firstAction).toEqual({ control: C.REPLY, at: end, latencyMs: 20_000 });
+  expect(result.needsInput).toHaveLength(1);
+  expect(result.needsInput[0]).toMatchObject({ resolvedAt: end, resolutionMs: 20_000, via: "focus" });
+  const nextDay = buildFocusRetro("2026-11-17", ui, activity, "home");
+  expect(nextDay).toEqual({ date: "2026-11-17", visits: [], cards: [], needsInput: [] });
+});
+test("continuations stop at 24h per item and do not import new next-day items", () => {
+  const start = "2026-11-16T23:59:50.000Z", late = "2026-11-17T23:59:51.000Z";
+  const ui: FocusUiRow[] = [
+    { seq: 1, at: start, visit: "late", action: A.OPEN },
+    { seq: 2, at: start, visit: "late", action: A.SHOWN, cards: [card("a")] },
+    { seq: 3, at: late, visit: "late", action: A.CARD, control: C.REPLY, ...cardIdentity("a") },
+    { seq: 4, at: late, visit: "late", action: A.LEFT, visibleMs: 86_400_000 },
+    { seq: 5, at: late, visit: "new", action: A.OPEN },
+    { seq: 6, at: late, visit: "new", action: A.SHOWN, cards: [card("b")] },
+  ];
+  const activity = [{ ...state("a", "needs-input", 0), at: start, seq: 1 }, { ...state("a", "working", 0), at: late, seq: 2 }, { ...state("b", "needs-input", 0), at: late, seq: 3 }];
+  const result = buildFocusRetro(date, ui, activity);
+  expect(result.visits).toHaveLength(1); expect(result.visits[0]!.leftAt).toBeNull();
+  expect(result.cards).toHaveLength(1); expect(result.cards[0]!.firstAction).toBeNull();
+  expect(result.needsInput).toHaveLength(1); expect(result.needsInput[0]!.resolvedAt).toBeNull();
+  const nextDay = buildFocusRetro("2026-11-17", ui, activity);
+  expect(nextDay.visits.map(v => v.visit)).toEqual(["new"]);
+  expect(nextDay.cards.map(c => c.sessionId)).toEqual(["b"]);
+  expect(nextDay.needsInput.map(e => e.sessionId)).toEqual(["b"]);
+});
+test("names cannot alias a different incarnation; exit resolves only its UUID; next-day starts are excluded", () => {
   const activity: ActivityRow[] = [state("old-id", "needs-input", 0),
     { kind: K.SESSION_CREATED, seq: 2, at: at(1), session: "old-id", sessionId: "new-id", cwd: "/PRIVATE_CWD" },
     { kind: K.SESSION_STATE, seq: 3, at: at(2), session: "old-id", state: "working", label: "" },

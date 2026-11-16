@@ -12,6 +12,35 @@ test("retro defaults to the current UTC date and rejects malformed or duplicate 
   expect(parseFocusRetroCommand(["--json", "--date", date])).toEqual({ date, json: true });
   for (const args of [["--json", "--json"], ["--date", "2026-2-01"], ["--date", "2026-11-31"], ["--date", "--json"]]) expect(() => parseFocusRetroCommand(args)).toThrow("Usage:");
 });
+test("retro CLI reads adjacent day files for midnight continuations without double-counting on the next date", () => {
+  const root = mkdtempSync(join(tmpdir(), "focus-retro-midnight-"));
+  const start = "2026-11-16T23:59:50.000Z", refresh = "2026-11-17T00:00:00.000Z", end = "2026-11-17T00:00:10.000Z";
+  const visit = "a8eb5e25-b8ac-4384-aa0a-c60f7dfcbded";
+  const target = { session: "work", sessionId: "mock:work", machine };
+  const ui = [
+    { seq: 1, at: start, visit, action: A.OPEN },
+    { seq: 2, at: start, visit, action: A.SHOWN, cards: [{ ...target, rank: 1, kind: "action", reason: "needs-you" }] },
+    { seq: 3, at: refresh, visit, action: A.SHOWN, cards: [{ ...target, rank: 1, kind: "action", reason: "needs-you" }] },
+    { seq: 4, at: end, visit, action: A.CARD, control: C.REPLY, ...target },
+    { seq: 5, at: end, visit, action: A.LEFT, visibleMs: 20_000 },
+  ];
+  const activity = [start, refresh, end].map((at, i) => ({ seq: i + 1, at, kind: K.SESSION_STATE, session: "work", sessionId: "mock:work", state: i === 2 ? "working" : "needs-input", label: "" }));
+  try {
+    for (const [dir, rows] of [["focus-ui", ui], ["activity", activity]] as const) {
+      mkdirSync(join(root, dir));
+      for (const day of [date, "2026-11-17"]) writeFileSync(join(root, dir, `${day}.jsonl`), rows.filter(r => r.at.startsWith(day)).map(r => JSON.stringify(r) + "\n").join(""));
+    }
+    writeFileSync(join(root, "machine-id"), machine);
+    const run = (day: string) => Bun.spawnSync([process.execPath, "src/cli/index.ts", "focus", "retro", "--date", day, "--json"], { cwd: process.cwd(), env: { ...process.env, WOLFPACK_DIR: root, WOLFPACK_PORT: "19794", WOLFPACK_MACHINE_ID_PATH: join(root, "machine-id") }, stdout: "pipe", stderr: "pipe" });
+    const first = run(date); expect(first.exitCode).toBe(0);
+    const result = JSON.parse(first.stdout.toString());
+    expect(result.visits[0]).toMatchObject({ leftAt: end, visibleMs: 20_000 });
+    expect(result.cards[0].firstAction).toMatchObject({ control: C.REPLY, latencyMs: 20_000 });
+    expect(result.needsInput[0]).toMatchObject({ resolvedAt: end, resolutionMs: 20_000, via: "focus" });
+    const second = run("2026-11-17"); expect(second.exitCode).toBe(0);
+    expect(JSON.parse(second.stdout.toString())).toEqual({ date: "2026-11-17", visits: [], cards: [], needsInput: [] });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 test("focus retro CLI reads local day files offline, supports text/JSON and does not mutate the journals", () => {
   const root = mkdtempSync(join(tmpdir(), "focus-retro-cli-"));
   mkdirSync(join(root, "focus-ui")); mkdirSync(join(root, "activity"));
