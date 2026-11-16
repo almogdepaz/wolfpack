@@ -380,7 +380,7 @@ test("SR-R2: a new runtime lifetime cannot revive an old held rotation or clear 
     t.backend.createSession = create;
     release();
     await flight;
-    expect(await t.backend.list()).toEqual([]);
+    expect(await t.backend.list()).toEqual(["assistant-chat"]);
     expect(t.ctx.focusRuntime.pins.errors.assistant).toBe("new lifetime startup failure");
   } finally { release(); await flight; t.close(); }
 });

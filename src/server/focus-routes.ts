@@ -1,3 +1,4 @@
+import { FOCUS_ASSISTANT_SESSION_NAMES, isFocusAssistantName } from "../focus-session.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ServerContext } from "./context.js";
 import { json, parseObjectBody, hasOnlyKeys } from "./http.js";
@@ -62,7 +63,7 @@ export function createFocusRoutes(ctx: ServerContext) {
         try {
           if (body.enabled) {
             await ctx.assistantService.enable(body.loginConfirmed === true);
-            ctx.focusRuntime.pins.reset("assistant");
+            for (const name of FOCUS_ASSISTANT_SESSION_NAMES) ctx.focusRuntime.pins.reset(name);
             ctx.focusRuntime.queue.clear();
             ctx.focusRuntime.start();
             await ctx.focusRuntime.pins.tick();
@@ -71,8 +72,9 @@ export function createFocusRoutes(ctx: ServerContext) {
             ctx.assistantService.unpin("assistant");
             ctx.focusRuntime.queue.clear("assistant disabled");
             const facts = await ctx.backend.listSessionFacts();
-            const session = facts.find(f => f.alive && f.name === "assistant" && f.identity?.projectPath === ctx.assistantService.folder);
-            if (session?.identity) await ctx.backend.killSessionById(session.identity.wolfpackSessionId);
+            for (const session of facts.filter(f => f.alive && isFocusAssistantName(f.name) && f.identity?.projectPath === ctx.assistantService.folder)) {
+              if (session.identity) await ctx.backend.killSessionById(session.identity.wolfpackSessionId);
+            }
           }
           json(res, await ctx.focusRuntime.status());
         } catch (error) { json(res, { error: errMsg(error) }, 409); }

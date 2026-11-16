@@ -1,3 +1,4 @@
+import { isFocusAssistantName } from "../focus-session.js";
 import { AGENT_KIND } from "../agent-kind.js";
 import { AGENT_STATUS_AUTHORITY, AGENT_STATUS_STATE } from "../agent-status-contract.js";
 import type { ServerContext } from "./context.js";
@@ -34,8 +35,9 @@ export class FocusRuntime {
     this.pins = new PinnedSessionService({ backend: ctx.backend,
       pins: () => {
         pinLifetime = this.lifetime;
-        return (ctx.assistantService.config?.pinnedSessions ?? []).filter(pin => this.homeIsLocal() || pin.name !== "assistant" || pin.cwd !== ctx.assistantService.folder);
+        return (ctx.assistantService.config?.pinnedSessions ?? []).filter(pin => this.homeIsLocal() || !isFocusAssistantName(pin.name) || pin.cwd !== ctx.assistantService.folder);
       },
+      managedAssistantPin: pin => ctx.assistantService.isManagedPin(pin),
       prepareLaunch: pin => {
         if (ctx.assistantService.isManagedPin(pin) && pinLifetime !== this.lifetime) throw new Error("assistant launch revoked: runtime stopped or restarted");
         return ctx.assistantService.prepareLaunch(pin);

@@ -1,10 +1,11 @@
+import { FOCUS_ASSISTANT_SESSION_NAMES } from "../focus-session.js";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   ACTIVITY_KIND, ACTIVITY_PAGE_MAX, ACTIVITY_PATH, activeCwds, parseActivityGit, parseActivityPage, type ActivityGitRepo, type ActivityPeerPage, type ActivityRow,
 } from "../activity-journal.js";
 import {
-  ASSISTANT_SESSION_NAME, InvalidInboxFile, applyAck, buildInbox, dayNoteMarkdown, dayNoteUpdateMarkdown, emptyCoverage, inboxFileName, inboxPrompt, isFocusCoverage,
+  InvalidInboxFile, applyAck, buildInbox, dayNoteMarkdown, dayNoteUpdateMarkdown, emptyCoverage, inboxFileName, inboxPrompt, isFocusCoverage,
   isInboxFileName, isNeedsInputSnapshot, settledProvisional, withoutAssistantRows,
   type FocusCoverage, type GitRepoLog, type InboxDay, type InboxMachine, type MachineCursor,
 } from "../focus-coverage.js";
@@ -45,7 +46,7 @@ export function localActivitySource(id: string, name: string, journal: ActivityJ
   return {
     id, name, local: true,
     // The quiet gate must see the same input pull() feeds the assistant: never its own terminal.
-    read: async (since, limit, window) => ({ ...journal.read(since, limit, window ?? {}), ...journal.status({ exceptSession: ASSISTANT_SESSION_NAME }) }),
+    read: async (since, limit, window) => ({ ...journal.read(since, limit, window ?? {}), ...journal.status({ exceptSessions: FOCUS_ASSISTANT_SESSION_NAMES }) }),
     git: async (from, to) => ({ repos: await readGitLogs(activeCwds(journal.readAll({ to }), from, to), from, to) }),
   };
 }

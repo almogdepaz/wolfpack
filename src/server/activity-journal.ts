@@ -163,13 +163,13 @@ export class ActivityJournal {
   /** Most recent journaled input-presence fact for this session, restored on server restart. */
   inputAt(session: string): string | undefined { this.open(); return this.lastInputBySession.get(session); }
 
-  /** `exceptSession` leaves one session's input out of `lastInputAt` (the assistant's own typing). */
-  status(options: { exceptSession?: string } = {}): ActivityJournalStatus {
+  /** Exclude helper terminals' own input from the user's quiet timing. */
+  status(options: { exceptSession?: string; exceptSessions?: readonly string[] } = {}): ActivityJournalStatus {
     this.open();
     let lastInputAt = this.lastInputAt;
-    if (options.exceptSession !== undefined) {
+    if (options.exceptSession !== undefined || options.exceptSessions !== undefined) {
       lastInputAt = null;
-      for (const [session, at] of this.lastInputBySession) if (session !== options.exceptSession && (!lastInputAt || at > lastInputAt)) lastInputAt = at;
+      for (const [session, at] of this.lastInputBySession) if (session !== options.exceptSession && !options.exceptSessions?.includes(session) && (!lastInputAt || at > lastInputAt)) lastInputAt = at;
     }
     return { journalId: this.journalId, headSeq: this.seq, oldestSeq: this.oldestSeq, lastRowAt: this.lastRowAt, lastInputAt };
   }

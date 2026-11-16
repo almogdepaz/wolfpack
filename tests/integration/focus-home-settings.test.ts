@@ -50,7 +50,7 @@ async function fixture(detectProviders?: () => Promise<ProviderReadiness[]>) {
       return { finish() { req.end(text.slice(5)); return response; } };
     },
     postAssistant: () => fetch(`${base}/api/focus/assistant`, { method: "POST", body: JSON.stringify({ enabled: true, loginConfirmed: true }) }),
-    pin() { writeFileSync(path, JSON.stringify({ ...raw(), pinnedSessions: [{ name: "assistant", cwd: service.folder, command: ["pi"], harness: "pi" }] })); },
+    pin() { writeFileSync(path, JSON.stringify({ ...raw(), pinnedSessions: ["assistant", "assistant-chat"].map(name => ({ name, cwd: service.folder, command: ["pi"], harness: "pi" })) })); },
     post: (body: unknown) => fetch(`${base}/api/focus/home`, { method: "POST", body: JSON.stringify(body) }),
     get: () => fetch(`${base}/api/focus`).then(r => r.json()),
     async close() { ctx.focusRuntime.stop(); await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); }); rmSync(root, { recursive: true, force: true }); },

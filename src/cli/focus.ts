@@ -1,3 +1,4 @@
+import { isFocusAssistantName } from "../focus-session.js";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { isFocusOp, type FocusDocument, type FocusOp } from "../focus-contract.js";
@@ -109,7 +110,7 @@ export async function focusHomeCommand(parsed: { json?: boolean; home?: string |
   const current = config?.focus?.home ?? null;
   if (parsed.home !== undefined) {
     const local = (current ?? self) === self;
-    if (local && (parsed.home ?? self) !== self && config?.pinnedSessions?.some(pin => pin.name === "assistant" && pin.cwd === join(dirname(io.path), "assistant"))) throw new Error(FOCUS_HOME_DISABLE_FIRST);
+    if (local && (parsed.home ?? self) !== self && config?.pinnedSessions?.some(pin => isFocusAssistantName(pin.name) && pin.cwd === join(dirname(io.path), "assistant"))) throw new Error(FOCUS_HOME_DISABLE_FIRST);
     const { changed } = writeFocusHome(parsed.home, io.path);
     return { home: parsed.home ?? self, local: (parsed.home ?? self) === self, changed };
   }
