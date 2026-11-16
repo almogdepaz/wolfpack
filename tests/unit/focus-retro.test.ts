@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { buildFocusRetro } from "../../src/focus-retro";
+import { formatFocusRetro } from "../../src/cli/focus-retro";
 import { ACTIVITY_KIND as K, INPUT_SOURCE, type ActivityRow } from "../../src/activity-journal";
 import { FOCUS_UI_ACTION as A, FOCUS_UI_CARD as C, type FocusUiRow } from "../../src/focus-ui-log";
 const date = "2026-11-16", at = (seconds: number) => new Date(Date.parse(`${date}T12:00:00.000Z`) + seconds * 1000).toISOString();
@@ -25,6 +26,18 @@ test("retro uses continuous impressions, resets on rank/set changes and visit le
   expect(result.cards.filter(c => c.sessionId === "c").every(c => c.firstAction === null)).toBe(true);
 });
 function cardIdentity(sessionId: string, machine = "home") { return { session: sessionId, sessionId, machine }; }
+test("retro matches intention actions to the rendered card surface without confusing session IDs", () => {
+  const ui: FocusUiRow[] = [
+    { ...stamp(1, 0), action: A.OPEN },
+    { ...stamp(2, 1), action: A.SHOWN, cards: [card("ship"), { intentionId: "ship", rank: 2, kind: "action", reason: "needs-you" }, { intentionId: "ship", surface: "today", rank: 3, kind: "action", reason: "rules" }] },
+    { ...stamp(3, 3), action: A.CARD, intentionId: "ship", control: "review" },
+    { ...stamp(4, 5), action: A.CARD, intentionId: "ship", surface: "today", control: C.DONE },
+  ];
+  const result = buildFocusRetro(date, ui, []);
+  expect(result.cards.map(c => c.firstAction?.control ?? null)).toEqual([null, "review", C.DONE]);
+  expect(result.cards[1]!.firstAction?.latencyMs).toBe(2000);
+  expect(formatFocusRetro(result)).toContain("intention ship (action/needs-you) → review after 2.0s");
+});
 test("needs-input resolution excludes unknown, deduplicates episodes, and attributes only local exact identities", () => {
   const ui: FocusUiRow[] = [
     { ...stamp(1, 3), action: A.CARD, control: C.EXPAND, ...cardIdentity("a") },

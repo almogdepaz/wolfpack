@@ -19,6 +19,15 @@ test("identifier fields reject prose while preserving focus ids, session selecto
   for (const machine of ["local", "b8eb5e25-b8ac-4384-aa0a-c60f7dfcbded", "https://host.tail123.ts.net"]) expect(parseFocusUiBatch({ events: [{ ...event, machine }] })).not.toBeNull();
   for (const rank of [0, -1, 1.5, 129, prose]) expect(parseFocusUiBatch({ events: [{ ...base, action: A.SHOWN, cards: [{ ...card, rank }] }] })).toBeNull();
 });
+test("intention card identities are exclusive, content-free and distinguish their rendered surface", () => {
+  const shown = { ...base, action: A.SHOWN, cards: [{ intentionId: "ship", rank: 1, kind: "action", reason: "needs-you" }, { intentionId: "ship", surface: "today", rank: 2, kind: "action", reason: "rules" }] };
+  expect(parseFocusUiBatch({ events: [shown, { ...base, action: A.CARD, intentionId: "ship", control: "review" }] })).not.toBeNull();
+  for (const target of [{ intentionId: "my confidential intention: discuss salary with alice" }, { intentionId: "ship", session: "work", sessionId: "mock:work", machine: "local" }]) {
+    expect(parseFocusUiBatch({ events: [{ ...base, action: A.CARD, control: "review", ...target }] })).toBeNull();
+    expect(parseFocusUiBatch({ events: [{ ...shown, cards: [{ ...shown.cards[0], ...target }] }] })).toBeNull();
+  }
+  expect(parseFocusUiBatch({ events: [{ ...base, action: A.CARD, intentionId: "ship", control: "review", surface: "PRIVATE_TITLE" }] })).toBeNull();
+});
 test("focus ui validation accepts only bounded, content-free event shapes", () => {
   const events = [{ ...base, action: A.OPEN }, { ...base, action: A.LEFT, visibleMs: 1000 }, { ...base, action: A.SHOWN, cards: [card] }, { ...base, action: A.CARD, control: C.REPLY, session: "work", sessionId: "uuid-1", machine: "local" }];
   expect(parseFocusUiBatch({ events })).toEqual(events);

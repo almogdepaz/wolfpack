@@ -1,5 +1,5 @@
 import { createFocusUiLog, type FocusUiPayload } from "./focus-ui-log";
-import { FOCUS_UI_ACTION as UI, FOCUS_UI_CARD as CARD, FOCUS_UI_INTENTION as INTENTION, FOCUS_UI_ASSISTANT as ASSISTANT, FOCUS_UI_SETTINGS as SETTINGS, FOCUS_UI_DISCLOSURE as DISCLOSURE, type FocusUiCard } from "../src/focus-ui-log";
+import { FOCUS_UI_ACTION as UI, FOCUS_UI_CARD as CARD, FOCUS_UI_INTENTION as INTENTION, FOCUS_UI_ASSISTANT as ASSISTANT, FOCUS_UI_SETTINGS as SETTINGS, FOCUS_UI_DISCLOSURE as DISCLOSURE, type FocusUiCard, type FocusUiCardData } from "../src/focus-ui-log";
 import { FOCUS_ASSISTANT_SESSION_NAMES, type FocusAssistantRole as AssistantRole } from "../src/focus-session";
 import { esc, escAttr, isDesktop } from "./app-state";
 import { focusCards, mergeFocus, takeVisible, stoppedUnseen, linkedFocusSessions, doneToday, groupFocusDone, type FocusDoneGroup, focusSessionLabel, focusActionVerb, type FocusAction, type FocusSession } from "../src/focus-ranking";
@@ -85,8 +85,17 @@ export function createAssistantView(deps: {
     const id = key?.match(/^(?:intention|start):(.+)$/)?.[1];
     uiLog.record({ action: UI.DISCLOSURE, control, ...(id && { id }) });
   }
+  const uiSessionTarget = (session: FocusSession) => ({ session: session.name, sessionId: session.id, machine: session.machineInstallationId || session.machineUrl || localInstallationId || "local" });
   function logCard(session: FocusSession, control: Extract<FocusUiPayload, { action: typeof UI.CARD }>["control"]) {
-    uiLog.record({ action: UI.CARD, control, session: session.name, sessionId: session.id, machine: session.machineInstallationId || session.machineUrl || localInstallationId || "local" });
+    uiLog.record({ action: UI.CARD, control, ...uiSessionTarget(session) });
+  }
+  function logRenderedCard(element: HTMLElement, control: Extract<FocusUiPayload, { action: typeof UI.CARD }>["control"]) {
+    const details = element.closest<HTMLElement>("details.focus-card") ?? element.closest("li")?.querySelector<HTMLElement>("details.focus-card");
+    const card = renderedUiCards.get(details?.dataset.focusCard ?? "");
+    if (!card) return;
+    const { kind: _kind, reason: _reason, ...target } = card;
+    uiLog.record({ action: UI.CARD, control, ...target });
+    return card;
   }
   let homeName = "sgt";
   let focusUnavailable = false;
@@ -285,6 +294,7 @@ export function createAssistantView(deps: {
   const openCard = (key: string) => { openCards.delete(key); openCards.add(key); if (openCards.size > OPEN_CARDS_MAX) openCards.delete(openCards.values().next().value!); };
   // Session cards emitted by the last render (either host): only these fetch their context.
   const renderedSessions = new Map<string, FocusSession>();
+  const renderedUiCards = new Map<string, FocusUiCardData>();
   const stamp = (at: string) => new Date(at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
   const field = (label: string, value: string) => value ? `<div><dt>${label}</dt><dd>${value}</dd></div>` : "";
   const project = (path?: string) => path ? `<span title="${escAttr(path)}">${esc(path.replace(/\/+$/, "").split("/").pop() || path)}</span>` : "";
@@ -510,6 +520,8 @@ export function createAssistantView(deps: {
       // A start row and the same intention's today card are separate cards: `start:` here, `intention:` in today.
       const key = row.session ? `session:${row.session.machineInstallationId ?? ""}:${row.session.id}` : row.intention ? `start:${row.intention.id}` : `unavailable:${JSON.stringify(row.triage?.ref)}`;
       if (row.session) renderedSessions.set(key, row.session);
+      const target = row.session ? uiSessionTarget(row.session) : row.intention ? { intentionId: row.intention.id } : undefined;
+      if (target) renderedUiCards.set(key, { ...target, kind, reason: row.triage?.verdict ?? (row.source === "new-rules" ? "new-rules" : "rules") });
       const actionName = replyBox ? `Send to ${row.session?.name ?? title}` : done ? `Mark done: ${done.title}` : row.session ? `${verb} ${title}` : title;
       const action = replyBox && (receipt?.state === "sent" || receipt?.state === "check") ? "" : `<button type="button"${replyBox ? ` aria-describedby="${messageId}-description"` : ' class="focus-action"'}${!planning && (sessionLocked() || row.unavailable || (replyBox && (!reply.trim() || receipt && receipt.state !== "retry"))) ? " disabled" : ""} data-focus-next="${escAttr(actionKey)}" data-focus-key="${escAttr(`act:${key}`)}" ${planning ? planAttributes(row.intention!) : `aria-label="${escAttr(actionName)}"`}>${esc(verb)}${verb === "sending…" ? "" : '<span aria-hidden="true"> ›</span>'}</button>`;
       const open = row.session ? `<button type="button" data-focus-session="${escAttr(row.session.id)}" data-focus-key="${escAttr(`open:${key}`)}" aria-label="${escAttr(`Open ${name}`)}"${sessionLocked() || row.unavailable ? " disabled" : ""}>open<span aria-hidden="true"> ›</span></button>` : "";
@@ -644,25 +656,22 @@ export function createAssistantView(deps: {
       }
     }
   }
-  function logShownCards(cards = cardOrder().cards) {
+  function logShownCards() {
     if (!pageVisible || !focus?.assistant?.enabled) return;
-    // Only the rendered page set (not the dashboard copy or CSS-hidden overflow).
+    // All rendered card variants, not dashboard copies or CSS-hidden overflow.
     const shown: FocusUiCard[] = [];
-    for (const element of document.querySelectorAll<HTMLElement>("#assistant-content .focus-next > li, #assistant-content .focus-finished > li")) {
+    for (const element of document.querySelectorAll<HTMLElement>("#assistant-content .focus-next > li, #assistant-content .focus-finished > li, #assistant-content .focus-today > li")) {
       if (!element.getClientRects().length) continue;
       const key = element.querySelector<HTMLElement>("details.focus-card")?.dataset.focusCard;
-      const session = key && renderedSessions.get(key);
-      if (!session) continue;
-      const card = cards.find(c => c.row.session?.id === session.id && c.row.session?.machineInstallationId === session.machineInstallationId);
-      const kind = element.dataset.kind;
-      if (!card || (kind !== "action" && kind !== "suggest" && kind !== "done")) continue;
-      shown.push({ session: session.name, sessionId: session.id, machine: session.machineInstallationId || session.machineUrl || localInstallationId || "local", rank: shown.length + 1, kind, reason: card.row.triage?.verdict ?? (card.row.source === "new-rules" ? "new-rules" : "rules") });
+      const card = renderedUiCards.get(key ?? "");
+      if (card) shown.push({ ...card, rank: shown.length + 1 });
     }
     uiLog.shown(shown);
   }
   function render() {
     foldOpenCards();
     renderedSessions.clear();
+    renderedUiCards.clear();
     renderedActions.clear();
     const current = doc();
     for (const id of compactChips.keys()) if (!current.intentions.some(intention => intention.id === id && linkedFocusSessions(intention, sessions()).length > 0)) compactChips.delete(id);
@@ -692,6 +701,7 @@ export function createAssistantView(deps: {
     const fullCount = nextCount - doneCards;
     const moreNext = !showAllNext && fullCount > visibleNext ? `<p>${button("more-next", `show ${fullCount - visibleNext} more`)}</p>` : "";
     const open = current.intentions.filter(i => !i.done);
+    for (const intention of open) renderedUiCards.set(`intention:${intention.id}`, { intentionId: intention.id, surface: "today", kind: "action", reason: "rules" });
     const finishedToday = current.intentions.filter(i => i.done && i.doneAt && doneDay(i.doneAt) === localDay(Date.now()));
     const todayCount = open.length + finishedToday.length;
     const summary = `${finishedToday.length} of ${todayCount} done`;
@@ -805,7 +815,7 @@ export function createAssistantView(deps: {
     }
     syncReplyControls();
     syncUiVisibility();
-    logShownCards(cards);
+    logShownCards();
     const live = document.getElementById("focus-status");
     if (live) live.textContent = focusUnavailable ? "" : error || assistantError || (focus?.assistant?.queued ? `${focus.assistant.queued} queued${terminalUnavailable() ? " · sends when the broker is back" : ""}` : notice);
     const setting = document.getElementById("assistant-setting-status");
@@ -1186,10 +1196,7 @@ export function createAssistantView(deps: {
         const summary = element.closest<HTMLElement>("summary");
         const details = summary?.parentElement as HTMLDetailsElement | undefined;
         if (details?.dataset.focusCard) {
-          const outer = details.closest<HTMLElement>("details.focus-card");
-          const session = renderedSessions.get(outer?.dataset.focusCard ?? "");
-          if (session) logCard(session, details.open ? CARD.COLLAPSE : CARD.EXPAND);
-          else logDisclosure(details.open ? DISCLOSURE.COLLAPSE : DISCLOSURE.EXPAND, details.dataset.focusCard);
+          if (!logRenderedCard(details, details.open ? CARD.COLLAPSE : CARD.EXPAND)) logDisclosure(details.open ? DISCLOSURE.COLLAPSE : DISCLOSURE.EXPAND, details.dataset.focusCard);
         }
         return;
       }
@@ -1211,7 +1218,7 @@ export function createAssistantView(deps: {
       }
       const expand = target.dataset.focusExpand;
       if (expand) {
-        logDisclosure(DISCLOSURE.EXPAND, expand);
+        if (!logRenderedCard(target, CARD.EXPAND)) logDisclosure(DISCLOSURE.EXPAND, expand);
         openCard(expand);
         render();
         host.querySelector<HTMLElement>(`details[data-focus-card="${CSS.escape(expand)}"] > summary`)?.focus();
@@ -1239,7 +1246,7 @@ export function createAssistantView(deps: {
         });
         return;
       }
-      if (target.dataset.focusRemove) { void removeIntention(target.dataset.focusRemove, host); return; }
+      if (target.dataset.focusRemove) { logRenderedCard(target, CARD.DROP); void removeIntention(target.dataset.focusRemove, host); return; }
       if (action === "restore-removed") { void restoreRemoved(host); return; }
       if (target.dataset.focusReset) {
         const action = currentAction(target.dataset.focusReset);
@@ -1261,7 +1268,7 @@ export function createAssistantView(deps: {
       if (target.dataset.focusUndo) void run(() => write({ type: "undo", id: target.dataset.focusUndo! }));
       if (target.dataset.focusComplete) void run(() => write({ type: "done", id: target.dataset.focusComplete! }));
       if (target.dataset.focusPlan) {
-        if (!planUnavailable()) void run(() => planIntention(target.dataset.focusPlan!));
+        if (!planUnavailable()) { logRenderedCard(target, CARD.PLAN); void run(() => planIntention(target.dataset.focusPlan!)); }
         return;
       }
       const rowAction = target.dataset.focusNext ?? target.dataset.focusMarkDone;
@@ -1280,15 +1287,15 @@ export function createAssistantView(deps: {
           return;
         }
         if (kind === "seen" && row.session) { logCard(row.session, CARD.SEEN); void run(() => deps.acknowledge(row.session!)); return; }
-        if (kind === "done") { if (row.session) logCard(row.session, CARD.DONE); void run(() => write({ type: "done", id: row.triage!.doneIntention! })); return; }
+        if (kind === "done") { logRenderedCard(target, CARD.DONE); void run(() => write({ type: "done", id: row.triage!.doneIntention! })); return; }
         if (kind === "open" && row.session) { logCard(row.session, CARD.TAKE); deps.open(row.session.name, row.session.machineUrl); }
-        else if (kind === "start" && row.intention) { if (!planUnavailable()) void run(() => planIntention(row.intention!.id)); }
-        else if (row.intention) { openCard(`start:${row.intention.id}`); render(); }
+        else if (kind === "start" && row.intention) { if (!planUnavailable()) { logRenderedCard(target, CARD.PLAN); void run(() => planIntention(row.intention!.id)); } }
+        else if (row.intention) { logRenderedCard(target, CARD.REVIEW); openCard(`start:${row.intention.id}`); render(); }
       }
       if (target.dataset.focusSession) {
         if (sessionLocked()) return;
         const session = sessions().find(s => s.id === target.dataset.focusSession);
-        if (session) { logCard(session, CARD.OPEN); deps.open(session.name, session.machineUrl); }
+        if (session) { const card = logRenderedCard(target, CARD.OPEN); if (!card || card.intentionId) logCard(session, CARD.OPEN); deps.open(session.name, session.machineUrl); }
       }
     });
     // toggle does not bubble: listen in the capture phase.
@@ -1307,7 +1314,7 @@ export function createAssistantView(deps: {
     }, true);
     host.addEventListener("change", event => {
       const target = event.target as HTMLInputElement;
-      if (target.dataset.focusDone) void run(() => write({ type: target.checked ? "done" : "undo", id: target.dataset.focusDone! }));
+      if (target.dataset.focusDone) { logRenderedCard(target, target.checked ? CARD.DONE : CARD.UNDO); void run(() => write({ type: target.checked ? "done" : "undo", id: target.dataset.focusDone! })); }
     });
     host.addEventListener("submit", event => {
       event.preventDefault();

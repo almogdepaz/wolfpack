@@ -34,7 +34,7 @@ export function formatFocusRetro(retro: FocusRetro): string {
   const lines = [`focus retro ${retro.date} (UTC; local logs, best-effort attribution)`, "visits:"];
   for (const visit of retro.visits) lines.push(`  ${visit.openedAt} → ${visit.leftAt ?? "leave not recorded"} · ${visit.visibleMs === null ? "duration unknown" : duration(visit.visibleMs)} visible`);
   lines.push("shown cards:");
-  for (const card of retro.cards) lines.push(`  ${card.shownAt} #${card.rank} ${safe(card.session)} @ ${safe(card.machine)} (${card.kind}/${card.reason}) → ${card.firstAction ? `${card.firstAction.control} after ${duration(card.firstAction.latencyMs)}` : "ignored (no action recorded)"}`);
+  for (const card of retro.cards) lines.push(`  ${card.shownAt} #${card.rank} ${card.intentionId === undefined ? `${safe(card.session)} @ ${safe(card.machine)}` : `intention ${safe(card.intentionId)}`} (${card.kind}/${card.reason}) → ${card.firstAction ? `${card.firstAction.control} after ${duration(card.firstAction.latencyMs)}` : "ignored (no action recorded)"}`);
   lines.push("needs input:");
   for (const episode of retro.needsInput) lines.push(`  ${episode.startedAt} ${safe(episode.session)} → ${episode.resolutionMs === null ? "unresolved in this day" : `${duration(episode.resolutionMs)} · ${episode.via}${episode.focusAction ? ` (${episode.focusAction})` : ""}`}`);
   return lines.join("\n");

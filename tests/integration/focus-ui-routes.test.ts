@@ -35,6 +35,8 @@ test("ui endpoint uses owner auth, rejects unknown/content keys atomically and r
     const event = { ...body.events[0], action: A.CARD, control: "open", session: card.session, sessionId: card.sessionId, machine: card.machine };
     const invalid = [
       { ...body.events[0], visit: prose },
+      { ...body.events[0], action: A.CARD, control: "review", intentionId: prose },
+      { ...body.events[0], action: A.SHOWN, cards: [{ intentionId: prose, rank: 1, kind: "action", reason: "needs-you" }] },
       ...["session", "sessionId", "machine"].map(key => ({ ...event, [key]: prose })),
       ...[A.INTENTION, A.ASSISTANT, A.DISCLOSURE].map(action => ({ ...body.events[0], action, control: action === A.INTENTION ? "edit" : action === A.ASSISTANT ? "plan" : "expand", id: prose })),
       ...["session", "sessionId", "machine"].map(key => ({ ...body.events[0], action: A.SHOWN, cards: [{ ...card, [key]: prose }] })),

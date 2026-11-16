@@ -32,12 +32,12 @@ test("real focus controls write ordered content-free rows, deduplicate refreshes
   const shownBefore = journal().rows.filter(r => r.action === A.SHOWN).length;
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect(content.locator(".focus-header")).toBeVisible();
-  // The next real click batches after that refresh, proving refresh did not add an exposure.
+  // Adding a card changes the shown set once; the preceding refresh must not add another exposure.
   await content.getByRole("textbox", { name: "Add an intention", exact: true }).fill(secretTitle);
   await content.getByRole("button", { name: "Add", exact: true }).click();
   await expect(content.getByRole("checkbox", { name: `Done: ${secretTitle}` })).toBeVisible();
   await expect.poll(() => journal().rows.some(r => r.action === A.INTENTION && r.control === I.ADD)).toBe(true);
-  expect(journal().rows.filter(r => r.action === A.SHOWN)).toHaveLength(shownBefore);
+  expect(journal().rows.filter(r => r.action === A.SHOWN)).toHaveLength(shownBefore + 1);
   await content.getByRole("checkbox", { name: `Done: ${secretTitle}` }).click();
   await expect(content.locator(".focus-done")).toContainText(secretTitle);
   await row.getByRole("textbox", { name: "reply to prompt-project", exact: true }).fill(secretReply);
@@ -71,6 +71,42 @@ test("shown kind matches the rendered reply-ready card, not its underlying atten
   await expect.poll(() => journal().rows.flatMap(r => r.action === A.SHOWN ? r.cards : []).find(c => c.session === "prompt-project")?.kind).toBe("suggest");
   expect(journal().text).not.toContain("PRIVATE_REASON_CANARY");
   expect(journal().text).not.toContain("PRIVATE_SUGGESTION_CANARY");
+});
+
+test("intention triage and today cards expose their rendered ranks and journal review, done and disclosure actions", async ({ page }) => {
+  const current = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
+  const updated = await page.request.post(`${server.baseUrl}/api/focus`, { data: { expectedRevision: current.revision, ops: [
+    { type: "add", intention: { id: "review-other", title: "PRIVATE_INTENTION_TITLE" } },
+    { type: "next", author: "assistant", rows: [
+      { ref: { intentionId: "ship" }, verdict: "needs-you", reason: "PRIVATE_REVIEW_REASON" },
+      { ref: { intentionId: "review-other" }, verdict: "suggest", reason: "PRIVATE_DONE_REASON", doneIntention: "review-other" },
+    ] },
+  ] } });
+  expect(updated.ok(), await updated.text()).toBe(true);
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  const content = page.locator("#assistant-content");
+  const review = content.locator(".focus-next > li").filter({ hasText: "PRIVATE_REVIEW_REASON" });
+  await expect(review).toHaveAttribute("data-kind", "action");
+  await expect.poll(() => journal().rows.flatMap(r => r.action === A.SHOWN ? r.cards : []).find(c => c.intentionId === "ship" && c.surface !== "today")).toMatchObject({ kind: "action", reason: "needs-you" });
+  const initial = journal().rows.find(r => r.action === A.SHOWN);
+  expect(initial?.action).toBe(A.SHOWN);
+  if (initial?.action !== A.SHOWN) throw new Error("missing exposure");
+  expect(initial.cards.map(c => c.rank)).toEqual(initial.cards.map((_, i) => i + 1));
+  expect(initial.cards).toHaveLength(await content.locator(".focus-next > li:visible, .focus-finished > li:visible, .focus-today > li:visible").count());
+  expect(initial.cards.find(c => c.intentionId === "review-other" && c.surface !== "today")).toMatchObject({ kind: "suggest" });
+  expect(initial.cards.find(c => c.intentionId === "ship" && c.surface === "today")).toBeTruthy();
+  await review.locator(".focus-card > summary").click();
+  await review.locator("button[data-focus-next]").click();
+  await expect.poll(() => journal().rows.some(r => r.action === A.CARD && r.intentionId === "ship" && r.control === "review")).toBe(true);
+  const done = content.locator(".focus-next > li").filter({ hasText: "PRIVATE_DONE_REASON" });
+  await done.locator(".focus-card > summary").click();
+  await done.getByRole("button", { name: "Mark done: PRIVATE_INTENTION_TITLE", exact: true }).click();
+  await content.getByRole("checkbox", { name: "Done: ship the focus assistant", exact: true }).click();
+  await expect.poll(() => journal().rows.some(r => r.action === A.CARD && r.intentionId === "ship" && r.surface === "today" && r.control === C.DONE)).toBe(true);
+  const { rows, text } = journal();
+  for (const [intentionId, control] of [["ship", C.EXPAND], ["review-other", C.DONE]]) expect(rows.some(r => r.action === A.CARD && r.intentionId === intentionId && r.control === control)).toBe(true);
+  for (const secret of ["PRIVATE_INTENTION_TITLE", "PRIVATE_REVIEW_REASON", "PRIVATE_DONE_REASON", "ship the focus assistant"]) expect(text).not.toContain(secret);
 });
 
 test("assistant pane, reply-to-chat, settings and visibility segments are journaled without terminal/take content", async ({ page }, info) => {

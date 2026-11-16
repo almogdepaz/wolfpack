@@ -1,6 +1,6 @@
 import { ACTIVITY_KIND as K, INPUT_SOURCE, type ActivityRow } from "./activity-journal.js";
 import { AGENT_STATUS_STATE as STATE } from "./agent-status-contract.js";
-import { FOCUS_UI_ACTION as A, FOCUS_UI_CARD as C, type FocusUiCard, type FocusUiRow } from "./focus-ui-log.js";
+import { FOCUS_UI_ACTION as A, FOCUS_UI_CARD as C, type FocusUiCard, type FocusUiRow, type FocusUiTarget, type FocusUiSurface } from "./focus-ui-log.js";
 export interface FocusRetro {
   date: string;
   visits: { visit: string; openedAt: string; leftAt: string | null; visibleMs: number | null }[];
@@ -12,7 +12,7 @@ export function isRetroDate(date: string): boolean {
   return /^\d{4}-\d\d-\d\d$/.test(date) && Number.isFinite(ms) && new Date(ms).toISOString().slice(0, 10) === date;
 }
 const timeOrder = (a: { at: string; seq: number }, b: { at: string; seq: number }) => Date.parse(a.at) - Date.parse(b.at) || a.seq - b.seq;
-const identity = (card: { machine: string; sessionId: string }) => JSON.stringify([card.machine, card.sessionId]);
+const identity = (card: FocusUiTarget & { surface?: FocusUiSurface }) => JSON.stringify([card.intentionId === undefined ? [card.machine, card.sessionId] : [card.intentionId], card.surface ?? "next"]);
 /** Day-bounded, observational attribution, not proof that a click caused a state transition.
  * A continuous impression survives unrelated set changes; rank/kind/reason changes start a new one.
  */
