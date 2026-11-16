@@ -38,11 +38,11 @@ export class AssistantService {
    * explicit `--skill` still load, while `<folder>/.pi` settings, extensions and packages are never loaded or executed,
    * so nothing the assistant (or an injected inbox row) writes there runs at the next launch.
    */
-  command(role: FocusAssistantRole = "assistant"): string[] {
+  command(role: FocusAssistantRole = "assistant", readSkillFirst = false): string[] {
     const sessions = join(this.folder, "sessions");
     const file = this.conversationFiles(role).at(-1);
     return [AGENT_KIND.PI.cmd, "--no-approve", "--session-dir", sessions, ...(file ? ["--session", join(sessions, file)] : ["--session-id", this.sessionFamily(role)]), "--no-skills", "--skill", this.skillPath(role),
-      ...(role === "assistant-chat" && this.readConversation(role)?.readSkillPending
+      ...(role === "assistant-chat" && readSkillFirst
         ? ["Read .pi/skills/wolfpack-focus-chat/SKILL.md first; read focus, next, notes and today's day note, then wait for the user's request. Do not process inboxes or write worker state."] : [])];
   }
   async enable(loginConfirmed = false): Promise<void> {
@@ -156,7 +156,7 @@ export class AssistantService {
     // Persist before spawning; a failed archive/state write must never start another writer.
     const generation = fresh ? randomUUID() : previous?.generation;
     writePrivateJsonFile(this.conversationPath(role), { digest, readSkillPending: fresh || previous?.readSkillPending === true, generation });
-    return { ...pin, command: this.command(role),
+    return { ...pin, command: this.command(role, fresh || previous?.readSkillPending === true),
       ...(role === "assistant-chat" && { onStarted: () => this.skillRead(generation, role) }) };
   }
   unpin(name: string): void {

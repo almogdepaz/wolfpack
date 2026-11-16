@@ -93,11 +93,12 @@ test("chat's read-first launch instruction is role-local, one-shot and survives 
   try {
     await t.service.enable(true);
     const create = t.backend.createSession.bind(t.backend);
-    t.backend.createSession = async (...args) => { if (args[0] === "assistant-chat") throw new Error("launch unavailable"); return create(...args); };
+    let attempted: readonly string[] = [];
+    t.backend.createSession = async (...args) => { if (args[0] === "assistant-chat") { attempted = args[4]?.pinnedCommand ?? []; throw new Error("launch unavailable"); } return create(...args); };
     await t.pins.tick();
     const record = join(t.service.folder, "conversation-chat.json");
     expect(JSON.parse(readFileSync(record, "utf8")).readSkillPending).toBe(true);
-    expect(t.service.command("assistant-chat").at(-1)).toStartWith("Read .pi/skills/wolfpack-focus-chat/SKILL.md first;");
+    expect(attempted.at(-1)).toStartWith("Read .pi/skills/wolfpack-focus-chat/SKILL.md first;");
     t.backend.createSession = create;
     t.pins.reset("assistant-chat");
     await t.pins.tick();

@@ -57,6 +57,17 @@ test("additive chat status reports its own dialog without changing the worker st
   } finally { t.close(); }
 });
 
+test("corrupt chat launch metadata cannot make the live worker unavailable", async () => {
+  const t = await fixture();
+  try {
+    writeFileSync(join(t.service.folder, "conversation-chat.json"), "{broken");
+    const status = await t.ctx.focusRuntime.status();
+    expect(status.state).toBe("done");
+    expect(status.sessionId).toBe("mock:assistant");
+    expect(t.service.pins.map(pin => pin.name)).toEqual(["assistant", "assistant-chat"]);
+  } finally { t.close(); }
+});
+
 test("chat rotates independently of the busy worker queue and outstanding inbox, preserving the worker family", async () => {
   const t = await fixture();
   try {
