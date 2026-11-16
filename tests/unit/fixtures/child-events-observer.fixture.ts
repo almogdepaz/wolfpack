@@ -30,7 +30,7 @@ test("a child's program done reaches the parent inbox with no push or event subs
     await context.sessionObservation.runSessionNotificationObservation();
     const inbox = listParentNotifications(parent.wolfpackSessionId);
     expect(inbox).toHaveLength(1);
-    expect(inbox[0]).toMatchObject({ message: "runtime settled (not task completion): tests pass", from: "worker" });
+    expect(inbox[0]).toMatchObject({ message: "runtime settled: tests pass", from: "worker" });
     expect(inbox[0]!.childEvent).toMatchObject({
       kind: "wolfpack.child_event/v1",
       event: "done",

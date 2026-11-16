@@ -264,7 +264,7 @@ describe("child-event delivery to the parent agent", () => {
     await observe(h);
     const text = h.sends[0]!.text;
     expect(text).toContain("runtime settled");
-    expect(text).toContain("not task completion");
+    expect(text).not.toContain("not task completion");
     expect(text).not.toContain("assignment complete");
     expect(text.length).toBeLessThanOrEqual(600);
   });
@@ -402,7 +402,7 @@ describe("child-event delivery to the parent agent", () => {
 
   /** Events a note accounts for: the listed items plus its "+k more". */
   function noteTotal(text: string): number {
-    const body = text.slice(text.indexOf(":") + 1, text.lastIndexOf("(runtime notice,")).trim();
+    const body = text.slice(text.indexOf(":") + 1, text.lastIndexOf("(details:")).trim();
     const parts = body.split("; ");
     const more = /^\+(\d+) more$/.exec(parts.at(-1)!);
     return more ? parts.length - 1 + Number(more[1]) : parts.length;

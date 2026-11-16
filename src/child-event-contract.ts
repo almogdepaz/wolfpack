@@ -81,7 +81,7 @@ export function boundedChildEventText(value: string, maximum: number): string {
 }
 
 /** Human-facing text only; wire event names and wait outcomes stay unchanged. */
-export const CHILD_RUNTIME_SETTLED_TEXT = "runtime settled (not task completion)";
+export const CHILD_RUNTIME_SETTLED_TEXT = "runtime settled";
 
 export function childEventLabel(event: string): string {
   return event === CHILD_EVENT.DONE ? CHILD_RUNTIME_SETTLED_TEXT : event;

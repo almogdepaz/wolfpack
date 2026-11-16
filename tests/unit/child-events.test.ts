@@ -94,7 +94,7 @@ describe("child events", () => {
       observedAt: inbox[0]!.at,
       authority: AGENT_STATUS_AUTHORITY.PROGRAM,
     });
-    expect(inbox[0]).toEqual({ seq: event!.seq, at: event!.observedAt, message: "runtime settled (not task completion): tests pass", from: "worker", childEvent: event });
+    expect(inbox[0]).toEqual({ seq: event!.seq, at: event!.observedAt, message: "runtime settled: tests pass", from: "worker", childEvent: event });
   });
 
   test("a child created in this boot reports its first event state exactly once", () => {
@@ -135,7 +135,7 @@ describe("child events", () => {
     observe(AGENT_STATUS_STATE.NEEDS_INPUT, AGENT_STATUS_AUTHORITY.PROGRAM, { inputKind: PROGRAM_STATUS_KIND.QUESTION, message: "which branch?", transitionSequence: 3 });
     expect(events().map(event => event.event)).toEqual(["done", "blocked"]);
     expect(events()[1]).toMatchObject({ inputKind: "permission", message: "run rm?", state: AGENT_STATUS_STATE.NEEDS_INPUT });
-    expect(listParentNotifications(PARENT.wolfpackSessionId).map(entry => entry.message)).toEqual(["runtime settled (not task completion)", "blocked (permission): run rm?"]);
+    expect(listParentNotifications(PARENT.wolfpackSessionId).map(entry => entry.message)).toEqual(["runtime settled", "blocked (permission): run rm?"]);
   });
 
   test("interim done, continuation and a new send retain ordered runtime notices, not task completion", () => {
@@ -159,7 +159,7 @@ describe("child events", () => {
     expect(emitted.map(event => event.seq)).toEqual([emitted[0]!.seq, emitted[0]!.seq + 1, emitted[0]!.seq + 2]);
     const inbox = listParentNotifications(PARENT.wolfpackSessionId);
     expect(inbox.map(entry => entry.childEvent)).toEqual(emitted);
-    expect(inbox.map(entry => entry.message)).toEqual(Array(3).fill("runtime settled (not task completion)"));
+    expect(inbox.map(entry => entry.message)).toEqual(Array(3).fill("runtime settled"));
     for (const event of emitted) expect(event.eventId).toBe(`${CHILD}:${PARENT_INBOX_BOOT_ID}:${event.seq}`);
   });
 

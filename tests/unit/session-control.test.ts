@@ -1172,7 +1172,7 @@ describe("agent wait and agent children", () => {
     ] };
     const human = agentCli(["wait", "--children", "all"], body);
     expect(human.exitCode).toBe(SESSION_EXIT.OK);
-    expect(human.stdout).toBe("runtime settled (not task completion) (cursor 6, boot boot)\n5 worker runtime settled (not task completion): interim yield\n6 worker runtime settled (not task completion)\n");
+    expect(human.stdout).toBe("runtime settled (cursor 6, boot boot)\n5 worker runtime settled: interim yield\n6 worker runtime settled\n");
     const json = agentCli(["wait", "--children", "all", "--json"], body);
     expect(json.exitCode).toBe(SESSION_EXIT.OK);
     expect(JSON.parse(json.stdout)).toEqual(body);
@@ -1194,7 +1194,7 @@ describe("agent wait and agent children", () => {
       children: [{ session: "worker", sessionId: "worker-id", state: "idle", settled: true, lastEvent: { event: "done" } }],
     });
     expect(list.exitCode).toBe(SESSION_EXIT.OK);
-    expect(list.stdout).toBe("worker idle runtime settled (not task completion) (last: runtime settled (not task completion))\n");
+    expect(list.stdout).toBe("worker idle runtime settled (last: runtime settled)\n");
     expect(list.stderr).toContain("/api/session-control/children?session=lead-id");
   });
 });
