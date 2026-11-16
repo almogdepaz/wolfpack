@@ -7,9 +7,11 @@ import { MockBackend } from "../../src/server/mock-backend.ts";
 import { ActivityJournal } from "../../src/server/activity-journal.ts";
 import { createServerContext } from "../../src/server/context.ts";
 import { ACTIVITY_KIND } from "../../src/activity-journal.ts";
+import { __resetSessionObservationForTests } from "../../src/server/session-observation.ts";
 import type { Config } from "../../src/config.ts";
 
 async function fixture() {
+  __resetSessionObservationForTests();
   const root = mkdtempSync(join(tmpdir(), "focus-split-runtime-"));
   let config: Config = { devDir: root, port: 19643 };
   const service = new AssistantService({ root, readConfig: () => config, writeConfig: next => { config = next; },
@@ -44,6 +46,22 @@ test("routine sends during an active chat go only to the worker; queue rejects a
     t.ctx.focusRuntime.queue.enqueue("mock:assistant-chat", "must not send", undefined, "routine");
     await t.ctx.focusRuntime.tick();
     expect(t.sends).toEqual(["mock:assistant"]);
+  } finally { t.close(); }
+});
+
+test.each(["assistant", "assistant-chat"] as const)("unproven %s is not exposed as a role or used as a routine target", async role => {
+  const t = await fixture();
+  try {
+    await t.backend.killSessionById(`mock:${role}`);
+    await t.backend.createSession(role, t.service.folder, "pi", () => ({ agentCmd: "pi" }), { agentKind: "pi", pinnedCommand: t.service.command(role === "assistant" ? "assistant-chat" : "assistant") });
+    t.state(role);
+    if (role === "assistant") {
+      t.ctx.focusRuntime.queue.enqueue("mock:assistant", "process inbox inbox/unsafe.json", undefined, "routine");
+      await t.ctx.focusRuntime.tick();
+      expect(t.sends).toEqual([]);
+    }
+    const status = await t.ctx.focusRuntime.status();
+    expect((role === "assistant" ? status : status.chat).sessionId).toBeUndefined();
   } finally { t.close(); }
 });
 
