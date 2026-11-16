@@ -1,5 +1,6 @@
 import { createAssistantView } from "./assistant-view";
 import { createAssistantTerminal } from "./assistant-terminal";
+import { FOCUS_UI_PATH } from "../src/focus-ui-log";
 import { stoppedUnseen } from "../src/focus-ranking";
 import { isFocusAssistantSession, withoutFocusAssistant } from "../src/focus-session";
 import { sessionMetaHtml } from "./session-meta";
@@ -1240,9 +1241,13 @@ async function api<TResponse = unknown>(path: string, opts?: RequestInit, machin
 
 // One copy for the settings toggle and the terminal header / kill path.
 const DISABLE_ASSISTANT_MESSAGE = "Stop the assistant's chat and background terminals? Both conversations and your focus list are kept; enable it again any time.";
-const assistantPane = createAssistantTerminal({ createController: createPtyTerminalController, scrollback: DESKTOP_TERMINAL_SCROLLBACK, createConflictOverlay });
+const assistantPane = createAssistantTerminal({ createController: createPtyTerminalController, scrollback: DESKTOP_TERMINAL_SCROLLBACK, createConflictOverlay, onUiAction: control => focusUi.logAssistant(control) });
 const focusUi = createAssistantView({
   request: api,
+  uiEventUrl: machine => {
+    const origin = resolveReadyMachineOrigin(machine);
+    return machine && !origin ? undefined : new URL(FOCUS_UI_PATH, origin || location.origin).href;
+  },
   terminalTarget: (target, reason) => assistantPane.setTarget(target, reason),
   currentTerminal: () => state.currentView === "terminal" ? { session: state.currentSession, machine: state.currentMachine } : undefined,
   expandTerminal: () => assistantPane.expand(),
@@ -1607,6 +1612,7 @@ function showView(requested: string, skipAnimation?: boolean, refreshSessions = 
   if (viewName !== "assistant") assistantPane.setActive(false);
   teardownTerminalForViewChange(previousView, viewName);
   setState({ currentView: viewName });
+  focusUi.setVisible(viewName === "assistant");
   document.getElementById("assistant-terminal-header").hidden = viewName !== "terminal" || !focusUi.isAssistant(state.currentSession, state.currentMachine);
   if (viewName === "terminal" && focusUi.isAssistant(state.currentSession, state.currentMachine)) focusUi.render();
   if (viewName === "assistant") void focusUi.refresh(true);
