@@ -7,7 +7,7 @@ import { FOCUS_UI_ACTION as A } from "../../src/focus-ui-log";
 test("delayed UI batches repair an older day's torn tail before appending", () => {
   const dir = mkdtempSync(join(tmpdir(), "ui-journal-delayed-"));
   const day = "2026-11-16", previous = "2026-11-15";
-  const row = (seq: number, date: string) => ({ seq, at: `${date}T23:59:59.000Z`, visit: "v1", action: A.OPEN });
+  const row = (seq: number, date: string) => ({ seq, at: `${date}T23:59:59.000Z`, visit: "a8eb5e25-b8ac-4384-aa0a-c60f7dfcbded", action: A.OPEN });
   const olderPath = join(dir, `${previous}.jsonl`);
   try {
     writeFileSync(olderPath, JSON.stringify(row(1, previous)) + '\n{"unfinished":"🐺');
@@ -25,7 +25,7 @@ test("delayed UI batches repair an older day's torn tail before appending", () =
 test("private ui journal survives restart, repairs multibyte tails, partitions and retains independently", () => {
   const dir = mkdtempSync(join(tmpdir(), "ui-journal-"));
   const today = "2026-11-16";
-  const event = (at: string) => ({ action: A.OPEN, visit: "v1", at });
+  const event = (at: string) => ({ action: A.OPEN, visit: "a8eb5e25-b8ac-4384-aa0a-c60f7dfcbded", at });
   const options = { dir, now: () => Date.parse(`${today}T12:00:00.000Z`) };
   try {
     const journal = new FocusUiJournal(options);

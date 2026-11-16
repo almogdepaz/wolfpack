@@ -51,6 +51,7 @@ const keys = (v: Record<string, unknown>, allowed: string[]) => Object.keys(v).e
 const text = (v: unknown, max: number, empty = false): v is string => typeof v === "string" && v.length <= max && (empty || v.trim().length > 0);
 const timestamp = (v: unknown): v is string => typeof v === "string" && /^\d{4}-\d\d-\d\dT/.test(v) && Number.isFinite(Date.parse(v));
 const id = (v: unknown): v is string => typeof v === "string" && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(v);
+export { id as isFocusIntentionId };
 const strings = (v: unknown, max: number) => Array.isArray(v) && v.length <= max && v.every(s => text(s, 256)) && new Set(v).size === v.length;
 function intentionFields(v: Record<string, unknown>): boolean {
   return (v.title === undefined || text(v.title, 500)) && (v.project === undefined || text(v.project, 4096))

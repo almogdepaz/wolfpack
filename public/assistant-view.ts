@@ -81,8 +81,12 @@ export function createAssistantView(deps: {
   window.addEventListener("pageshow", () => { syncUiVisibility(); logShownCards(); });
   const logSetting = (control: Extract<FocusUiPayload, { action: typeof UI.SETTINGS }>["control"]) => uiLog.record({ action: UI.SETTINGS, control });
   const logAssistant = (control: Extract<FocusUiPayload, { action: typeof UI.ASSISTANT }>["control"], id?: string) => uiLog.record({ action: UI.ASSISTANT, control, ...(id && { id }) });
+  function logDisclosure(control: Extract<FocusUiPayload, { action: typeof UI.DISCLOSURE }>["control"], key?: string) {
+    const id = key?.match(/^(?:intention|start):(.+)$/)?.[1];
+    uiLog.record({ action: UI.DISCLOSURE, control, ...(id && { id }) });
+  }
   function logCard(session: FocusSession, control: Extract<FocusUiPayload, { action: typeof UI.CARD }>["control"]) {
-    uiLog.record({ action: UI.CARD, control, session: session.name, sessionId: session.id, machine: session.machineInstallationId || session.machine || localInstallationId || "local" });
+    uiLog.record({ action: UI.CARD, control, session: session.name, sessionId: session.id, machine: session.machineInstallationId || session.machineUrl || localInstallationId || "local" });
   }
   let homeName = "sgt";
   let focusUnavailable = false;
@@ -652,7 +656,7 @@ export function createAssistantView(deps: {
       const card = cards.find(c => c.row.session?.id === session.id && c.row.session?.machineInstallationId === session.machineInstallationId);
       const kind = element.dataset.kind;
       if (!card || (kind !== "action" && kind !== "suggest" && kind !== "done")) continue;
-      shown.push({ session: session.name, sessionId: session.id, machine: session.machineInstallationId || session.machine || localInstallationId || "local", rank: shown.length + 1, kind, reason: card.row.triage?.verdict ?? (card.row.source === "new-rules" ? "new-rules" : "rules") });
+      shown.push({ session: session.name, sessionId: session.id, machine: session.machineInstallationId || session.machineUrl || localInstallationId || "local", rank: shown.length + 1, kind, reason: card.row.triage?.verdict ?? (card.row.source === "new-rules" ? "new-rules" : "rules") });
     }
     uiLog.shown(shown);
   }
@@ -1185,7 +1189,7 @@ export function createAssistantView(deps: {
           const outer = details.closest<HTMLElement>("details.focus-card");
           const session = renderedSessions.get(outer?.dataset.focusCard ?? "");
           if (session) logCard(session, details.open ? CARD.COLLAPSE : CARD.EXPAND);
-          else uiLog.record({ action: UI.DISCLOSURE, control: details.open ? DISCLOSURE.COLLAPSE : DISCLOSURE.EXPAND, id: details.dataset.focusCard });
+          else logDisclosure(details.open ? DISCLOSURE.COLLAPSE : DISCLOSURE.EXPAND, details.dataset.focusCard);
         }
         return;
       }
@@ -1207,7 +1211,7 @@ export function createAssistantView(deps: {
       }
       const expand = target.dataset.focusExpand;
       if (expand) {
-        uiLog.record({ action: UI.DISCLOSURE, control: DISCLOSURE.EXPAND, id: expand });
+        logDisclosure(DISCLOSURE.EXPAND, expand);
         openCard(expand);
         render();
         host.querySelector<HTMLElement>(`details[data-focus-card="${CSS.escape(expand)}"] > summary`)?.focus();

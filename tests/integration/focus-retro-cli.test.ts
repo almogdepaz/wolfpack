@@ -16,10 +16,10 @@ test("focus retro CLI reads local day files offline, supports text/JSON and does
   const root = mkdtempSync(join(tmpdir(), "focus-retro-cli-"));
   mkdirSync(join(root, "focus-ui")); mkdirSync(join(root, "activity"));
   const ui = [
-    { seq: 1, at: at(0), visit: "v1", action: A.OPEN },
-    { seq: 2, at: at(1), visit: "v1", action: A.SHOWN, cards: [{ session: "work", sessionId: "uuid", machine, rank: 1, kind: "action", reason: "needs-you" }, { session: "ignored-work", sessionId: "ignored", machine, rank: 2, kind: "action", reason: "rules" }] },
-    { seq: 3, at: at(3), visit: "v1", action: A.CARD, control: C.REPLY, session: "work", sessionId: "uuid", machine },
-    { seq: 4, at: at(5), visit: "v1", action: A.LEFT, visibleMs: 5000 },
+    { seq: 1, at: at(0), visit: "a8eb5e25-b8ac-4384-aa0a-c60f7dfcbded", action: A.OPEN },
+    { seq: 2, at: at(1), visit: "a8eb5e25-b8ac-4384-aa0a-c60f7dfcbded", action: A.SHOWN, cards: [{ session: "work", sessionId: "uuid", machine, rank: 1, kind: "action", reason: "needs-you" }, { session: "ignored-work", sessionId: "ignored", machine, rank: 2, kind: "action", reason: "rules" }] },
+    { seq: 3, at: at(3), visit: "a8eb5e25-b8ac-4384-aa0a-c60f7dfcbded", action: A.CARD, control: C.REPLY, session: "work", sessionId: "uuid", machine },
+    { seq: 4, at: at(5), visit: "a8eb5e25-b8ac-4384-aa0a-c60f7dfcbded", action: A.LEFT, visibleMs: 5000 },
   ].map(r => JSON.stringify(r) + "\n").join("");
   const activity = [
     { seq: 1, at: at(0), kind: K.SESSION_STATE, session: "work", sessionId: "uuid", state: "needs-input", label: "PRIVATE_LABEL" },
