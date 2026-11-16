@@ -14,7 +14,7 @@
  */
 import { AGENT_STATUS_AUTHORITY, AGENT_STATUS_FRESHNESS, AGENT_STATUS_STATE } from "../agent-status-contract.js";
 import type { AgentStatusAuthority, AgentStatusFreshness, AgentStatusState } from "../agent-status-contract.js";
-import { CHILD_EVENT, CHILD_EVENT_RELAY_PROTOCOL, type ChildEventPayload } from "../child-event-contract.js";
+import { CHILD_EVENT, CHILD_EVENT_RELAY_PROTOCOL, CHILD_RUNTIME_SETTLED_TEXT, type ChildEventPayload } from "../child-event-contract.js";
 import { PROGRAM_STATUS_KINDS, PROGRAM_STATUS_STATE, type ProgramStatusState } from "../program-status-contract.js";
 import {
   SESSION_SEND_DELIVERY,
@@ -126,7 +126,7 @@ function noteItem(payload: ChildEventPayload): string {
     case CHILD_EVENT.ERROR:
       return `${name} error`;
     case CHILD_EVENT.DONE:
-      return `${name} done`;
+      return `${name} ${CHILD_RUNTIME_SETTLED_TEXT}`;
     case CHILD_EVENT.MESSAGE:
       return `${name} message`;
   }

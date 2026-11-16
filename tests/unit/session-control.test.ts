@@ -1165,6 +1165,19 @@ describe("agent wait and agent children", () => {
     expect(Object.fromEntries(url.searchParams)).toEqual({ session: "lead-id", children: "any", timeoutMs: "5000", since: "4", bootId: "boot" });
   });
 
+  test("wait human output distinguishes runtime settlement from task completion without changing JSON", () => {
+    const body = { ...waitBody, outcome: "settled", cursor: 6, events: [
+      { seq: 5, childName: "worker", event: "done", state: "done", message: "interim yield" },
+      { seq: 6, childName: "worker", event: "done", state: "idle" },
+    ] };
+    const human = agentCli(["wait", "--children", "all"], body);
+    expect(human.exitCode).toBe(SESSION_EXIT.OK);
+    expect(human.stdout).toBe("runtime settled (cursor 6, boot boot)\n5 worker runtime settled: interim yield\n6 worker runtime settled\n");
+    const json = agentCli(["wait", "--children", "all", "--json"], body);
+    expect(json.exitCode).toBe(SESSION_EXIT.OK);
+    expect(JSON.parse(json.stdout)).toEqual(body);
+  });
+
   test("plain wait output keeps each event on one terminal-safe line", () => {
     const event = { seq: 5, childName: "worker", event: "message", message: "a\u001b[2Jb\nc" };
     const child = agentCli(["wait", "--children", "any"], { ...waitBody, outcome: "events", cursor: 5, events: [event] });
@@ -1181,7 +1194,7 @@ describe("agent wait and agent children", () => {
       children: [{ session: "worker", sessionId: "worker-id", state: "idle", settled: true, lastEvent: { event: "done" } }],
     });
     expect(list.exitCode).toBe(SESSION_EXIT.OK);
-    expect(list.stdout).toBe("worker idle settled (last: done)\n");
+    expect(list.stdout).toBe("worker idle runtime settled (last: runtime settled)\n");
     expect(list.stderr).toContain("/api/session-control/children?session=lead-id");
   });
 });

@@ -203,7 +203,8 @@ test("a worker reset before the envelope was posted falls back to one typed note
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(watch.posted).toEqual([]);
     expect(notes).toHaveLength(1);
-    expect(notes[0]).toContain("child done");
+    expect(notes[0]).toContain("child runtime settled");
+    expect(notes[0]).not.toContain("not task completion");
   } finally {
     watch.restore();
   }
@@ -253,5 +254,6 @@ test("a relay that accepted and then reset gives one relay delivery and no typed
   await delivery.deliver({ parentSessionName: "parent", childEvent: payload(2) });
   await observeIdleParent();
   expect(notes).toHaveLength(1);
-  expect(notes[0]).toContain("child done");
+  expect(notes[0]).toContain("child runtime settled");
+  expect(notes[0]).not.toContain("not task completion");
 });
