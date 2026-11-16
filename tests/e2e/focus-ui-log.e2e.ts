@@ -50,7 +50,7 @@ test("real focus controls write ordered content-free rows, deduplicate refreshes
   const shown = rows.find(r => r.action === A.SHOWN);
   expect(shown?.action === A.SHOWN && shown.cards.some(c => c.session === "prompt-project" && c.rank > 0)).toBe(true);
   expect(rows.some(r => r.action === A.OPEN)).toBe(true);
-  expect(rows.some(r => r.action === A.VIEW && r.docked)).toBe(true);
+  expect(rows.find(r => r.action === A.VIEW)).toMatchObject({ docked: page.viewportSize()!.width >= 1280 });
   expect(rows.some(r => r.action === A.CARD && r.control === C.OPEN)).toBe(true);
   expect(rows.some(r => r.action === A.INTENTION && r.control === I.DONE)).toBe(true);
   expect(rows.find(r => r.action === A.LEFT)).toMatchObject({ visibleMs: expect.any(Number) });
@@ -73,7 +73,8 @@ test("shown kind matches the rendered reply-ready card, not its underlying atten
   expect(journal().text).not.toContain("PRIVATE_SUGGESTION_CANARY");
 });
 
-test("assistant pane, reply-to-chat, settings and visibility segments are journaled without terminal/take content", async ({ page }) => {
+test("assistant pane, reply-to-chat, settings and visibility segments are journaled without terminal/take content", async ({ page }, info) => {
+  test.skip(info.project.name !== "desktop", "embedded pane controls require desktop");
   const current = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
   expect((await page.request.post(`${server.baseUrl}/api/focus`, { data: { expectedRevision: current.revision, ops: [{ type: "next", rows: [], author: "assistant", take: { text: "PRIVATE_TAKE_CANARY", about: [] } }] } })).ok()).toBe(true);
   await page.goto(server.baseUrl);
