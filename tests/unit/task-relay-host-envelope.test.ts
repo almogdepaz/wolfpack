@@ -194,7 +194,7 @@ test("a worker reset before the envelope was posted falls back to one typed note
     const parentId = randomUUID();
     const delivered = delivery.deliver({ parentSessionName: "parent", childEvent: {
       kind: CHILD_EVENT_PAYLOAD_KIND, eventId: "child:boot:1", bootId: "boot", seq: 1, childSessionId: randomUUID(), childName: "child",
-      parentSessionId: parentId, event: CHILD_EVENT.DONE, state: AGENT_STATUS_STATE.IDLE, observedAt: new Date(NOW).toISOString(),
+      parentSessionId: parentId, event: CHILD_EVENT.ERROR, state: AGENT_STATUS_STATE.IDLE, observedAt: new Date(NOW).toISOString(),
     } });
     await gateway.close();
     await delivered;
@@ -203,7 +203,7 @@ test("a worker reset before the envelope was posted falls back to one typed note
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(watch.posted).toEqual([]);
     expect(notes).toHaveLength(1);
-    expect(notes[0]).toContain("child done");
+    expect(notes[0]).toContain("child error");
   } finally {
     watch.restore();
   }
@@ -220,7 +220,7 @@ test("a relay that accepted and then reset gives one relay delivery and no typed
   const parent = await f.connect("parent", [RELAY_PROTOCOL_VERSION, CHILD_EVENT_RELAY_PROTOCOL]);
   const payload = (seq: number): ChildEventPayload => ({
     kind: CHILD_EVENT_PAYLOAD_KIND, eventId: `child:boot:${seq}`, bootId: "boot", seq, childSessionId: f.id("child"), childName: "child",
-    parentSessionId: f.id("parent"), event: CHILD_EVENT.DONE, state: AGENT_STATUS_STATE.IDLE, observedAt: new Date(NOW).toISOString(),
+    parentSessionId: f.id("parent"), event: CHILD_EVENT.ERROR, state: AGENT_STATUS_STATE.IDLE, observedAt: new Date(NOW).toISOString(),
   });
   const notes: string[] = [];
   let reply: "reset-after-accept" | "rejected" = "reset-after-accept";
@@ -253,5 +253,5 @@ test("a relay that accepted and then reset gives one relay delivery and no typed
   await delivery.deliver({ parentSessionName: "parent", childEvent: payload(2) });
   await observeIdleParent();
   expect(notes).toHaveLength(1);
-  expect(notes[0]).toContain("child done");
+  expect(notes[0]).toContain("child error");
 });

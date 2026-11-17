@@ -140,10 +140,10 @@ wolfpack agent spawn --project-dir <path> [--harness <agent>] [--name <session>]
 - resolves the parent through structured broker identity; the parent must still use a supported agent harness.
 - inherits the parent harness by default. `--harness <pi|claude|codex|gemini|cursor>` selects a different child harness without changing parent lineage; `shell` is not accepted for children.
 - accepts `--name <session>` for meaningful child names such as `200-security-review`; if omitted, derives `<parent>-sub-agent`, then numbered names.
-- for Pi children only, accepts a bounded nonblank `--model <provider/model>` value and passes it unchanged to Pi's native `--model` option. A non-Pi parent can use `--harness pi --model ...`; a non-Pi child rejects `--model` and `--task-worker` before creation.
+- for Pi children only, accepts a bounded nonblank `--model <provider/model>` value and passes it unchanged to Pi's native `--model` option. A non-Pi parent can use `--harness pi --model ...`; a non-Pi child rejects `--model`, and a child other than Pi or Claude rejects `--task-worker`, before creation.
 - passes only explicit startup instructions; it does not inherit the parent transcript, model context, or summary.
 - supports `--plan <file>` and `--prompt-file <file>` like top-level creation.
-- `--notify-parent` adds a compact child instruction to call `wolfpack agent notify-parent` when done or blocked. That command queues the message in the live parent's inbox and also notifies enrolled human devices (see below).
+- `--notify-parent` adds a compact child instruction to call `wolfpack agent notify-parent` when done or blocked. That command queues the message in the live parent's inbox and also notifies enrolled human devices (see below). Startup prompts and `--notify-parent` are for manual or interactive sessions: they give no task ID, deadline or tracked completion. Delegated agent work uses a `--task-worker` endpoint (or an existing session's registered endpoint) and one task assignment instead; see [Opt into task-worker readiness](#opt-into-task-worker-readiness).
 - stores structured parent ID/name metadata and sends a best-effort typed browser notification when opened.
 - records the child's cleanup policy in its parent identity: `cascade` by default, `outlive` with `--outlive-parent`. A `cascade` child is killed with its parent (see [Parent-owned teardown](#parent-owned-teardown)); an `outlive` child keeps running.
 - json success has the same fields as top-level creation, including stable `sessionId`; `harness` reports the child's harness.
@@ -154,7 +154,7 @@ The browser project picker keeps the configured-root catalog as its default. **O
 
 ## Keep handoffs short
 
-For plan work, prefer the compact generator:
+For a manual or interactive plan session (outside the task contract), prefer the compact generator:
 
 ```bash
 wolfpack agent spawn <project> --name 200-implementation --plan .plans/000-task.md --notify-parent --json
@@ -256,8 +256,9 @@ wolfpack session prompt <session-or-id> <prompt...> --until <text> [--no-enter] 
 
 ### Notify and poll the parent inbox
 
-`wolfpack agent notify-parent [--message <text>] [--json]` wraps `POST /api/notify`; it is intended for full-startup children launched with `--notify-parent`. The CLI sends the parent ID/name from `WOLFPACK_PARENT_SESSION_ID` / `WOLFPACK_PARENT_SESSION_NAME` and an optional informational `from` from `WOLFPACK_SESSION_NAME`. The server queues the message only for that exact live parent ID **and** name, and still sends web push to the human's devices enrolled on this host (see [phone-pwa-notifications.md](phone-pwa-notifications.md)). The message itself is never typed into the parent terminal; a matching child's message becomes a [child event](#child-events), and only its enumerated fields can reach the parent as a [typed note](#delivery-to-the-parent-agent).
+`wolfpack agent notify-parent [--message <text>] [--json]` wraps `POST /api/notify`; it is intended for manual or interactive children launched with `--notify-parent`. It is outside the task contract: a notification, or a refused one followed by runtime `done`, is not task completion evidence. The CLI sends the parent ID/name from `WOLFPACK_PARENT_SESSION_ID` / `WOLFPACK_PARENT_SESSION_NAME` and an optional informational `from` from `WOLFPACK_SESSION_NAME`. The server queues the message only for that exact live parent ID **and** name, and still sends web push to the human's devices enrolled on this host (see [phone-pwa-notifications.md](phone-pwa-notifications.md)). The message itself is never typed into the parent terminal; a matching child's message becomes a [child event](#child-events), and only its enumerated fields can reach the parent as a [typed note](#delivery-to-the-parent-agent).
 
+- CLI messages must contain non-whitespace text and fit within **500 UTF-16 code units** (not Unicode code points). Blank or overlong messages exit `2` before any request, with a `notification not sent` diagnostic and the actual length. The CLI does not truncate.
 - `POST /api/notify` retains `ok: true` for acceptance, `sent`, `failed`, `pruned`, `delivered` (`sent > 0`), and push-only `reason` when not delivered: `no_subscriptions` or `delivery_failed`. Rate limiting and push subscription handling are unchanged.
 - It also returns `parentInbox: {queued:true, seq}` or `{queued:false, reason:"no_parent"|"parent_not_found"}`. `no_parent` means no session target; `parent_not_found` means the exact live ID/name could not be confirmed (including backend unavailability). A same-name replacement is never substituted.
 - `from` is optional, at most 100 Unicode code points, and **unverified**: it is not authenticated sender identity or task-completion evidence.
@@ -282,7 +283,7 @@ The response is `{session, sessionId, bootId, notifications:[{seq, at, message, 
 
 Malformed inbox success replies exit `1`; JSON output is an `ok:false` error envelope with code `INVALID_INBOX_RESPONSE`, while plain output diagnoses the invalid inbox response on stderr. Both aliases validate identity, entries and limits before reporting success, including the exact stable self ID when known.
 
-The inbox is **memory-only**, retains only the newest **100** entries per parent, and is dropped on parent session exit. A server restart loses every inbox and resets sequences; slow/disconnected pollers may miss overwritten entries. It is not a durable task ledger or an acknowledgement protocol. Verify the child's actual work before cleanup. Pi coordinators keep using Pi Tasks `agent_task_done` / `agent_task_ack` for `--task-worker` endpoint children, which reject `--notify-parent`.
+The inbox is **memory-only**, retains only the newest **100** entries per parent, and is dropped on parent session exit. A server restart loses every inbox and resets sequences; slow/disconnected pollers may miss overwritten entries. It is not a durable task ledger or an acknowledgement protocol. Verify the child's actual work before cleanup. Delegated work uses the task tools instead: a `--task-worker` endpoint child (Pi or Claude) reports with `agent_task_message` and `agent_task_done` on its task ID, and the parent calls `agent_task_ack`. Task-worker launches reject `--notify-parent`.
 
 #### Child events
 
@@ -303,7 +304,7 @@ A child produces at most one event per entry into a state: repeated reports in t
 The server also delivers each child event to the parent agent. The first available path wins:
 
 1. **Relay envelope.** If the parent session holds a live task-relay registration whose connect `protocolVersions` include `1001` (the child-event capability marker), the server accepts one envelope into that endpoint's inbox. The envelope keeps the relay wire version, comes from a server-owned source endpoint, has `envelopeId` `wolfpack.child_event:<eventId>`, and its `payload` is the `childEvent` object itself (`kind: "wolfpack.child_event/v1"`). Endpoints and peers cannot send a payload of that kind (`SOURCE_MISMATCH`), so one in a local inbox came from this server. Endpoints without the marker receive nothing, because a current adapter rejects a whole inbox page that holds an unknown payload. The server falls back to a typed note only when the relay definitely did not accept the envelope. When acceptance is uncertain (for example the relay worker reset after the request reached it), the event stays in the parent inbox and no note is typed, so the parent never gets the event twice. With the default SQLite relay, a child event that the relay accepted survives a server restart while the parent's plugin process stays alive; the parent inbox and event sequences do not. A relay storage failure (owner failure) during the send counts as uncertain acceptance.
-2. **Typed note.** Otherwise the server types one tagged line into the parent terminal, for example `[wolfpack] child events: worker-1 done; worker-2 blocked (permission) (details: wolfpack agent inbox --json)`. It types only when all of these hold:
+2. **Typed note.** Otherwise the server types one tagged line into the parent terminal, for example `[wolfpack] child events: worker-1 error; worker-2 exited (exit code 1) (details: wolfpack agent inbox --json)`. Runtime `done`, `blocked` and an explicit `exited` with `reason: killed` are never typed: they mark turn settlement, a runtime input request or teardown, not a task outcome or task question. Tracked work reports through its task, and a `blocked` child still starts the human's "Needs input" push. They still go to the relay (step 1) and stay in the parent inbox. It types only when all of these hold:
    - the parent's own OSC 7501 program status is fresh and `idle` or `done` (never `blocked`, `working` or `failed`, and never for manifest or screen-heuristic status);
    - no viewer typed into the parent terminal in the last 60 s;
    - at least 15 s passed since the previous note to that parent;

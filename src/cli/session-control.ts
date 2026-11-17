@@ -680,9 +680,14 @@ export function parseAgentCommand(argv: readonly string[]): ParsedAgentCommand {
     const messageValue = consumeLaunchValue(args, "--message");
     const { mode: output, shellRequested } = parseOutputMode(args);
     const message = messageValue ?? (args.length > 0 ? args.join(" ") : undefined);
-    const validMessage = message === undefined || (message.trim().length > 0 && message.length <= 500);
-    if (shellRequested || !validMessage || (messageValue !== null && args.length > 0)) {
+    if (shellRequested || (messageValue !== null && args.length > 0)) {
       return { ok: false, message: "Usage: wolfpack agent notify-parent [--message <text>] [--json]" };
+    }
+    if (message !== undefined && message.length > 500) {
+      return { ok: false, message: `notification not sent: message exceeds 500 UTF-16 code units (received ${message.length}); shorten it and try again.` };
+    }
+    if (message !== undefined && message.trim().length === 0) {
+      return { ok: false, message: `notification not sent: message must contain non-whitespace text (received ${message.length} UTF-16 code units).` };
     }
     return { ok: true, action: "notify-parent", message, output };
   }

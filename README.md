@@ -122,7 +122,7 @@ Create a top-level project session with an initial instruction:
 wolfpack session create project-name --harness pi --plan .plans/000-task.md --json
 ```
 
-Spawn a child agent (same harness by default; override with `--harness`):
+Spawn an interactive child agent with a startup prompt (same harness by default; override with `--harness`). Delegated agent work uses a `--task-worker` endpoint and the agent task tools instead; see [session control](docs/session-control.md#opt-into-task-worker-readiness):
 
 ```bash
 wolfpack agent spawn project-name --harness claude --plan .plans/000-review.md --notify-parent --json
