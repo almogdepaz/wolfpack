@@ -55,6 +55,8 @@ export function operationalHealth(ctx: ServerContext = defaultServerContext): Re
       version: version?.brokerVersion ?? null,
       protocolVersion: version?.protocolVersion ?? null,
     },
+    // Core readiness remains broker-owned. Merely reading health must not construct a relay worker.
+    relay: ctx.relayHealth(),
     // Mode only, never the secret. An invalid secret refuses server start.
     auth: { mode: ctx.jwtAuthConfig.enabled ? "jwt" : "none" },
     uptimeSeconds: Math.floor(process.uptime()),

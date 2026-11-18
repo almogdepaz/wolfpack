@@ -5,6 +5,8 @@ import { createServer } from "node:http";
 import { SERVER_LISTENING } from "../server-startup-contract.js";
 import { assertSupportedBunRuntime } from "../runtime-version.ts";
 import { WebSocketServer } from "ws";
+import { RelayOwnerFailure, RelayRecoveryCooldown } from "../task-relay/owner-failure.ts";
+import { WorkerUnavailable } from "../task-relay/worker-client.ts";
 
 import { join } from "node:path";
 import { validateRequestJwt, getCachedJwtAuthConfig, verifyJwtAuthAtStartup } from "../auth.js";
@@ -352,7 +354,13 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Se
 
   await ctx.taskGateway.initialize();
   const taskRelay = ctx.taskRelayGateway;
-  await taskRelay.initialize();
+  try { await taskRelay.initialize(); }
+  catch (error) {
+    if (!(error instanceof RelayOwnerFailure || error instanceof WorkerUnavailable || error instanceof RelayRecoveryCooldown)) throw error;
+    log.error("relay unavailable; web and terminal access remain available", {
+      relay: taskRelay.health(), recovery: "preserve relay evidence; see docs/task-recovery.md before any explicit loss/reset",
+    });
+  }
   void ctx.backend.cleanupOrphans();
   const stopChildEventDelivery = ctx.childEventDelivery.startChildEventDelivery({
     hostEnvelope: input => taskRelay.hostEnvelope(input),

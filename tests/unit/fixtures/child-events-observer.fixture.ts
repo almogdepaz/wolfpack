@@ -73,7 +73,7 @@ test("a queued typed note keeps the observer running and reaches the parent once
     await backend.createSession("worker", "/tmp", "claude", loadSettings, { parentSession });
     backend.setProgramStatus("worker", { id: "", state: PROGRAM_STATUS_STATE.WORKING, updatedAtMs: Date.now() });
     await context.sessionObservation.runSessionNotificationObservation();
-    backend.setProgramStatus("worker", { id: "", state: PROGRAM_STATUS_STATE.DONE, updatedAtMs: Date.now() });
+    backend.setProgramStatus("worker", { id: "", state: PROGRAM_STATUS_STATE.ERROR, updatedAtMs: Date.now() });
     await context.sessionObservation.runSessionNotificationObservation();
     await new Promise(resolve => setTimeout(resolve, 0));
     // The parent is working: the note waits.
@@ -89,7 +89,7 @@ test("a queued typed note keeps the observer running and reaches the parent once
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(sends).toHaveLength(1);
     expect(sends[0]).toMatchObject({ sessionId: parent.wolfpackSessionId, sessionName: "lead" });
-    expect(sends[0]!.text).toContain("worker runtime settled");
+    expect(sends[0]!.text).toContain("worker error");
 
     // Nothing queued and no live child: the observer is idle again.
     expect(await context.sessionObservation.runSessionNotificationObservation()).toEqual([]);

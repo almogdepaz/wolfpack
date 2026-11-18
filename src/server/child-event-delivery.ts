@@ -8,6 +8,13 @@
  *    the last 60 s, and the setting allows it;
  * 3. otherwise the parent inbox only (phase 1 already appended the event).
  *
+ * Runtime `done`, `blocked` (a runtime input request such as a permission
+ * prompt) and an explicit `killed` exit are never typed: none is a task
+ * outcome or task question, and a typed note starts a parent model turn.
+ * Tracked work reports through task mail, and `blocked` still sends the human
+ * a needs-input push. These events still go to the relay (whose consumer
+ * archives them) and stay in the parent inbox.
+ *
  * The typed note carries only enumerated fields and sanitized names. It never
  * types child-controlled text (`message`, `lastLines`), because a child must
  * not write instructions into its parent's prompt.
@@ -107,6 +114,11 @@ export interface ChildEventDeliveryService {
 function sanitizedName(name: string): string {
   const cleaned = name.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, CHILD_EVENT_NOTE_LIMITS.NAME_CHARS);
   return cleaned || "child";
+}
+
+/** Runtime settlement, runtime input requests and explicit teardown: inbox and relay only, never a typed note. */
+function isPassiveForNotes(payload: ChildEventPayload): boolean {
+  return payload.event === CHILD_EVENT.DONE || payload.event === CHILD_EVENT.BLOCKED || (payload.event === CHILD_EVENT.EXITED && payload.reason === "killed");
 }
 
 /** Enumerated fields only: the event, the input kind and exit details. */
@@ -264,7 +276,7 @@ export function createChildEventDelivery(deps: ChildEventDeliveryDeps): ChildEve
         }
         log.warn("child-event relay send failed; using typed note", { code: relayed.code });
       }
-      if (deps.typedNotesEnabled()) enqueue(childEvent);
+      if (deps.typedNotesEnabled() && !isPassiveForNotes(childEvent)) enqueue(childEvent);
     },
 
     observeParent(parent) {

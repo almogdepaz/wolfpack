@@ -19,7 +19,7 @@ const resolveBody = { profile: "volatile-v1", epoch, callerSession: "caller",
 function inertGateway(): RelayGateway {
   const unexpected = async (): Promise<never> => { throw new Error("unexpected gateway operation"); };
   return {
-    root: "/fixture", profile: "volatile-v1", initialize: async () => {}, close: async () => {},
+    root: "/fixture", profile: "volatile-v1", health: () => ({ state: "ready" }), initialize: async () => {}, close: async () => {},
     volatileEpoch: async () => epoch,
     // Route admission only checks owner.ok; transport authorization must fail before dispatch.
     volatile: async () => ({ ok: true, profile: "volatile-v1", epoch, value: { kind: "disconnected" } }),

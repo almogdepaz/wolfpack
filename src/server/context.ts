@@ -19,7 +19,7 @@ import { TaskStore } from "../tasks/store.ts";
 import { TaskGateway } from "../tasks/gateway.ts";
 import { createTaskRelayGateway } from "../task-relay/gateway.ts";
 import { ExtensionRouteService } from "./extension-routes.ts";
-import type { RelayGateway } from "../task-relay/worker-protocol.ts";
+import type { RelayGateway, RelayHealth } from "../task-relay/worker-protocol.ts";
 import { loadConfig, remoteUrl, type Config } from "../config.js";
 import { defaultEventBus, setDefaultEventBus, type EventBus } from "../event-bus.js";
 import { BrokerSupervisor } from "./broker-supervisor.js";
@@ -63,6 +63,8 @@ export interface ServerContext {
   readonly sessionOrganization: SessionOrganizationService;
   readonly agentRuntimeStateStore: AgentRuntimeStateStore;
   readonly sessionIdentityStore: SessionIdentityStore;
+  /** Side-effect-free relay snapshot from an already-owned gateway; never constructs the gateway or its worker. */
+  relayHealth(): RelayHealth;
   /** Drain an already-owned runtime store without constructing it. */
   flushRuntimeState(): Promise<void>;
   /** Drain owned stores and close workers without constructing unused services. */
@@ -89,7 +91,7 @@ interface ServiceCache {
   sessionIdentityStore?: SessionIdentityStore;
 }
 
-export interface ServerContextOptions extends Partial<Omit<ServerContext, "close" | "flushRuntimeState" | "relayPeerTransport">> {
+export interface ServerContextOptions extends Partial<Omit<ServerContext, "close" | "flushRuntimeState" | "relayHealth" | "relayPeerTransport">> {
   readonly startSupervisor?: boolean;
   readonly observationCacheTtlMs?: number;
   readonly terminalPrefillDelayMs?: number;
@@ -164,6 +166,7 @@ export function createServerContext(overrides: ServerContextOptions = {}): Serve
     },
     get agentRuntimeStateStore() { return cache.agentRuntimeStateStore ??= new AgentRuntimeStateStore(); },
     get sessionIdentityStore() { return sessionIdentityStore(); },
+    relayHealth() { return cache.taskRelayGateway?.health() ?? { state: "starting" }; },
     async flushRuntimeState() { await cache.agentRuntimeStateStore?.flushForShutdown(); },
     async close() {
       cache.terminals?.dispose();
@@ -219,6 +222,7 @@ export const defaultServerContext: ServerContext = {
   get sessionOrganization() { return getDefaultServerContext().sessionOrganization; },
   get agentRuntimeStateStore() { return getDefaultServerContext().agentRuntimeStateStore; },
   get sessionIdentityStore() { return getDefaultServerContext().sessionIdentityStore; },
+  relayHealth() { return current?.relayHealth() ?? { state: "starting" }; },
   async flushRuntimeState() { await current?.flushRuntimeState(); },
   async close() { await current?.close(); },
 };

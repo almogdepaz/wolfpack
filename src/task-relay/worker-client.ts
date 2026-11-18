@@ -3,7 +3,7 @@ import { RelayOwnerFailure, isRelayOwnerFailureData, type RelayOwnerFailureData 
 import { assertSupportedBunRuntime } from "../runtime-version.ts";
 import { types as utilTypes } from "node:util";
 import { join, resolve } from "node:path";
-import { createLogger } from "../log.ts";
+import { createLogger, errMsg } from "../log.ts";
 import { resolveWolfpackDir } from "../wolfpack-dir.ts";
 import type { RelayEndpoint } from "./domain.ts";
 import type { GatewayOptions } from "./gateway.ts";
@@ -12,7 +12,7 @@ import { readPeerResponse, withPeerAbort } from "./peer-response.ts";
 import type { VolatileHostEnvelopeRequest, VolatileHostEnvelopeResult, VolatileResult } from "./volatile-protocol.ts";
 import {
   RELAY_WORKER_LIMITS as LIMIT, captureRelayWire, RelayWireBudgetError,
-  type RelayGateway, type RelayWorkerGateway, type RelayWorkerMethod, type WorkerMessage, type CallbackRequest,
+  type RelayGateway, type RelayHealth, type RelayWorkerGateway, type RelayWorkerMethod, type WorkerMessage, type CallbackRequest,
 } from "./worker-protocol.ts";
 
 const log = createLogger("task-relay");
@@ -52,7 +52,9 @@ export function captureOptions(input: WorkerGatewayOptions): WorkerGatewayOption
   }
   return Object.freeze(Object.assign(captureRelayWire(scalars, LIMIT.requestBytes).value, callbacks)) as unknown as WorkerGatewayOptions;
 }
-class WorkerUnavailable extends Error {}
+export class WorkerUnavailable extends Error {
+  constructor(message: string, options?: ErrorOptions, readonly termination?: Promise<boolean>) { super(message, options); }
+}
 /** Turns true once the worker holds the request: only then can its mutation have committed (review A4-3). */
 interface PostTracker { posted: boolean }
 class InvalidWorkerRequest extends Error {}
@@ -81,6 +83,7 @@ export class WorkerRelayGateway implements RelayGateway {
   #rejectReady!: (error: Error) => void;
   #startupTimer: ReturnType<typeof setTimeout>;
   #closed = false;
+  #workerReady = false;
   #ownerFailure: RelayOwnerFailureData | undefined;
   #stopping: Promise<void> | undefined;
   #terminationConfirmed = false;
@@ -88,6 +91,10 @@ export class WorkerRelayGateway implements RelayGateway {
   #regularBytes = 0;
   #peerBytes = 0;
   #epoch: Promise<string | undefined> | undefined;
+  health(): RelayHealth {
+    if (this.#closed) return { state: "unavailable", code: this.#ownerFailure?.code ?? "RELAY_UNAVAILABLE", retryable: this.#ownerFailure?.retryable ?? true };
+    return { state: this.#workerReady ? "ready" : "starting" };
+  }
   get isClosed(): boolean { return this.#closed; }
   get terminationConfirmed(): boolean { return this.#terminationConfirmed; }
   get ownerFailure(): RelayOwnerFailureData | undefined { return this.#ownerFailure; }
@@ -120,13 +127,15 @@ export class WorkerRelayGateway implements RelayGateway {
       this.#worker = worker = new Worker(new URL("./worker-entry.js", import.meta.url), { workerData: configuration.value });
       this.#startupTimer = setTimeout(() => this.#fail("relay worker startup timed out"), LIMIT.startupMs);
       this.#worker.on("message", (message: WorkerMessage) => this.#message(message));
-      this.#worker.on("error", () => this.#fail("relay worker failed"));
+      this.#worker.on("error", (error: unknown) => this.#fail("relay worker failed", error));
       this.#worker.on("exit", () => { if (!this.#closed) this.#fail("relay worker exited unexpectedly"); });
       this.#worker.unref();
     } catch (error) {
-      if (worker) void this.close();
-      else this.#releaseOwner();
-      throw error;
+      // The owner keeps the native cause locally; callers and public replies receive only bounded codes.
+      log.warn("relay worker construction failed", { error: errMsg(error) });
+      const termination = worker ? this.close().then(() => this.#terminationConfirmed) : Promise.resolve(true);
+      if (!worker) this.#releaseOwner();
+      throw new WorkerUnavailable(error instanceof Error ? error.message : "relay worker construction failed", { cause: error }, termination);
     }
   }
 
@@ -143,6 +152,7 @@ export class WorkerRelayGateway implements RelayGateway {
       this.#fail(`relay owner unavailable: ${message.failure.code}`); return;
     }
     if (message.kind === "ready") {
+      this.#workerReady = true;
       clearTimeout(this.#startupTimer); this.#resolveReady(); return;
     }
     if (message.kind === "inspect" || message.kind === "peer-fetch") {
@@ -204,9 +214,11 @@ export class WorkerRelayGateway implements RelayGateway {
     }
   }
 
-  #fail(reason: string): void {
+  #fail(reason: string, cause?: unknown): void {
     if (this.#closed) return;
-    log.warn(reason, { recovery: this.storage === "sqlite" ? "replace terminated worker; reopen committed journal; caller retries stable protocol identities" : "explicit rebind after volatile epoch loss" });
+    log.warn(reason, { ...(cause !== undefined && { error: errMsg(cause) }), recovery: this.#ownerFailure && !this.#ownerFailure.retryable
+      ? "relay remains blocked; preserve evidence and consult docs/task-recovery.md; loss/reset requires explicit approval"
+      : this.storage === "sqlite" ? "replace terminated worker; reopen committed journal; caller retries stable protocol identities" : "explicit rebind after volatile epoch loss" });
     void this.close();
   }
 

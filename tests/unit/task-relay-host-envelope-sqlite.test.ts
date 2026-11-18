@@ -28,7 +28,7 @@ function connected(result: VolatileResult) {
 function payload(parentSessionId: string, seq = 1): ChildEventPayload {
   return {
     kind: CHILD_EVENT_PAYLOAD_KIND, eventId: `child:boot:${seq}`, bootId: "boot", seq, childSessionId: randomUUID(), childName: "child",
-    parentSessionId, event: CHILD_EVENT.DONE, state: AGENT_STATUS_STATE.IDLE, observedAt: new Date().toISOString(),
+    parentSessionId, event: CHILD_EVENT.ERROR, state: AGENT_STATUS_STATE.IDLE, observedAt: new Date().toISOString(),
   };
 }
 
