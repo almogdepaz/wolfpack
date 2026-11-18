@@ -5,10 +5,97 @@ on:
   push:
     branches: [master, main]
 
+# A new push to a pull request supersedes its running checks. Branch pushes
+# keep every run so each merged commit gets a complete result.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Jobs run in parallel and each has its own timeout, so one slow step fails
+# only its job and the others still report. Only `integration` and `e2e`
+# wait for the shared release broker from `broker`.
 jobs:
-  test:
+  broker:
+    name: Build broker
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Install Rust toolchain (for wolfpack-broker)
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-12
+        with:
+          toolchain: 1.89.0
+
+      - name: Cache cargo registry and broker target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            broker/target
+          key: cargo-build-${{ runner.os }}-rust-1.89.0-${{ hashFiles('broker/Cargo.lock') }}
+          restore-keys: |
+            cargo-build-${{ runner.os }}-rust-1.89.0-
+
+      - name: Cache bun install cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
+
+      - name: Install frozen dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Setup pinned Zig
+        run: scripts/setup-zig-0.16.0.sh
+
+      - name: Build verified libghostty-vt archive (linux-x64)
+        run: bun run scripts/build-ghostty-vt.ts --target x86_64-unknown-linux-gnu
+
+      # `--locked` makes cargo refuse to build when Cargo.lock would need
+      # updating, catching a stale lockfile (forgotten `cargo update`,
+      # hand-edited Cargo.toml without lock refresh, etc.) instead of
+      # silently drifting at build time. CI is the only place we enforce
+      # this; `WOLFPACK_BUILD_MODE=local bun run scripts/build.ts` stays unlocked so
+      # local rebuilds Just Work.
+      - name: Build wolfpack-broker (required by integration + e2e tests)
+        run: scripts/ci-gate.sh broker-build
+
+      - name: Share broker binary with integration and E2E jobs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wolfpack-broker
+          path: broker/target/release/wolfpack-broker
+          if-no-files-found: error
+          retention-days: 1
+
+      # The Playwright image used by `e2e` has no `patch` tool, which the
+      # ghostty-web stage needs, so the host generates the assets once.
+      - name: Generate embedded assets for the E2E job
+        run: scripts/ci-gate.sh assets
+
+      - name: Share generated assets with the E2E job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: generated-assets
+          path: |
+            src/public-assets.ts
+            public/
+          if-no-files-found: error
+          retention-days: 1
+
+  rust:
+    name: Rust checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
 
@@ -45,14 +132,8 @@ jobs:
       - name: Install frozen dependencies
         run: bun install --frozen-lockfile --ignore-scripts
 
-      - name: Validate agent context links
-        run: scripts/ci-gate.sh context
-
       - name: Check Rust formatting
         run: scripts/ci-gate.sh rustfmt
-
-      - name: Report TypeScript lint
-        run: scripts/ci-gate.sh lint
 
       - name: Setup pinned Zig
         run: scripts/setup-zig-0.16.0.sh
@@ -63,17 +144,36 @@ jobs:
       - name: Report Rust lint
         run: scripts/ci-gate.sh clippy
 
-      # `--locked` makes cargo refuse to build when Cargo.lock would need
-      # updating, catching a stale lockfile (forgotten `cargo update`,
-      # hand-edited Cargo.toml without lock refresh, etc.) instead of
-      # silently drifting at build time. CI is the only place we enforce
-      # this; `WOLFPACK_BUILD_MODE=local bun run scripts/build.ts` stays unlocked so
-      # local rebuilds Just Work.
-      - name: Build wolfpack-broker (required by integration + e2e tests)
-        run: scripts/ci-gate.sh broker-build
-
       - name: Run broker tests
         run: scripts/ci-gate.sh broker-test
+
+  checks:
+    name: Checks and unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Cache bun install cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
+
+      - name: Install frozen dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Validate agent context links
+        run: scripts/ci-gate.sh context
+
+      - name: Report TypeScript lint
+        run: scripts/ci-gate.sh lint
 
       - name: Audit dependencies
         run: scripts/ci-gate.sh audit
@@ -87,26 +187,93 @@ jobs:
       - name: Run all unit and snapshot tests
         run: scripts/ci-gate.sh unit
 
-      - name: Resolve Playwright version
-        id: playwright-version
-        run: echo "version=$(bun -e 'console.log(require("@playwright/test/package.json").version)')" >> "$GITHUB_OUTPUT"
+      - name: Enforce browser bundle budgets
+        run: scripts/ci-gate.sh bundle
 
-      - name: Cache Playwright browsers
+  integration:
+    name: Integration tests
+    needs: broker
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Cache bun install cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}-chromium-webkit
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
           restore-keys: |
-            playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}-
+            bun-${{ runner.os }}-
 
-      - name: Install critical Playwright browsers
-        run: bunx playwright install --with-deps chromium webkit
+      - name: Install frozen dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Download the shared broker binary
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: wolfpack-broker
+          path: broker/target/release
+
+      # Artifact transfer drops the executable bit; ci-gate requires it.
+      - name: Restore broker executable permission
+        run: chmod +x broker/target/release/wolfpack-broker
+
+      - name: Generate embedded assets
+        run: scripts/ci-gate.sh assets
 
       - name: Run integration shard, then auth alone (JWT env contaminates the shared module cache)
         run: scripts/ci-gate.sh integration
 
-      - name: Enforce browser bundle budgets
-        run: scripts/ci-gate.sh bundle
+  e2e:
+    name: E2E and perf budgets
+    needs: broker
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    # The official image ships the browsers and their system libraries, so this
+    # job never runs `playwright install --with-deps` (an apt install that once
+    # stalled CI for 35 minutes). Keep the tag equal to the installed
+    # @playwright/test version; tests/unit/test-workflow-policy.test.ts fails
+    # when they differ. Refresh the digest with:
+    #   docker buildx imagetools inspect mcr.microsoft.com/playwright:v<version>-noble
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.1-noble@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
+      # GitHub-hosted runners own the workspace as uid 1001.
+      options: --user 1001
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+
+      # setup-bun needs `unzip`, which the image lacks. The npm package ships
+      # the same pinned release as a native binary.
+      - name: Install pinned bun
+        run: |
+          npm install --global --prefix "$HOME/.local" --no-audit --no-fund bun@1.4.2
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # No bun cache here: container paths differ from the host jobs, so their
+      # archives would not restore, and a cold install takes ~2s.
+      - name: Install frozen dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Download the shared broker binary
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: wolfpack-broker
+          path: broker/target/release
+
+      # Artifact transfer drops the executable bit; ci-gate requires it.
+      - name: Restore broker executable permission
+        run: chmod +x broker/target/release/wolfpack-broker
+
+      - name: Download generated assets
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: generated-assets
+          path: .
 
       - name: Run PR-tier E2E including homepage QA
         id: homepage-qa
@@ -138,6 +305,7 @@ jobs:
 
   ghostty-vt-behavior:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
 

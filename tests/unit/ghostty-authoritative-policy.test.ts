@@ -55,9 +55,9 @@ describe("unconditional authoritative Ghostty broker policy", () => {
       gate,
     ].join("\n");
     const parsed = Bun.YAML.parse(testWorkflow) as {
-      jobs: { test: { steps: Array<{ run?: string }> } };
+      jobs: { rust: { steps: Array<{ run?: string }> } };
     };
-    expect(parsed.jobs.test.steps.map(step => step.run)).toContain("scripts/ci-gate.sh broker-test");
+    expect(parsed.jobs.rust.steps.map(step => step.run)).toContain("scripts/ci-gate.sh broker-test");
     expect(gate).toContain("stage_broker_test() { cargo test --locked --manifest-path broker/Cargo.toml --all; }");
 
     expect(workflows).not.toContain("--features ghostty-vt");

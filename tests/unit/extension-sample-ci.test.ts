@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 const repo = join(import.meta.dirname, "..", "..");
 const workflow = Bun.YAML.parse(readFileSync(join(repo, ".github", "workflows", "test.yml"), "utf8")) as {
-  jobs: { test: { steps: Array<{ run?: string }> } };
+  jobs: Record<string, { steps?: Array<{ run?: string }> }>;
 };
 const gate = readFileSync(join(repo, "scripts", "ci-gate.sh"), "utf8");
 
@@ -30,15 +30,10 @@ function requireCompatibleBash(): string {
   throw new Error(`CI gate test requires Bash >= 4.4; no compatible executable found. ${diagnostics.join("; ")}`);
 }
 
-test("CI provisions its required Playwright browsers before the complete integration shard", () => {
-  const steps = workflow.jobs.test.steps;
-  const provisionCommand = "bunx playwright install --with-deps chromium webkit";
-  const provision = steps.findIndex(step => step.run === provisionCommand);
-  const integration = steps.findIndex(step => step.run === "scripts/ci-gate.sh integration");
-  expect(provision).toBeGreaterThanOrEqual(0);
-  expect(integration).toBeGreaterThanOrEqual(0);
-  expect(provision).toBeLessThan(integration);
-  expect(steps.filter(step => step.run === provisionCommand)).toHaveLength(1);
+test("CI runs the complete integration shard, then auth alone, in the integration job", () => {
+  const runs = Object.entries(workflow.jobs).flatMap(([job, { steps = [] }]) =>
+    steps.flatMap(step => step.run === "scripts/ci-gate.sh integration" ? [job] : []));
+  expect(runs).toEqual(["integration"]);
   expect(gate).toContain("find tests/integration -name '*.test.ts' ! -name 'auth-middleware.test.ts'");
 
   const root = mkdtempSync(join(tmpdir(), "wolfpack-ci-shard-"));
