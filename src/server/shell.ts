@@ -6,15 +6,7 @@ import { promisify } from "node:util";
 
 const _realExec = promisify(execFile);
 type ExecFn = (file: string, args: readonly string[], options?: { timeout?: number; encoding?: BufferEncoding; maxBuffer?: number }) => Promise<{ stdout: string; stderr: string }>;
-let _execOverride: ExecFn | null = null;
-
-export const exec: ExecFn = ((file, args, options) =>
-  (_execOverride || (_realExec as unknown as ExecFn))(file, args, options)) as ExecFn;
-
-export function __setExecOverride(fn: ExecFn | null): void {
-  if (!process.env.WOLFPACK_TEST) throw new Error("__setExecOverride() is only available in test mode");
-  _execOverride = fn;
-}
+export const exec = _realExec as ExecFn;
 
 // resolve user's shell — Ubuntu defaults to bash, macOS to zsh
 export const SHELL = (() => {

@@ -7,7 +7,7 @@ import {
   PersistenceReadError,
   readValidatedJsonFile,
   writePrivateJsonFile,
-} from "../../src/server/persistence.ts";
+} from "../../src/persistence.ts";
 
 interface StoredValue {
   readonly value: string;

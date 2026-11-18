@@ -3,7 +3,8 @@
  * HTTP API. JWT auth is honored when WOLFPACK_JWT_SECRET is set.
  */
 import type { VerifiedMachineTarget } from "./machine-target.js";
-import { print, printError, printApiJson, printJson, bold, dim, red, green, yellow } from "./formatting.js";
+import { print, printError, yellow } from "../terminal-output.js";
+import { printApiJson, printJson, bold, dim, red, green } from "./formatting.js";
 import { baseUrl, call } from "./api.js";
 
 interface SessionRow {

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 type WorkflowStep = {
@@ -25,6 +26,34 @@ const workflowPath = join(process.cwd(), ".github", "workflows", "test.yml");
 const workflowSource = readFileSync(workflowPath, "utf-8");
 const workflow = Bun.YAML.parse(workflowSource) as TestWorkflow;
 const LOCKED_BROKER_TEST_COMMAND = "cargo test --locked --manifest-path broker/Cargo.toml --all";
+const gateSource = readFileSync(join(process.cwd(), "scripts", "ci-gate.sh"), "utf8");
+
+function delegatedBrokerCommands(stage: string): string[] {
+  const root = mkdtempSync(join(tmpdir(), "workflow-broker-policy-"));
+  try {
+    const bin = join(root, "bin"), calls = join(root, "calls.jsonl");
+    mkdirSync(bin);
+    mkdirSync(join(root, "scripts"));
+    const gate = join(root, "scripts", "ci-gate.sh");
+    writeFileSync(gate, gateSource);
+    // Execute the real stage, replacing only the external Cargo process.
+    writeFileSync(join(bin, "cargo"), `#!${process.execPath}
+import { appendFileSync } from "node:fs";
+appendFileSync(${JSON.stringify(calls)}, JSON.stringify(["cargo", ...process.argv.slice(2)]) + "\\n");
+`, { mode: 0o700 });
+    // These broker stages need no Bash 4-only builtins; /bin/bash is stable
+    // even when a prior server import changes the shared process PATH.
+    const result = Bun.spawnSync(["/bin/bash", gate, stage], {
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+    });
+    expect(result.stderr.toString()).toBe("");
+    expect(result.exitCode).toBe(0);
+    return readFileSync(calls, "utf8").trim().split("\n")
+      .map(line => (JSON.parse(line) as string[]).join(" "));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
 
 function requireJob(name: string): WorkflowJob {
   const job = workflow.jobs[name];
@@ -37,15 +66,20 @@ function jobSource(job: WorkflowJob): string {
 }
 
 function runCommands(job: WorkflowJob): string[] {
-  return (job.steps ?? []).flatMap(step => step.run ? [step.run] : []);
+  return (job.steps ?? []).flatMap(step => {
+    if (!step.run) return [];
+    const delegated = /^scripts\/ci-gate\.sh (broker-(?:build|test))$/.exec(step.run);
+    return delegated ? delegatedBrokerCommands(delegated[1]!) : [step.run];
+  });
 }
 
 describe("pull request homepage diagnostics CI policy", () => {
   test("uploads diagnostics only after QA ran, retaining strict missing-artifact checks", () => {
     const steps = requireJob("test").steps ?? [];
-    const qa = steps.find(step => step.name === "Run homepage quality and resilience QA");
+    const qa = steps.find(step => step.run === "scripts/ci-gate.sh e2e-pr");
     const upload = steps.find(step => step.name === "Upload homepage QA diagnostics");
     expect(qa?.id).toBe("homepage-qa");
+    expect(steps.indexOf(upload!)).toBeGreaterThan(steps.indexOf(qa!));
     expect(upload?.if).toBe("always() && steps.homepage-qa.outcome != 'skipped'");
     expect(upload?.with?.["if-no-files-found"]).toBe("error");
   });

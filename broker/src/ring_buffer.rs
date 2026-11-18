@@ -55,13 +55,16 @@ impl RingBuffer {
     pub fn push(&mut self, chunk: OutputChunk) {
         let incoming = chunk.data.len();
         while !self.chunks.is_empty()
-            && (self.chunks.len() >= self.cap || self.retained_bytes.saturating_add(incoming) > self.max_bytes)
+            && (self.chunks.len() >= self.cap
+                || self.retained_bytes.saturating_add(incoming) > self.max_bytes)
         {
             if let Some(evicted) = self.chunks.pop_front() {
                 self.retained_bytes = self.retained_bytes.saturating_sub(evicted.data.len());
             }
         }
-        if incoming > self.max_bytes { return; }
+        if incoming > self.max_bytes {
+            return;
+        }
         self.retained_bytes += incoming;
         self.chunks.push_back(chunk);
     }

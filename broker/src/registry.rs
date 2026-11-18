@@ -458,7 +458,10 @@ mod tests {
             reg.list().iter().all(|s| s.id() != early.id()),
             "a dead session must not stay in the live table"
         );
-        assert!(reg.get(early.id()).is_some(), "dead session stays retrievable by id");
+        assert!(
+            reg.get(early.id()).is_some(),
+            "dead session stays retrievable by id"
+        );
         let reused = reg
             .create(create_opts(Some("early-exit"), &["sleep", "30"]))
             .expect("name must be reusable");

@@ -1,5 +1,9 @@
 import { describe, expect, test, beforeAll, afterAll, beforeEach, afterEach, spyOn } from "bun:test";
+import { createPushFixture } from "../unit/fixtures/push-service-fixture.ts";
+import { PUSH_DEBOUNCE_MS } from "../../src/server/push.ts";
+const pushFixture = createPushFixture();
 import * as fs from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import type { Server } from "node:http";
 import { connect } from "node:net";
 import type { AddressInfo } from "node:net";
@@ -40,7 +44,6 @@ import {
 import type { JsonObject } from "../control-api-schema-validator.ts";
 
 // ─── Environment setup (must precede imports that read env) ──────────────────
-process.env.WOLFPACK_TEST = "1";
 delete process.env.WOLFPACK_JWT_SECRET;
 
 /** The public error text for a Claude task worker while `claudeTaskIntegration` is off. */
@@ -53,7 +56,6 @@ const PRIOR_WOLFPACK_AGENT_RUNTIME_STATE_PATH = process.env.WOLFPACK_AGENT_RUNTI
 const PRIOR_WOLFPACK_SETTINGS_PATH = process.env.WOLFPACK_SETTINGS_PATH;
 const PRIOR_WOLFPACK_TASK_RELAY_ROOT = process.env.WOLFPACK_TASK_RELAY_ROOT;
 const PRIOR_WOLFPACK_TASK_WORKER_POLICY_PATH = process.env.WOLFPACK_TASK_WORKER_POLICY_PATH;
-const { DEV_DIR: PRIOR_CACHED_DEV_DIR } = await import("../../src/server/dev-dir.ts");
 
 // Create a real temp dir for test project directories.
 // realpathSync resolves macOS /var → /private/var so isUnderDevDir agrees.
@@ -73,18 +75,17 @@ process.env.WOLFPACK_SETTINGS_PATH = TEST_SETTINGS_PATH;
 process.env.WOLFPACK_TASK_RELAY_ROOT = TEST_TASK_RELAY_ROOT;
 process.env.WOLFPACK_TASK_WORKER_POLICY_PATH = TEST_TASK_WORKER_POLICY_PATH;
 
-const { __resetTaskRelayGatewayForTests, getTaskRelayGateway } = await import("../../src/server/task-gateways.ts");
-await __resetTaskRelayGatewayForTests();
-const { __resetJwtAuthConfig, __setDevDir, __setClaudeManagedSettingsDropInDirectory } = await import("../../src/test-hooks.ts");
+import type { ClaudeManagedSettingsDropIn } from "../../src/claude-integration.ts";
+const { getJwtAuthConfig } = await import("../../src/auth.ts");
+
 const { DuplicateSessionError } = await import("../../src/server/backend-contract.ts");
 const { createServerContext, setDefaultServerContext } = await import("../../src/server/context.ts");
 const { EventBus } = await import("../../src/event-bus.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
-__resetJwtAuthConfig();
 
-// Override cached DEV_DIR so routes.ts join(DEV_DIR, ...) uses our temp path.
-// Other test files may have imported tmux.ts first with a different env value.
-__setDevDir(TEST_DEV_DIR);
+
+// Route contexts select this fixture's development root explicitly.
+
 process.env.WOLFPACK_DEV_DIR = TEST_DEV_DIR;
 
 const controlApiSchema = JSON.parse(readFileSync(CONTROL_API_SCHEMA_ARTIFACT, "utf8")) as JsonObject;
@@ -104,34 +105,22 @@ const mockBackend = new MockBackend({
   capturePane: async (s: string) => `captured output for ${s}\n`,
 });
 let selectedBackend: import("../../src/server/context.ts").ServerBackend = mockBackend;
-const testContext = createServerContext({
+let testContext = createServerContext({ push: pushFixture.service, devDir: TEST_DEV_DIR, jwtAuthConfig: getJwtAuthConfig(), observationCacheTtlMs: 0,
   get backend() { return selectedBackend; }, events: new EventBus(), config: null,
 });
-// Observation/runtime singleton ownership remains a phase-5 concern.
+// Retain the production event-publisher bridge until the D3a characterization.
 setDefaultServerContext(testContext);
 function useBackend(backend: import("../../src/server/context.ts").ServerBackend): void { selectedBackend = backend; }
 
 // Reset rate limiters so they don't interfere
 const {
   createServerInstance,
-  __pollRateLimiter,
-  __globalRateLimiter,
 } = await import("../../src/server/index.ts") as any;
-const {
-  addSubscription,
-  removeSubscription,
-  _testing: pushTesting,
-} = await import("../../src/server/push.ts");
-const { activePtySessions } = await import("../../src/server/websocket.ts");
-const { AgentRuntimeStateStore, getAgentRuntimeStateStore, __resetAgentRuntimeStateStoreForTests } = await import("../../src/server/agent-status.ts");
-const { forgetSessionObservation, stopSessionNotificationObserver } = await import("../../src/server/session-observation.ts");
 
-const {
-  __resetSessionObservationForTests,
-  __runSessionNotificationObservationForTests,
-} = await import("../../src/server/routes.ts");
+const { AgentRuntimeStateStore } = await import("../../src/server/agent-status.ts");
 
-const { server } = createServerInstance(testContext);
+
+let { server, wss, pollRateLimiter, globalRateLimiter } = createServerInstance(testContext, { allowLocalOrigins: true });
 
 let base = "";
 
@@ -159,9 +148,25 @@ function ensureTestProjectDirs(): void {
 
 // ─── Lifecycle ───────────────────────────────────────────────────────────────
 
-beforeAll(async () => {
-  ensureTestProjectDirs();
+beforeAll(() => { ensureTestProjectDirs(); });
 
+async function closeServerContext(): Promise<void> {
+  await testContext.sessionObservation.stopSessionNotificationObserver();
+  if (server.listening) await new Promise<void>((resolve, reject) => {
+    server.close((error?: Error) => error ? reject(error) : resolve());
+    server.closeAllConnections();
+  });
+  wss.close();
+  await testContext.close();
+}
+
+async function listenWithContext(claudeManagedSettingsDropIn?: ClaudeManagedSettingsDropIn): Promise<void> {
+  pushFixture.reset();
+  testContext = createServerContext({ push: pushFixture.service, claudeManagedSettingsDropIn, devDir: TEST_DEV_DIR, jwtAuthConfig: getJwtAuthConfig(), observationCacheTtlMs: 0,
+    get backend() { return selectedBackend; }, events: new EventBus(), config: null,
+  });
+  setDefaultServerContext(testContext);
+  ({ server, wss, pollRateLimiter, globalRateLimiter } = createServerInstance(testContext, { allowLocalOrigins: true }));
   await new Promise<void>((resolve) => {
     (server as Server).listen(0, "127.0.0.1", () => {
       const port = ((server as Server).address() as AddressInfo).port;
@@ -169,29 +174,31 @@ beforeAll(async () => {
       resolve();
     });
   });
-});
+}
 
-beforeEach(() => {
+async function restartServer(claudeManagedSettingsDropIn?: ClaudeManagedSettingsDropIn): Promise<void> {
+  await closeServerContext();
+  await listenWithContext(claudeManagedSettingsDropIn);
+}
+
+beforeEach(async () => {
+  await closeServerContext();
   // Reset rate limiters before each test
-  __pollRateLimiter._map.clear();
-  __globalRateLimiter._map.clear();
-  // Reset push notify debounce/rate-limit state so notify tests don't
-  // depend on execution order (see TEST-01).
-  pushTesting.resetDebounce();
-  activePtySessions.clear();
+  pollRateLimiter._map.clear();
+  globalRateLimiter._map.clear();
+  // The replacement context owns fresh push delivery and rate-limit state.
+  testContext.terminals.activePtySessions.clear();
   rmSync(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!, { force: true });
-  __resetAgentRuntimeStateStoreForTests();
-  __resetSessionObservationForTests();
+  await listenWithContext();
 });
 
 afterAll(async () => {
-  __resetAgentRuntimeStateStoreForTests();
-  (server as Server).close();
-  await __resetTaskRelayGatewayForTests();
+  await closeServerContext();
   if (PRIOR_WOLFPACK_TASK_RELAY_ROOT === undefined) delete process.env.WOLFPACK_TASK_RELAY_ROOT;
   else process.env.WOLFPACK_TASK_RELAY_ROOT = PRIOR_WOLFPACK_TASK_RELAY_ROOT;
   if (PRIOR_WOLFPACK_TASK_WORKER_POLICY_PATH === undefined) delete process.env.WOLFPACK_TASK_WORKER_POLICY_PATH;
   else process.env.WOLFPACK_TASK_WORKER_POLICY_PATH = PRIOR_WOLFPACK_TASK_WORKER_POLICY_PATH;
+  pushFixture.close();
   for (const root of externalTempRoots) rmSync(root, { recursive: true, force: true });
   rmSync(TEST_DEV_DIR, { recursive: true, force: true });
   if (PRIOR_WOLFPACK_DEV_DIR === undefined) delete process.env.WOLFPACK_DEV_DIR;
@@ -202,12 +209,12 @@ afterAll(async () => {
   else process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH = PRIOR_WOLFPACK_AGENT_RUNTIME_STATE_PATH;
   if (PRIOR_WOLFPACK_SETTINGS_PATH === undefined) delete process.env.WOLFPACK_SETTINGS_PATH;
   else process.env.WOLFPACK_SETTINGS_PATH = PRIOR_WOLFPACK_SETTINGS_PATH;
-  __setDevDir(PRIOR_CACHED_DEV_DIR);
+
 });
 
 describe("API fixture isolation", () => {
   test("keeps the task relay gateway under the suite temp dev directory", () => {
-    expect(getTaskRelayGateway().root).toBe(TEST_TASK_RELAY_ROOT);
+    expect(testContext.taskRelayGateway.root).toBe(TEST_TASK_RELAY_ROOT);
   });
 });
 
@@ -224,6 +231,52 @@ function post(path: string, body: unknown, headers?: Record<string, string>) {
 function get(path: string, headers?: Record<string, string>) {
   return fetch(`${base}${path}`, { headers });
 }
+
+describe("GET /api/git-status bounded git", () => {
+  test("returns an error within five seconds when git stalls", async () => {
+    const root = mkdtempSync(join(tmpdir(), "wp-git-stall-"));
+    const executable = join(root, "git");
+    writeFileSync(executable, "#!/bin/sh\nexec /bin/sleep 30\n");
+    chmodSync(executable, 0o755);
+    class GitDirBackend extends MockBackend {
+      sessionDir() { return root; }
+    }
+    const priorPath = process.env.PATH;
+    useBackend(new GitDirBackend({ sessions: ["wolf-1"] }));
+    process.env.PATH = `${root}:${priorPath ?? ""}`;
+    try {
+      const started = Date.now();
+      const res = await get("/api/git-status?session=wolf-1");
+      expect(res.status).toBe(500);
+      expect(Date.now() - started).toBeLessThan(5000);
+      expect(typeof (await res.json()).error).toBe("string");
+    } finally {
+      if (priorPath === undefined) delete process.env.PATH;
+      else process.env.PATH = priorPath;
+      useBackend(mockBackend);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 10_000);
+
+  test("preserves the short branch status format for a real repository", async () => {
+    const root = mkdtempSync(join(tmpdir(), "wp-git-status-"));
+    class GitDirBackend extends MockBackend {
+      sessionDir() { return root; }
+    }
+    try {
+      execFileSync("git", ["init", root], { stdio: "pipe" });
+      useBackend(new GitDirBackend({ sessions: ["wolf-1"] }));
+      const res = await get("/api/git-status?session=wolf-1");
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(typeof body.status).toBe("string");
+      expect(body.status.startsWith("## ")).toBe(true);
+    } finally {
+      useBackend(mockBackend);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 interface TestSessionFact {
   readonly name: string;
@@ -327,9 +380,9 @@ async function withQuietTree(
   for (const fact of current) backend.setPane(fact.name, "baseline\n");
   useBackend(backend);
   const endpoint = `https://fcm.googleapis.com/quiet-tree-${now}-${Math.random()}`;
-  addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+  testContext.push.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
   const deliveries: Array<{ readonly title: string; readonly body: string }> = [];
-  pushTesting.sessionPushSender = async (payload) => {
+  pushFixture.dependencies.sender = async (payload) => {
     deliveries.push({ title: payload.title, body: payload.body });
     return { sent: 1, failed: 0, pruned: 0 };
   };
@@ -345,7 +398,7 @@ async function withQuietTree(
     expect((await post("/api/settings", {
       quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
     })).status).toBe(200);
-    await __runSessionNotificationObservationForTests();
+    await testContext.sessionObservation.runSessionNotificationObservation();
     await body({
       backend,
       deliveries,
@@ -356,19 +409,19 @@ async function withQuietTree(
         for (const name of names) backend.setPane(name, `activity ${sequence}\n`);
         current = current.map((fact) => names.includes(fact.name) ? { ...fact, outputSequence: String(sequence) } : fact);
         backend.setFacts(current);
-        await __runSessionNotificationObservationForTests();
+        await testContext.sessionObservation.runSessionNotificationObservation();
       },
       async tick(ms, status) {
         now += ms;
         applyStatus(status);
         backend.setFacts(current);
-        return await __runSessionNotificationObservationForTests() as readonly ObservedTreeSession[];
+        return await testContext.sessionObservation.runSessionNotificationObservation() as readonly ObservedTreeSession[];
       },
     });
   } finally {
     Date.now = originalNow;
-    pushTesting.sessionPushSender = null;
-    removeSubscription(endpoint);
+    pushFixture.dependencies.sender = null;
+    testContext.push.removeSubscription(endpoint);
     await post("/api/settings", {
       quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
     });
@@ -397,7 +450,7 @@ function attachNotificationViewer(session: string): string[] {
       frames.push(typeof data === "string" ? data : data.toString());
     },
   };
-  const entries = activePtySessions as unknown as Map<string, {
+  const entries = testContext.terminals.activePtySessions as unknown as Map<string, {
     viewer: typeof viewer;
     pendingViewer: null;
     proc: null;
@@ -444,7 +497,7 @@ describe("GET /api/sessions", () => {
       const first = await (await get("/api/sessions")).json();
       expect(first.sessions).toHaveLength(100);
       expect(writes()).toBe(0);
-      await getAgentRuntimeStateStore().flushForShutdown();
+      await testContext.agentRuntimeStateStore.flushForShutdown();
       expect(writes()).toBe(1);
       expect(Object.keys(new AgentRuntimeStateStore(runtimePath).snapshot().sessions)).toHaveLength(100);
       const same = await (await get("/api/sessions")).json();
@@ -452,14 +505,14 @@ describe("GET /api/sessions", () => {
       expect(writes()).toBe(1);
       clock.mockReturnValue(Date.parse("2026-07-25T00:01:00.000Z"));
       await get("/api/sessions");
-      await getAgentRuntimeStateStore().flushForShutdown();
+      await testContext.agentRuntimeStateStore.flushForShutdown();
       expect(writes()).toBe(1); // Observation timestamps advance only in memory.
       mockBackend.setSessions([]);
       await get("/api/sessions");
-      await stopSessionNotificationObserver(); // Existing server-close hook drains removals.
+      await testContext.sessionObservation.stopSessionNotificationObserver(); // Existing server-close hook drains removals.
       expect(writes()).toBe(2);
       await get("/api/sessions");
-      await getAgentRuntimeStateStore().flushForShutdown();
+      await testContext.agentRuntimeStateStore.flushForShutdown();
       expect(writes()).toBe(2);
     } finally {
       rename.mockRestore();
@@ -483,11 +536,11 @@ describe("GET /api/sessions", () => {
     try {
       await capturing;
       // Apply the ack route's real store operation while capture is held.
-      expect(getAgentRuntimeStateStore().acknowledge(sessionId, transitionSequence)?.unseen).toBe(false);
+      expect(testContext.agentRuntimeStateStore.acknowledge(sessionId, transitionSequence)?.unseen).toBe(false);
       release();
       const observed = await (await pending).json();
       expect(observed.sessions[0].runtimeState).toMatchObject({ transitionSequence, acknowledgedSequence: transitionSequence, unseen: false });
-      await getAgentRuntimeStateStore().flushForShutdown();
+      await testContext.agentRuntimeStateStore.flushForShutdown();
       expect(new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!).get(sessionId)).toMatchObject({ acknowledgedSequence: transitionSequence, unseen: false });
     } finally {
       release();
@@ -615,24 +668,24 @@ describe("GET /api/sessions", () => {
   test("does not notify before the configured quiet interval without a sessions request", async () => {
     const endpoint = `https://fcm.googleapis.com/server-observer-${Date.now()}`;
     const pushes: Array<{ readonly title: string; readonly body: string }> = [];
-    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
-    pushTesting.sessionPushSender = async (payload) => {
+    testContext.push.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    pushFixture.dependencies.sender = async (payload) => {
       pushes.push(payload);
       return { sent: 1, failed: 0, pruned: 0 };
     };
     try {
       mockBackend.setCapturePane(async () => "baseline\n");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       mockBackend.setCapturePane(async () => "changed\n");
       mockBackend.setOutputSequence("wolf-1", "1");
       mockBackend.setOutputSequence("wolf-2", "1");
-      await __runSessionNotificationObservationForTests();
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       expect(pushes).toEqual([]);
     } finally {
-      pushTesting.sessionPushSender = null;
-      removeSubscription(endpoint);
+      pushFixture.dependencies.sender = null;
+      testContext.push.removeSubscription(endpoint);
     }
   });
 
@@ -646,25 +699,25 @@ describe("GET /api/sessions", () => {
     ]);
     factBackend.setPane(sessionName, "baseline\n");
     useBackend(factBackend);
-    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
-    pushTesting.sessionPushSender = async (payload) => {
+    testContext.push.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    pushFixture.dependencies.sender = async (payload) => {
       pushes.push(payload);
       return { sent: 1, failed: 0, pruned: 0 };
     };
     try {
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       factBackend.setPane(sessionName, "changed\n");
       factBackend.setFacts([
         { name: sessionName, alive: true, outputSequence: "62", identity: testIdentity(sessionName, sessionId) },
       ]);
       await get("/api/sessions");
-      await __runSessionNotificationObservationForTests();
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       expect(pushes).toEqual([]);
     } finally {
-      pushTesting.sessionPushSender = null;
-      removeSubscription(endpoint);
+      pushFixture.dependencies.sender = null;
+      testContext.push.removeSubscription(endpoint);
       useBackend(mockBackend);
     }
   });
@@ -672,27 +725,27 @@ describe("GET /api/sessions", () => {
   test("does not notify quiet when the server observer loses its rendered snapshot", async () => {
     const endpoint = `https://fcm.googleapis.com/server-observer-failure-${Date.now()}`;
     const pushes: unknown[] = [];
-    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
-    pushTesting.sessionPushSender = async (payload) => {
+    testContext.push.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    pushFixture.dependencies.sender = async (payload) => {
       pushes.push(payload);
       return { sent: 1, failed: 0, pruned: 0 };
     };
     try {
       mockBackend.setCapturePane(async () => "baseline\n");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       mockBackend.setCapturePane(async () => "changed\n");
       mockBackend.setOutputSequence("wolf-1", "1");
       mockBackend.setOutputSequence("wolf-2", "1");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       mockBackend.setCapturePane(async () => { throw new Error("snapshot unavailable"); });
       mockBackend.setOutputSequence("wolf-1", "2");
       mockBackend.setOutputSequence("wolf-2", "2");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       expect(pushes).toEqual([]);
     } finally {
-      pushTesting.sessionPushSender = null;
-      removeSubscription(endpoint);
+      pushFixture.dependencies.sender = null;
+      testContext.push.removeSubscription(endpoint);
     }
   });
 
@@ -708,9 +761,9 @@ describe("GET /api/sessions", () => {
     ]);
     factBackend.setPane(sessionName, "baseline\n");
     useBackend(factBackend);
-    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    testContext.push.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
     const deliveries: string[] = [];
-    pushTesting.sessionPushSender = async (payload) => {
+    pushFixture.dependencies.sender = async (payload) => {
       deliveries.push(payload.title);
       return { sent: 1, failed: 0, pruned: 0 };
     };
@@ -718,14 +771,14 @@ describe("GET /api/sessions", () => {
       expect((await post("/api/settings", {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
       })).status).toBe(200);
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       now += 1;
       factBackend.setPane(sessionName, "armed activity\n");
       factBackend.setFacts([
         { name: sessionName, alive: true, outputSequence: "302", identity: testIdentity(sessionName, sessionId) },
       ]);
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       const originalCapturePane = factBackend.capturePane.bind(factBackend);
       now += 1_000;
@@ -733,7 +786,7 @@ describe("GET /api/sessions", () => {
       factBackend.setFacts([
         { name: sessionName, alive: true, outputSequence: "303", identity: testIdentity(sessionName, sessionId) },
       ]);
-      const failed = await __runSessionNotificationObservationForTests();
+      const failed = await testContext.sessionObservation.runSessionNotificationObservation();
       expect(failed[0]).toMatchObject({ activity: { freshness: "unknown" } });
       expect(failed[0]?.quietAlert).toBeUndefined();
 
@@ -742,7 +795,7 @@ describe("GET /api/sessions", () => {
       factBackend.setFacts([
         { name: sessionName, alive: true, outputSequence: "304", identity: testIdentity(sessionName, sessionId) },
       ]);
-      const recovered = await __runSessionNotificationObservationForTests();
+      const recovered = await testContext.sessionObservation.runSessionNotificationObservation();
       expect(recovered[0]?.quietAlert).toBeUndefined();
       expect(deliveries).toEqual([]);
 
@@ -751,9 +804,9 @@ describe("GET /api/sessions", () => {
       factBackend.setFacts([
         { name: sessionName, alive: true, outputSequence: "305", identity: testIdentity(sessionName, sessionId) },
       ]);
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       now += 5_000;
-      const matured = await __runSessionNotificationObservationForTests();
+      const matured = await testContext.sessionObservation.runSessionNotificationObservation();
       expect(matured[0]?.quietAlert).toMatchObject({
         sessionId,
         eligibleAtMs: 19_011_002,
@@ -761,8 +814,8 @@ describe("GET /api/sessions", () => {
       expect(deliveries).toEqual(["Wolfpack: capture-gap-continuity"]);
     } finally {
       Date.now = originalNow;
-      pushTesting.sessionPushSender = null;
-      removeSubscription(endpoint);
+      pushFixture.dependencies.sender = null;
+      testContext.push.removeSubscription(endpoint);
       await post("/api/settings", {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
       });
@@ -905,7 +958,7 @@ describe("GET /api/sessions", () => {
       const held = new Promise<void>(resolve => { release = resolve; });
       let markStarted!: () => void;
       const started = new Promise<void>(resolve => { markStarted = resolve; });
-      pushTesting.sessionPushSender = async payload => {
+      pushFixture.dependencies.sender = async payload => {
         sends.push(payload.body);
         if (sends.length === 1) { markStarted(); await held; }
         return { sent: 0, failed: 1, pruned: 0 };
@@ -1125,8 +1178,8 @@ describe("GET /api/sessions", () => {
     ]);
     factBackend.setPane(sessionName, "baseline\n");
     useBackend(factBackend);
-    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
-    pushTesting.sessionPushSender = async () => ({ sent: 1, failed: 0, pruned: 0 });
+    testContext.push.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    pushFixture.dependencies.sender = async () => ({ sent: 1, failed: 0, pruned: 0 });
     try {
       expect((await post("/api/settings", {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
@@ -1142,11 +1195,11 @@ describe("GET /api/sessions", () => {
       expect(changed.sessions[0].quietAlert).toBeUndefined();
 
       now += 4_999;
-      const beforeThreshold = await __runSessionNotificationObservationForTests();
+      const beforeThreshold = await testContext.sessionObservation.runSessionNotificationObservation();
       expect(beforeThreshold[0].quietAlert).toBeUndefined();
 
       now += 1;
-      const matured = await __runSessionNotificationObservationForTests();
+      const matured = await testContext.sessionObservation.runSessionNotificationObservation();
       expect(matured[0].quietAlert).toEqual({
         kind: "quiet",
         sessionId,
@@ -1158,8 +1211,8 @@ describe("GET /api/sessions", () => {
       expect(dashboard.sessions[0].quietAlert).toEqual(matured[0].quietAlert);
     } finally {
       Date.now = originalNow;
-      pushTesting.sessionPushSender = null;
-      removeSubscription(endpoint);
+      pushFixture.dependencies.sender = null;
+      testContext.push.removeSubscription(endpoint);
       await post("/api/settings", {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
       });
@@ -1179,14 +1232,14 @@ describe("GET /api/sessions", () => {
     ]);
     factBackend.setPane(sessionName, "baseline\n");
     useBackend(factBackend);
-    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
-    pushTesting.sessionPushSender = async () => ({ sent: 1, failed: 0, pruned: 0 });
+    testContext.push.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    pushFixture.dependencies.sender = async () => ({ sent: 1, failed: 0, pruned: 0 });
     try {
       expect((await post("/api/settings", {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
       })).status).toBe(200);
       await get("/api/sessions");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       now += 1;
       factBackend.setPane(sessionName, "changed\n");
@@ -1196,10 +1249,10 @@ describe("GET /api/sessions", () => {
       expect((await (await get("/api/sessions")).json()).sessions[0].quietAlert).toBeUndefined();
 
       now += 4_999;
-      expect((await __runSessionNotificationObservationForTests())[0].quietAlert).toBeUndefined();
+      expect((await testContext.sessionObservation.runSessionNotificationObservation())[0].quietAlert).toBeUndefined();
 
       now += 1;
-      const observerAtThreshold = await __runSessionNotificationObservationForTests();
+      const observerAtThreshold = await testContext.sessionObservation.runSessionNotificationObservation();
       expect(observerAtThreshold[0].quietAlert).toMatchObject({
         sessionId,
         eligibleAtMs: 5_005_001,
@@ -1209,8 +1262,8 @@ describe("GET /api/sessions", () => {
       expect(dashboardAtThreshold.sessions[0].quietAlert).toEqual(observerAtThreshold[0].quietAlert);
     } finally {
       Date.now = originalNow;
-      pushTesting.sessionPushSender = null;
-      removeSubscription(endpoint);
+      pushFixture.dependencies.sender = null;
+      testContext.push.removeSubscription(endpoint);
       await post("/api/settings", {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
       });
@@ -1230,14 +1283,14 @@ describe("GET /api/sessions", () => {
     ]);
     factBackend.setPane(sessionName, "baseline\n");
     useBackend(factBackend);
-    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
-    pushTesting.sessionPushSender = async () => ({ sent: 1, failed: 0, pruned: 0 });
+    testContext.push.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    pushFixture.dependencies.sender = async () => ({ sent: 1, failed: 0, pruned: 0 });
     try {
       expect((await post("/api/settings", {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
       })).status).toBe(200);
       await get("/api/sessions");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       now += 1;
       factBackend.setPane(sessionName, "armed activity\n");
@@ -1254,7 +1307,7 @@ describe("GET /api/sessions", () => {
       })).status).toBe(200);
 
       now += 5_000;
-      expect((await __runSessionNotificationObservationForTests())[0].quietAlert).toBeUndefined();
+      expect((await testContext.sessionObservation.runSessionNotificationObservation())[0].quietAlert).toBeUndefined();
 
       now += 1;
       factBackend.setPane(sessionName, "new activity after reenable\n");
@@ -1263,15 +1316,15 @@ describe("GET /api/sessions", () => {
       ]);
       await get("/api/sessions");
       now += 5_000;
-      expect((await __runSessionNotificationObservationForTests())[0].quietAlert).toMatchObject({
+      expect((await testContext.sessionObservation.runSessionNotificationObservation())[0].quietAlert).toMatchObject({
         sessionId,
         eligibleAtMs: 7_010_002,
         observedAtMs: 7_010_002,
       });
     } finally {
       Date.now = originalNow;
-      pushTesting.sessionPushSender = null;
-      removeSubscription(endpoint);
+      pushFixture.dependencies.sender = null;
+      testContext.push.removeSubscription(endpoint);
       await post("/api/settings", {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
       });
@@ -1291,14 +1344,14 @@ describe("GET /api/sessions", () => {
     ]);
     factBackend.setPane(sessionName, "baseline\n");
     useBackend(factBackend);
-    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
-    pushTesting.sessionPushSender = async () => ({ sent: 1, failed: 0, pruned: 0 });
+    testContext.push.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    pushFixture.dependencies.sender = async () => ({ sent: 1, failed: 0, pruned: 0 });
     try {
       expect((await post("/api/settings", {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
       })).status).toBe(200);
       await get("/api/sessions");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       let releaseCapture: (() => void) | undefined;
       const captureReleased = new Promise<void>((resolve) => { releaseCapture = resolve; });
@@ -1329,11 +1382,11 @@ describe("GET /api/sessions", () => {
       await oldCapture;
 
       now += 5_000;
-      expect((await __runSessionNotificationObservationForTests())[0].quietAlert).toBeUndefined();
+      expect((await testContext.sessionObservation.runSessionNotificationObservation())[0].quietAlert).toBeUndefined();
     } finally {
       Date.now = originalNow;
-      pushTesting.sessionPushSender = null;
-      removeSubscription(endpoint);
+      pushFixture.dependencies.sender = null;
+      testContext.push.removeSubscription(endpoint);
       await post("/api/settings", {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
       });
@@ -1436,7 +1489,7 @@ describe("GET /api/sessions", () => {
     factBackend.setPane(sessionName, "baseline\n");
     useBackend(factBackend);
     const delivered: string[] = [];
-    pushTesting.sessionPushSender = async (payload) => {
+    pushFixture.dependencies.sender = async (payload) => {
       delivered.push(payload.title);
       return { sent: 1, failed: 0, pruned: 0 };
     };
@@ -1455,8 +1508,8 @@ describe("GET /api/sessions", () => {
       now += 5_000;
       expect((await (await get("/api/sessions")).json()).sessions[0].quietAlert).toMatchObject({ sessionId });
 
-      addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
-      await __runSessionNotificationObservationForTests();
+      testContext.push.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+      await testContext.sessionObservation.runSessionNotificationObservation();
       expect(delivered).toEqual([]);
 
       now += 1;
@@ -1464,19 +1517,19 @@ describe("GET /api/sessions", () => {
       factBackend.setFacts([
         { name: sessionName, alive: true, outputSequence: "143", identity: testIdentity(sessionName, sessionId) },
       ]);
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       now += 5_000;
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       expect(delivered).toEqual(["Wolfpack: enrollment-quiet"]);
 
-      removeSubscription(endpoint);
-      addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
-      await __runSessionNotificationObservationForTests();
+      testContext.push.removeSubscription(endpoint);
+      testContext.push.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+      await testContext.sessionObservation.runSessionNotificationObservation();
       expect(delivered).toEqual(["Wolfpack: enrollment-quiet"]);
     } finally {
       Date.now = originalNow;
-      pushTesting.sessionPushSender = null;
-      removeSubscription(endpoint);
+      pushFixture.dependencies.sender = null;
+      testContext.push.removeSubscription(endpoint);
       await post("/api/settings", {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
       });
@@ -1498,11 +1551,11 @@ describe("GET /api/sessions", () => {
     factBackend.setPane(sessionName, "baseline\n");
     useBackend(factBackend);
     const deliveries: string[][] = [];
-    pushTesting.sessionPushSender = async (_payload, endpoints) => {
+    pushFixture.dependencies.sender = async (_payload, endpoints) => {
       deliveries.push([...endpoints].sort());
       return { sent: endpoints.size, failed: 0, pruned: 0, successfulEndpoints: [...endpoints], failedEndpoints: [] };
     };
-    addSubscription({ endpoint: firstEndpoint, keys: { p256dh: "key", auth: "auth" } });
+    testContext.push.addSubscription({ endpoint: firstEndpoint, keys: { p256dh: "key", auth: "auth" } });
     try {
       expect((await post("/api/settings", {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
@@ -1517,8 +1570,8 @@ describe("GET /api/sessions", () => {
       now += 5_000;
       expect((await (await get("/api/sessions")).json()).sessions[0].quietAlert).toMatchObject({ sessionId });
 
-      addSubscription({ endpoint: secondEndpoint, keys: { p256dh: "key", auth: "auth" } });
-      await __runSessionNotificationObservationForTests();
+      testContext.push.addSubscription({ endpoint: secondEndpoint, keys: { p256dh: "key", auth: "auth" } });
+      await testContext.sessionObservation.runSessionNotificationObservation();
       expect(deliveries).toEqual([[firstEndpoint]]);
 
       now += 1;
@@ -1526,17 +1579,17 @@ describe("GET /api/sessions", () => {
       factBackend.setFacts([
         { name: sessionName, alive: true, outputSequence: "153", identity: testIdentity(sessionName, sessionId) },
       ]);
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       // The first A-only delivery starts the per-session 30-second transport debounce.
       // This is a later episode, so wait past that invariant before asserting A+B.
       now += 30_000;
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       expect(deliveries).toEqual([[firstEndpoint], [firstEndpoint, secondEndpoint].sort()]);
     } finally {
       Date.now = originalNow;
-      pushTesting.sessionPushSender = null;
-      removeSubscription(firstEndpoint);
-      removeSubscription(secondEndpoint);
+      pushFixture.dependencies.sender = null;
+      testContext.push.removeSubscription(firstEndpoint);
+      testContext.push.removeSubscription(secondEndpoint);
       await post("/api/settings", {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
       });
@@ -1557,7 +1610,7 @@ describe("GET /api/sessions", () => {
     factBackend.setPane(sessionName, "baseline\n");
     useBackend(factBackend);
     const deliveries: string[][] = [];
-    pushTesting.sessionPushSender = async (_payload, endpoints) => {
+    pushFixture.dependencies.sender = async (_payload, endpoints) => {
       deliveries.push([...endpoints]);
       return { sent: endpoints.size, failed: 0, pruned: 0, successfulEndpoints: [...endpoints], failedEndpoints: [] };
     };
@@ -1574,16 +1627,16 @@ describe("GET /api/sessions", () => {
       await get("/api/sessions");
 
       now += 9_999;
-      addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+      testContext.push.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
       expect((await post("/api/settings", {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
       })).status).toBe(200);
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       expect(deliveries).toEqual([[endpoint]]);
     } finally {
       Date.now = originalNow;
-      pushTesting.sessionPushSender = null;
-      removeSubscription(endpoint);
+      pushFixture.dependencies.sender = null;
+      testContext.push.removeSubscription(endpoint);
       await post("/api/settings", {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
       });
@@ -1620,19 +1673,30 @@ describe("GET /api/sessions", () => {
       ]);
       await get("/api/sessions");
       now += 5_000;
-      await get("/api/sessions");
-      expect(pushTesting.quietAlertRecipientSnapshots.has(departedId)).toBe(true);
-      expect(pushTesting.quietAlertRecipientSnapshots.has(activeId)).toBe(true);
+      const captured = (await (await get("/api/sessions")).json()).sessions;
+      expect(captured.every((session: { quietAlert?: unknown }) => session.quietAlert)).toBe(true);
 
       factBackend.setFacts([
         { name: active, alive: true, outputSequence: "172", identity: testIdentity(active, activeId) },
       ]);
       await get("/api/sessions");
-      expect(pushTesting.quietAlertRecipientSnapshots.has(departedId)).toBe(false);
-      expect(pushTesting.quietAlertRecipientSnapshots.has(activeId)).toBe(true);
-
-      forgetSessionObservation(activeId, active);
-      expect(pushTesting.quietAlertRecipientSnapshots.has(activeId)).toBe(false);
+      const endpoint = "https://fcm.googleapis.com/retired-empty-recipients";
+      testContext.push.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+      const sends: string[] = [];
+      pushFixture.dependencies.sender = async payload => { sends.push(payload.title); return { sent: 1, failed: 0, pruned: 0 }; };
+      try {
+        // Re-emission can enroll only the retired session. The active episode
+        // retains its original empty recipient set.
+        for (const session of captured) testContext.push.recordQuietAlertEmission(session.identity.wolfpackSessionId, session.quietAlert.episodeId);
+        await testContext.push.checkSessionTransitions(captured);
+        expect(sends).toEqual([`Wolfpack: ${departed}`]);
+        testContext.push.resetSessionTransitionTracking();
+        testContext.sessionObservation.forgetSessionObservation(activeId, active);
+        const activeFact = captured.find((session: { name: string }) => session.name === active);
+        testContext.push.recordQuietAlertEmission(activeId, activeFact.quietAlert.episodeId);
+        await testContext.push.checkSessionTransitions([activeFact]);
+        expect(sends).toEqual([`Wolfpack: ${departed}`, `Wolfpack: ${active}`]);
+      } finally { testContext.push.removeSubscription(endpoint); }
     } finally {
       Date.now = originalNow;
       await post("/api/settings", {
@@ -1665,13 +1729,21 @@ describe("GET /api/sessions", () => {
       ]);
       await get("/api/sessions");
       now += 5_000;
-      await get("/api/sessions");
-      expect(pushTesting.quietAlertRecipientSnapshots.has(sessionId)).toBe(true);
+      const captured = (await (await get("/api/sessions")).json()).sessions;
+      expect(captured[0].quietAlert).toBeDefined();
 
       now += 1_001;
       factBackend.listSessionFacts = async () => { throw new Error("broker unavailable"); };
       await get("/api/sessions");
-      expect(pushTesting.quietAlertRecipientSnapshots.has(sessionId)).toBe(false);
+      const endpoint = "https://fcm.googleapis.com/unavailable-empty-recipients";
+      testContext.push.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+      let sends = 0;
+      pushFixture.dependencies.sender = async () => { sends++; return { sent: 1, failed: 0, pruned: 0 }; };
+      try {
+        testContext.push.recordQuietAlertEmission(sessionId, captured[0].quietAlert.episodeId);
+        await testContext.push.checkSessionTransitions(captured);
+        expect(sends).toBe(1);
+      } finally { testContext.push.removeSubscription(endpoint); }
     } finally {
       Date.now = originalNow;
       await post("/api/settings", {
@@ -1697,9 +1769,9 @@ describe("GET /api/sessions", () => {
     factBackend.setPane(first, "first baseline\n");
     factBackend.setPane(held, "held baseline\n");
     useBackend(factBackend);
-    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    testContext.push.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
     const deliveries: string[] = [];
-    pushTesting.sessionPushSender = async (payload) => {
+    pushFixture.dependencies.sender = async (payload) => {
       deliveries.push(payload.title);
       return { sent: 1, failed: 0, pruned: 0 };
     };
@@ -1708,7 +1780,7 @@ describe("GET /api/sessions", () => {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
       })).status).toBe(200);
       await get("/api/sessions");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       now += 1;
       factBackend.setPane(first, "first activity\n");
@@ -1718,7 +1790,7 @@ describe("GET /api/sessions", () => {
         { name: held, alive: true, outputSequence: "202", identity: testIdentity(held, heldId) },
       ]);
       await get("/api/sessions");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       now += 5_000;
       const armed = await (await get("/api/sessions")).json();
       expect(armed.sessions.find((session: { name: string }) => session.name === first)?.quietAlert).toMatchObject({ sessionId: firstId });
@@ -1740,7 +1812,7 @@ describe("GET /api/sessions", () => {
         { name: first, alive: true, outputSequence: "202", identity: testIdentity(first, firstId) },
         { name: held, alive: true, outputSequence: "203", identity: testIdentity(held, heldId) },
       ]);
-      const staleNotification = __runSessionNotificationObservationForTests();
+      const staleNotification = testContext.sessionObservation.runSessionNotificationObservation();
       await heldCaptureStartedPromise;
 
       factBackend.setFacts([
@@ -1756,8 +1828,8 @@ describe("GET /api/sessions", () => {
       expect(deliveries).toEqual([]);
     } finally {
       Date.now = originalNow;
-      pushTesting.sessionPushSender = null;
-      removeSubscription(endpoint);
+      pushFixture.dependencies.sender = null;
+      testContext.push.removeSubscription(endpoint);
       await post("/api/settings", {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
       });
@@ -1781,13 +1853,13 @@ describe("GET /api/sessions", () => {
     factBackend.setPane(first, "first baseline\n");
     factBackend.setPane(held, "held baseline\n");
     useBackend(factBackend);
-    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    testContext.push.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
     try {
       expect((await post("/api/settings", {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
       })).status).toBe(200);
       await get("/api/sessions");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       now += 1;
       factBackend.setPane(first, "first activity\n");
@@ -1797,7 +1869,7 @@ describe("GET /api/sessions", () => {
         { name: held, alive: true, outputSequence: "212", identity: testIdentity(held, heldId) },
       ]);
       await get("/api/sessions");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       now += 5_000;
       await get("/api/sessions");
 
@@ -1824,7 +1896,7 @@ describe("GET /api/sessions", () => {
       factBackend.setFacts([
         { name: first, alive: false, outputSequence: "212", identity: testIdentity(first, firstId) },
       ]);
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       releaseHeldCapture?.();
       const retired = await (await staleDashboard).json();
@@ -1833,7 +1905,7 @@ describe("GET /api/sessions", () => {
       expect(fresh.sessions.find((session: { name: string }) => session.name === first)?.quietAlert).toBeUndefined();
     } finally {
       Date.now = originalNow;
-      removeSubscription(endpoint);
+      testContext.push.removeSubscription(endpoint);
       await post("/api/settings", {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
       });
@@ -1853,13 +1925,13 @@ describe("GET /api/sessions", () => {
     ]);
     factBackend.setPane(sessionName, "baseline\n");
     useBackend(factBackend);
-    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    testContext.push.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
     try {
       expect((await post("/api/settings", {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
       })).status).toBe(200);
       await get("/api/sessions");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       now += 1;
       factBackend.setPane(sessionName, "older successful output\n");
@@ -1889,7 +1961,7 @@ describe("GET /api/sessions", () => {
       factBackend.setFacts([
         { name: sessionName, alive: true, outputSequence: "223", identity: testIdentity(sessionName, sessionId) },
       ]);
-      const newer = await __runSessionNotificationObservationForTests();
+      const newer = await testContext.sessionObservation.runSessionNotificationObservation();
       expect(newer[0]?.lastLine).toBe("newer authoritative output");
 
       releaseOlderCapture?.();
@@ -1907,7 +1979,7 @@ describe("GET /api/sessions", () => {
       });
     } finally {
       Date.now = originalNow;
-      removeSubscription(endpoint);
+      testContext.push.removeSubscription(endpoint);
       await post("/api/settings", {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
       });
@@ -1928,9 +2000,9 @@ describe("GET /api/sessions", () => {
         const factBackend = new FactBackend([fact]);
         factBackend.setPane(sessionName, "baseline\n");
         useBackend(factBackend);
-        addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+        testContext.push.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
         const attempts: string[][] = [];
-        pushTesting.sessionPushSender = async (_payload, endpoints) => {
+        pushFixture.dependencies.sender = async (_payload, endpoints) => {
           attempts.push([...endpoints]);
           return attempts.length === 1
             ? { sent: 0, failed: endpoints.size, pruned: 0, successfulEndpoints: [], failedEndpoints: [...endpoints] }
@@ -1966,25 +2038,22 @@ describe("GET /api/sessions", () => {
           const staleDashboard = get("/api/sessions");
           await olderListStartedPromise;
 
-          await __runSessionNotificationObservationForTests();
+          await testContext.sessionObservation.runSessionNotificationObservation();
           expect(attempts).toEqual([[endpoint]]);
-          expect(pushTesting.quietAlertRecipientSnapshots.has(sessionId)).toBe(true);
 
           releaseOlderList?.();
           await staleDashboard;
-          expect(pushTesting.quietAlertRecipientSnapshots.has(sessionId)).toBe(true);
 
-          now += pushTesting.PUSH_DEBOUNCE_MS;
-          await __runSessionNotificationObservationForTests();
+          now += PUSH_DEBOUNCE_MS;
+          await testContext.sessionObservation.runSessionNotificationObservation();
           expect(attempts).toEqual([[endpoint], [endpoint]]);
         } finally {
-          pushTesting.sessionPushSender = null;
-          removeSubscription(endpoint);
+          pushFixture.dependencies.sender = null;
+          testContext.push.removeSubscription(endpoint);
           await post("/api/settings", {
             quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
           });
-          __resetSessionObservationForTests();
-          pushTesting.resetDebounce();
+          await restartServer();
           now += 100_000;
         }
       }
@@ -2004,22 +2073,22 @@ describe("GET /api/sessions", () => {
     ]);
     factBackend.setPane(sessionName, "\n");
     useBackend(factBackend);
-    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
-    pushTesting.sessionPushSender = async (payload) => {
+    testContext.push.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    pushFixture.dependencies.sender = async (payload) => {
       pushes.push(payload);
       return { sent: 1, failed: 0, pruned: 0 };
     };
     try {
       const initial = await (await get("/api/sessions")).json();
       expect(initial.sessions[0].activity).toMatchObject({ freshness: "fresh", display: "activity unobserved" });
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       factBackend.setPane(sessionName, "content\n");
       factBackend.setFacts([
         { name: sessionName, alive: true, outputSequence: "72", identity: testIdentity(sessionName, sessionId) },
       ]);
       await get("/api/sessions");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       factBackend.setPane(sessionName, "\n");
       factBackend.setFacts([
@@ -2027,15 +2096,15 @@ describe("GET /api/sessions", () => {
       ]);
       const blank = await (await get("/api/sessions")).json();
       expect(blank.sessions[0]).toMatchObject({ triage: "running", activity: { display: "" } });
-      await __runSessionNotificationObservationForTests();
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       expect(pushes).toEqual([]);
 
       const quiet = await (await get("/api/sessions")).json();
       expect(quiet.sessions[0].activity).toMatchObject({ freshness: "fresh", display: "" });
     } finally {
-      pushTesting.sessionPushSender = null;
-      removeSubscription(endpoint);
+      pushFixture.dependencies.sender = null;
+      testContext.push.removeSubscription(endpoint);
       useBackend(mockBackend);
     }
   });
@@ -2049,7 +2118,7 @@ describe("GET /api/sessions", () => {
     ]);
     factBackend.setPane(sessionName, "before loss\n");
     useBackend(factBackend);
-    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    testContext.push.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
     try {
       let releaseFirst: (() => void) | undefined;
       const firstReleased = new Promise<void>((resolve) => { releaseFirst = resolve; });
@@ -2078,13 +2147,13 @@ describe("GET /api/sessions", () => {
       factBackend.setFacts([
         { name: sessionName, alive: false, outputSequence: "46", identity: testIdentity(sessionName, sessionId) },
       ]);
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       factBackend.setPane(sessionName, "after loss\n");
       factBackend.setFacts([
         { name: sessionName, alive: true, outputSequence: "46", identity: testIdentity(sessionName, sessionId) },
       ]);
-      const recovered = __runSessionNotificationObservationForTests();
+      const recovered = testContext.sessionObservation.runSessionNotificationObservation();
       await secondStartedPromise;
 
       releaseFirst?.();
@@ -2097,11 +2166,11 @@ describe("GET /api/sessions", () => {
       expect(fresh[0].activity).not.toHaveProperty("lastRenderedActivityAt");
       expect(fresh[0].activity).not.toHaveProperty("quietSince");
 
-      const quiet = await __runSessionNotificationObservationForTests();
+      const quiet = await testContext.sessionObservation.runSessionNotificationObservation();
       expect(captureCount).toBe(2);
       expect(quiet[0].activity).toMatchObject({ freshness: "fresh", display: "" });
     } finally {
-      removeSubscription(endpoint);
+      testContext.push.removeSubscription(endpoint);
       useBackend(mockBackend);
     }
   });
@@ -2118,14 +2187,14 @@ describe("GET /api/sessions", () => {
     ]);
     factBackend.setPane(sessionName, "baseline\n");
     useBackend(factBackend);
-    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
-    pushTesting.sessionPushSender = async () => ({ sent: 1, failed: 0, pruned: 0 });
+    testContext.push.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    pushFixture.dependencies.sender = async () => ({ sent: 1, failed: 0, pruned: 0 });
     try {
       expect((await post("/api/settings", {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
       })).status).toBe(200);
       await get("/api/sessions");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       let releaseOldCapture: (() => void) | undefined;
       const oldCaptureReleased = new Promise<void>((resolve) => { releaseOldCapture = resolve; });
@@ -2152,26 +2221,26 @@ describe("GET /api/sessions", () => {
       factBackend.setFacts([
         { name: sessionName, alive: false, outputSequence: "102", identity: testIdentity(sessionName, sessionId) },
       ]);
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       holdOldCapture = false;
       factBackend.setPane(sessionName, "recovered baseline\n");
       factBackend.setFacts([
         { name: sessionName, alive: true, outputSequence: "102", identity: testIdentity(sessionName, sessionId) },
       ]);
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       now += 1;
       factBackend.setPane(sessionName, "recovered activity\n");
       factBackend.setFacts([
         { name: sessionName, alive: true, outputSequence: "103", identity: testIdentity(sessionName, sessionId) },
       ]);
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       releaseOldCapture?.();
       await retiredDashboard;
       now += 5_000;
-      const matured = await __runSessionNotificationObservationForTests();
+      const matured = await testContext.sessionObservation.runSessionNotificationObservation();
       expect(matured[0].quietAlert).toMatchObject({
         sessionId,
         eligibleAtMs: 6_005_002,
@@ -2179,8 +2248,8 @@ describe("GET /api/sessions", () => {
       });
     } finally {
       Date.now = originalNow;
-      pushTesting.sessionPushSender = null;
-      removeSubscription(endpoint);
+      pushFixture.dependencies.sender = null;
+      testContext.push.removeSubscription(endpoint);
       await post("/api/settings", {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
       });
@@ -2197,7 +2266,7 @@ describe("GET /api/sessions", () => {
     ]);
     factBackend.setPane(sessionName, "before loss\n");
     useBackend(factBackend);
-    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    testContext.push.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
     try {
       let releaseCapture: (() => void) | undefined;
       const captureReleased = new Promise<void>((resolve) => { releaseCapture = resolve; });
@@ -2215,7 +2284,7 @@ describe("GET /api/sessions", () => {
       factBackend.setFacts([
         { name: sessionName, alive: false, outputSequence: "45", identity: testIdentity(sessionName, sessionId) },
       ]);
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       releaseCapture?.();
       const retired = await (await beforeLoss).json();
       expect(retired.sessions[0].activity.freshness).toBe("unknown");
@@ -2230,7 +2299,7 @@ describe("GET /api/sessions", () => {
       expect(recovered.sessions[0].activity).not.toHaveProperty("lastRenderedActivityAt");
       expect(recovered.sessions[0].activity).not.toHaveProperty("quietSince");
     } finally {
-      removeSubscription(endpoint);
+      testContext.push.removeSubscription(endpoint);
       useBackend(mockBackend);
     }
   });
@@ -2244,10 +2313,10 @@ describe("GET /api/sessions", () => {
     ]);
     factBackend.setPane(sessionName, "baseline\n");
     useBackend(factBackend);
-    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    testContext.push.addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
     try {
       await get("/api/sessions");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       let releaseCapture: (() => void) | undefined;
       const captureReleased = new Promise<void>((resolve) => { releaseCapture = resolve; });
       let captureStarted: (() => void) | undefined;
@@ -2263,7 +2332,7 @@ describe("GET /api/sessions", () => {
         { name: sessionName, alive: true, outputSequence: "52", identity: testIdentity(sessionName, sessionId) },
       ]);
 
-      const notification = __runSessionNotificationObservationForTests();
+      const notification = testContext.sessionObservation.runSessionNotificationObservation();
       await captureStartedPromise;
       const dashboard = get("/api/sessions");
       releaseCapture?.();
@@ -2277,7 +2346,7 @@ describe("GET /api/sessions", () => {
       expect(observed.sessions[0].activity.display).toBe("");
       expect(observed.sessions[0].runtimeState.transitionSequence).toBe(2);
     } finally {
-      removeSubscription(endpoint);
+      testContext.push.removeSubscription(endpoint);
       useBackend(mockBackend);
     }
   });
@@ -2315,7 +2384,7 @@ describe("GET /api/sessions", () => {
     });
     expect(store.acknowledge(sessionKey, idle.transitionSequence, "2026-07-25T00:01:00.000Z")?.unseen).toBe(false);
     await store.flushForShutdown();
-    __resetAgentRuntimeStateStoreForTests();
+    await restartServer();
 
     const data = await (await get("/api/sessions")).json();
 
@@ -2357,7 +2426,7 @@ describe("GET /api/sessions", () => {
       });
       expect(unavailable.sessions[0].activity).toMatchObject({ observedAt: expect.any(String) });
       expect(unavailable.sessions[0].activity).not.toHaveProperty("quietSince");
-      await getAgentRuntimeStateStore().flushForShutdown();
+      await testContext.agentRuntimeStateStore.flushForShutdown();
       const persisted = new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!).get(sessionId);
       expect(persisted?.state).toBe("unknown");
       expect(persisted?.acknowledgedSequence).toBe(sequence);
@@ -2388,8 +2457,7 @@ describe("GET /api/sessions", () => {
         },
       },
     }));
-    __resetAgentRuntimeStateStoreForTests();
-    __resetSessionObservationForTests();
+    await restartServer();
     const originalList = mockBackend.list.bind(mockBackend);
     (mockBackend as any).list = async () => { throw new Error("broker unavailable after restart"); };
     try {
@@ -2416,7 +2484,7 @@ describe("GET /api/sessions", () => {
     mockBackend.setSessions([]);
     const recovered = await (await get("/api/sessions")).json();
     expect(recovered.sessions).toHaveLength(0);
-    await getAgentRuntimeStateStore().flushForShutdown();
+    await testContext.agentRuntimeStateStore.flushForShutdown();
     expect(new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!).get(sessionKey)).toBeUndefined();
   });
 
@@ -2431,13 +2499,13 @@ describe("GET /api/sessions", () => {
       currentRun: { runId: sessionKey, runOrder: 0 },
     });
     await store.flushForShutdown();
-    __resetAgentRuntimeStateStoreForTests();
+    await restartServer();
     mockBackend.setSessions([]);
 
     const data = await (await get("/api/sessions")).json();
 
     expect(data.sessions).toHaveLength(0);
-    await getAgentRuntimeStateStore().flushForShutdown();
+    await testContext.agentRuntimeStateStore.flushForShutdown();
     expect(new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!).get(sessionKey)).toBeUndefined();
   });
 
@@ -2476,7 +2544,7 @@ describe("GET /api/sessions", () => {
     });
     expect(store.acknowledge(sessionId, idle.transitionSequence, "2026-07-25T00:01:00.000Z")?.unseen).toBe(false);
     await store.flushForShutdown();
-    __resetAgentRuntimeStateStoreForTests();
+    await restartServer();
     try {
       const dead = await (await get("/api/sessions")).json();
 
@@ -2493,13 +2561,13 @@ describe("GET /api/sessions", () => {
           unseen: true,
         },
       });
-      await getAgentRuntimeStateStore().flushForShutdown();
+      await testContext.agentRuntimeStateStore.flushForShutdown();
       expect(new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!).get(sessionId)).toMatchObject({ state: "off" });
 
       factBackend.setFacts([]);
       const omitted = await (await get("/api/sessions")).json();
       expect(omitted.sessions).toHaveLength(0);
-      await getAgentRuntimeStateStore().flushForShutdown();
+      await testContext.agentRuntimeStateStore.flushForShutdown();
       expect(new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!).get(sessionId)).toBeUndefined();
     } finally {
       useBackend(mockBackend);
@@ -2534,7 +2602,7 @@ describe("GET /api/sessions", () => {
           unseen: true,
         },
       });
-      await getAgentRuntimeStateStore().flushForShutdown();
+      await testContext.agentRuntimeStateStore.flushForShutdown();
       expect(new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!).get(sessionId)).toMatchObject({ state: "unknown" });
     } finally {
       useBackend(mockBackend);
@@ -2579,14 +2647,16 @@ describe("GET /api/sessions", () => {
 describe("session-control relay lookup batching", () => {
   test("lists stable-ID memory registrations in one RPC, sees retirement, and skips empty-list queries", async () => {
     const { WorkerRelayGateway } = await import("../../src/task-relay/worker-client.ts");
-    const { __setTaskRelayGatewayForTests } = await import("../../src/server/task-gateways.ts");
     const relayRoot = mkdtempSync(join(TEST_DEV_DIR, "relay-list-batch-"));
     const names = Array.from({ length: 20 }, (_, i) => `relay-list-${19 - i}`);
     const backend = new MockBackend({ sessions: names });
-    useBackend(backend);
     const identities = await backend.listIdentities();
-    const gateway = new WorkerRelayGateway({ root: relayRoot, inspectSession: selector => testContext.backend.inspectSession!(selector) });
-    await __setTaskRelayGatewayForTests(gateway);
+    const gateway = new WorkerRelayGateway({ root: relayRoot, inspectSession: selector => backend.inspectSession(selector) });
+    const context = createServerContext({ devDir: TEST_DEV_DIR, jwtAuthConfig: getJwtAuthConfig(), observationCacheTtlMs: 0, backend, taskRelayGateway: gateway });
+    const instance = createServerInstance(context);
+    await new Promise<void>(resolve => instance.server.listen(0, "127.0.0.1", resolve));
+    const base = `http://127.0.0.1:${(instance.server.address() as AddressInfo).port}`;
+    const get = (path: string) => fetch(base + path);
     const registrations = [];
     for (const name of names) {
       const result = await gateway.volatile({ profile: "volatile-v1", operation: "connect", callerSession: name, generation: "process-1", protocolVersions: [2] });
@@ -2628,8 +2698,10 @@ describe("session-control relay lookup batching", () => {
       expect(empty.status).toBe(200); expect(await empty.json()).toEqual({ sessions: [] });
       expect(lookup).not.toHaveBeenCalled();
     } finally {
-      lookup.mockRestore(); await __resetTaskRelayGatewayForTests();
-      useBackend(mockBackend); rmSync(relayRoot, { recursive: true, force: true });
+      lookup.mockRestore();
+      await new Promise<void>(resolve => { instance.server.close(() => resolve()); instance.server.closeAllConnections(); });
+      instance.wss.close(); await context.close();
+      rmSync(relayRoot, { recursive: true, force: true });
     }
   });
 });
@@ -2897,7 +2969,7 @@ describe("agent-native top-level session control", () => {
     const configPath = join(process.env.WOLFPACK_DIR!, "config.json");
     const priorConfig = existsSync(configPath) ? readFileSync(configPath, "utf8") : undefined;
     writeFileSync(configPath, JSON.stringify({ devDir: projectDir, port: 18790, claudeTaskIntegration: true }));
-    __setClaudeManagedSettingsDropInDirectory({ directory: dropInRoot });
+    await restartServer({ directory: dropInRoot });
     try {
       for (const [path, body, code] of [
         ["/api/session-create", { projectDir, harness: "claude", taskWorker: true }, SESSION_CREATE_ERROR.INVALID_REQUEST],
@@ -2914,7 +2986,7 @@ describe("agent-native top-level session control", () => {
         expect(mockBackend.lastCreateArgs).toBeNull();
       }
     } finally {
-      __setClaudeManagedSettingsDropInDirectory(undefined);
+      await restartServer();
       rmSync(dropInRoot, { recursive: true, force: true });
       if (priorConfig === undefined) rmSync(configPath, { force: true });
       else writeFileSync(configPath, priorConfig);
@@ -2934,13 +3006,13 @@ describe("agent-native top-level session control", () => {
     const dropInRoot = join(root, "managed-settings.d");
     mkdirSync(dropInRoot);
     writeFileSync(join(dropInRoot, "wolfpack.json"), claudeChannelDropInContent());
-    __setClaudeManagedSettingsDropInDirectory({ directory: dropInRoot });
+    await restartServer({ directory: dropInRoot });
     const priorPath = process.env.PATH;
     process.env.PATH = `${bin}:${priorPath ?? ""}`;
     mockBackend.setSessions([]);
     mockBackend.setOnBeforeCreate((name) => {
       queueMicrotask(() => {
-        void getTaskRelayGateway().volatile({
+        void testContext.taskRelayGateway.volatile({
           profile: "volatile-v1", operation: "connect", callerSession: name,
           generation: `test-${name}`,
           protocolVersions: [2],
@@ -2968,7 +3040,7 @@ describe("agent-native top-level session control", () => {
         });
       }
     } finally {
-      __setClaudeManagedSettingsDropInDirectory(undefined);
+      await restartServer();
       mockBackend.setOnBeforeCreate(null);
       if (priorPath === undefined) delete process.env.PATH;
       else process.env.PATH = priorPath;
@@ -2991,7 +3063,7 @@ describe("agent-native top-level session control", () => {
     mockBackend.setSessions([]);
     mockBackend.setOnBeforeCreate((name) => {
       queueMicrotask(() => {
-        void getTaskRelayGateway().volatile({
+        void testContext.taskRelayGateway.volatile({
           profile: "volatile-v1", operation: "connect", callerSession: name,
           generation: `test-${name}`,
           protocolVersions: [2],
@@ -3487,7 +3559,7 @@ describe("POST /api/session-open", () => {
   afterEach(() => {
     mockBackend.listIdentities = () => originalListIdentities.call(mockBackend);
     mockBackend.setOnBeforeCreate(null);
-    activePtySessions.clear();
+    testContext.terminals.activePtySessions.clear();
   });
 
   test("selects a cross-harness child while preserving parent lineage and notification", async () => {
@@ -4122,7 +4194,7 @@ describe("session control API", () => {
     expect(unobserved).not.toHaveProperty("runtimeState");
 
     const observedAt = new Date().toISOString();
-    const runtimeState = getAgentRuntimeStateStore().reduce({
+    const runtimeState = testContext.agentRuntimeStateStore.reduce({
       sessionKey: "mock:wolf-1",
       broker: { state: "alive", observedAt },
       sources: [],
@@ -4134,7 +4206,7 @@ describe("session control API", () => {
     const status = await (await get("/api/session-control/status?session=wolf-1")).json();
     expect(status.runtimeState).toEqual(JSON.parse(JSON.stringify(runtimeState)));
     expect(status.runtimeState).toMatchObject({ state: "output", authority: "fallback" });
-    expect(getAgentRuntimeStateStore().get("mock:wolf-1")?.transitionSequence).toBe(transitionSequence);
+    expect(testContext.agentRuntimeStateStore.get("mock:wolf-1")?.transitionSequence).toBe(transitionSequence);
   });
 
   test("status resolves stable ids and fails closed for dead listed sessions", async () => {

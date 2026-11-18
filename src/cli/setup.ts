@@ -6,18 +6,10 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { printAccessUrls } from "./access-output.js";
-import { print, bold, green, red, dim, yellow, WOLF } from "./formatting.js";
-import {
-  WOLFPACK_DIR,
-  IS_MACOS,
-  IS_LINUX,
-  ask,
-  loadConfig,
-  saveConfig,
-  remoteUrl,
-  tailscaleBin,
-  type Config,
-} from "./config.js";
+import { print, yellow } from "../terminal-output.js";
+import { bold, green, red, dim, WOLF } from "./formatting.js";
+import { WOLFPACK_DIR, IS_MACOS, IS_LINUX, loadConfig, saveConfig, remoteUrl, type Config } from "../config.js";
+import { ask, tailscaleBin } from "./config.js";
 import {
   isServiceInstalled,
   isServiceRunning,
@@ -494,6 +486,7 @@ export async function setup(options: SetupOptions = {}) {
       tailscaleHostname: verifiedRemoteHostname ?? previousConfig?.tailscaleHostname,
     }),
     ...(displayName && { displayName }),
+    ...(previousConfig?.allowedHosts && { allowedHosts: previousConfig.allowedHosts }),
     ...(previousConfig?.claudeTaskIntegration === true && { claudeTaskIntegration: true }),
     ...(previousConfig?.childEventTypedNotes === false && { childEventTypedNotes: false as const }),
   };

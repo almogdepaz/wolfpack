@@ -1,15 +1,10 @@
-process.env.WOLFPACK_TEST = "1";
 
 import { beforeEach, describe, expect, test } from "bun:test";
-import {
-  __resetEventBusForTests,
-  eventSubscriberCount,
-  publishEvent,
-  subscribeEvents,
-} from "../../src/server/event-bus";
+import { EventBus } from "../../src/event-bus";
 import { WOLFPACK_EVENT_KIND, type WolfpackEvent } from "../../src/events-contract";
 
-beforeEach(() => __resetEventBusForTests());
+let events = new EventBus();
+beforeEach(() => { events = new EventBus(); });
 
 const created = {
   kind: WOLFPACK_EVENT_KIND.SESSION_CREATED,
@@ -21,9 +16,9 @@ const created = {
 describe("event bus", () => {
   test("delivers published events with a monotonic id and timestamp", () => {
     const seen: WolfpackEvent[] = [];
-    subscribeEvents({}, (event) => seen.push(event));
-    publishEvent(created);
-    publishEvent({ ...created, session: "wolf-2" });
+    events.subscribeEvents({}, (event) => seen.push(event));
+    events.publishEvent(created);
+    events.publishEvent({ ...created, session: "wolf-2" });
     expect(seen.map((event) => event.id)).toEqual([1, 2]);
     expect(seen[0]).toMatchObject(created);
     expect(Number.isNaN(Date.parse(seen[0]!.at))).toBe(false);
@@ -31,33 +26,33 @@ describe("event bus", () => {
 
   test("applies the subscriber filter", () => {
     const seen: WolfpackEvent[] = [];
-    subscribeEvents({ session: "wolf-2" }, (event) => seen.push(event));
-    publishEvent(created);
-    publishEvent({ ...created, session: "wolf-2" });
+    events.subscribeEvents({ session: "wolf-2" }, (event) => seen.push(event));
+    events.publishEvent(created);
+    events.publishEvent({ ...created, session: "wolf-2" });
     expect(seen.map((event) => event.kind === "session.created" && event.session)).toEqual(["wolf-2"]);
   });
 
   test("unsubscribe is idempotent and updates the subscriber count", () => {
-    const unsubscribe = subscribeEvents({}, () => undefined);
-    expect(eventSubscriberCount()).toBe(1);
+    const unsubscribe = events.subscribeEvents({}, () => undefined);
+    expect(events.eventSubscriberCount()).toBe(1);
     unsubscribe();
     unsubscribe();
-    expect(eventSubscriberCount()).toBe(0);
+    expect(events.eventSubscriberCount()).toBe(0);
   });
 
   test("a throwing subscriber does not stop fan-out", () => {
     const seen: number[] = [];
-    subscribeEvents({}, () => { throw new Error("boom"); });
-    subscribeEvents({}, (event) => seen.push(event.id));
-    expect(() => publishEvent(created)).not.toThrow();
+    events.subscribeEvents({}, () => { throw new Error("boom"); });
+    events.subscribeEvents({}, (event) => seen.push(event.id));
+    expect(() => events.publishEvent(created)).not.toThrow();
     expect(seen).toEqual([1]);
   });
 
   test("publishing with no subscribers is a no-op that still advances ids", () => {
-    publishEvent(created);
+    events.publishEvent(created);
     const seen: number[] = [];
-    subscribeEvents({}, (event) => seen.push(event.id));
-    publishEvent(created);
+    events.subscribeEvents({}, (event) => seen.push(event.id));
+    events.publishEvent(created);
     expect(seen).toEqual([2]);
   });
 });

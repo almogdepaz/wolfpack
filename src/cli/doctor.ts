@@ -23,22 +23,16 @@ import {
   type BrokerHelloResult,
 } from "../broker/hello.js";
 import pkg from "../../package.json";
-import { print, bold, green, red, dim, yellow } from "./formatting.js";
+import { print, yellow } from "../terminal-output.js";
+import { bold, green, red, dim } from "./formatting.js";
 import { checkStorageCapacity, type StorageCapacity } from "./storage-capacity.ts";
 import { checkClaudeTaskIntegration, checkPiTasksPackage } from "./doctor-integrations.js";
 
 const log = createLogger("doctor");
 const CLI_VERSION: string = pkg.version;
-import {
-  WOLFPACK_DIR,
-  IS_MACOS,
-  IS_LINUX,
-  loadConfig,
-  isPortInUse,
-  killPortHolder,
-  tailscaleBin,
-} from "./config.js";
-import type { Config } from "./config.js";
+import { WOLFPACK_DIR, IS_MACOS, IS_LINUX, loadConfig } from "../config.js";
+import { isPortInUse, killPortHolder, tailscaleBin } from "./config.js";
+import type { Config } from "../config.js";
 import {
   isServiceInstalled,
   isServiceRunning,

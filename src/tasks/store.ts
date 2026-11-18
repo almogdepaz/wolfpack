@@ -203,6 +203,7 @@ export interface TaskStoreTestHooks {
 }
 
 export interface TaskStoreOptions {
+  readonly publishEvent?: typeof publishEvent;
   /** Test-only root injection; production defaults to the machine-global Wolfpack store. */
   readonly root: string | undefined;
   /** Narrow fault-injection seam; production uses real filesystem operations. */
@@ -495,12 +496,14 @@ export class TaskStore {
   /** Ledgers whose last append failed after its bytes may have reached disk; the cache is not authoritative until reloaded. */
   readonly #uncertainLedgerKeys = new Set<string>();
   readonly #testHooks: TaskStoreTestHooks | undefined;
+  readonly #publishEvent: typeof publishEvent;
   #nextDeliverySequence = 1n;
   #initialized: Promise<void> | undefined;
 
   constructor(options: TaskStoreOptions = { root: undefined, testHooks: undefined }) {
     this.root = taskStorePaths(options.root).root;
     this.#testHooks = options.testHooks;
+    this.#publishEvent = options.publishEvent ?? publishEvent;
   }
 
   async initialize(): Promise<void> {
@@ -597,7 +600,7 @@ export class TaskStore {
     // replay it and a propagation failure cannot hide it.
     if (accepted.kind === "accepted" || accepted.kind === "late-terminal") {
       const event = accepted.event;
-      publishEvent({ kind: WOLFPACK_EVENT_KIND.TASK_UPDATED, taskId: event.taskId, eventId: event.id, eventType: event.type, sequence: event.sequence });
+      this.#publishEvent({ kind: WOLFPACK_EVENT_KIND.TASK_UPDATED, taskId: event.taskId, eventId: event.id, eventType: event.type, sequence: event.sequence });
     }
     return accepted;
   }

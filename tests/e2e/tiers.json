@@ -1,0 +1,913 @@
+{
+  "pr": {
+    "accessibility-navigation.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se",
+        "mobile-webkit"
+      ]
+    },
+    "apple-reskin.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14"
+      ]
+    },
+    "axe-accessibility.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "broker-passive-inspection.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-se"
+      ]
+    },
+    "broker-restart.e2e.ts": {
+      "projects": [
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "broker-shell-reconnect.e2e.ts": {
+      "projects": [
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "broker-take-control.e2e.ts": {
+      "projects": [
+        "iphone-14"
+      ]
+    },
+    "broker-tui-reconnect.e2e.ts": {
+      "projects": [
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "chrome-controls.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "delegation-sessions.e2e.ts": {
+      "projects": [
+        "mobile-webkit"
+      ]
+    },
+    "desktop-workspace-tools.e2e.ts": {
+      "projects": [
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "discovery-health.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "extension-access-prompt.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "extension-compiled-host.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se",
+        "mobile-webkit"
+      ]
+    },
+    "extension-loader-spike.e2e.ts": {
+      "projects": [
+        "mobile-webkit"
+      ]
+    },
+    "extensions-frontend.e2e.ts": {
+      "projects": [
+        "mobile-webkit"
+      ]
+    },
+    "ghostty-compile-once.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "ghostty-listener-cleanup.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "ghostty-render-suspension.e2e.ts": {
+      "projects": [
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "ghostty-scrollback.e2e.ts": {
+      "projects": [
+        "desktop"
+      ]
+    },
+    "homepage-install.e2e.ts": {
+      "projects": [
+        "iphone-se"
+      ]
+    },
+    "html-attribute-escaping.e2e.ts": {
+      "projects": [
+        "desktop"
+      ]
+    },
+    "idle-session-view.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "keyboard-viewport.e2e.ts": {
+      "projects": [
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "machine-groups.e2e.ts": {
+      "projects": [
+        "desktop",
+        "mobile-webkit"
+      ]
+    },
+    "mobile-accessory-enter.e2e.ts": {
+      "projects": [
+        "desktop",
+        "mobile-webkit"
+      ]
+    },
+    "mobile-navigation.e2e.ts": {
+      "projects": [
+        "desktop"
+      ]
+    },
+    "mobile-scrolling.e2e.ts": {
+      "projects": [
+        "iphone-se",
+        "mobile-webkit"
+      ]
+    },
+    "notification-routing.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se",
+        "mobile-webkit"
+      ]
+    },
+    "notification-settings.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "reconnect.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se",
+        "mobile-webkit"
+      ]
+    },
+    "refresh-coordinator.e2e.ts": {
+      "projects": [
+        "mobile-webkit"
+      ]
+    },
+    "reskin-review.e2e.ts": {
+      "projects": [
+        "desktop"
+      ]
+    },
+    "selected-host-loader.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "session-lifecycle-real.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "session-meta.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "session-organization.e2e.ts": {
+      "projects": [
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "session-summary.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-se"
+      ]
+    },
+    "session-switch.e2e.ts": {
+      "projects": [
+        "mobile-webkit"
+      ]
+    },
+    "sidebar-freshness.e2e.ts": {
+      "projects": [
+        "mobile-webkit"
+      ]
+    },
+    "sidebar-grid-marker.e2e.ts": {
+      "projects": [
+        "desktop"
+      ]
+    },
+    "smoke.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "task-worker-early-exit.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "task-worker-settings.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se",
+        "mobile-webkit"
+      ]
+    },
+    "terminal-lifecycle.e2e.ts": {
+      "projects": [
+        "iphone-se"
+      ]
+    },
+    "terminal-mobile-copy.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "terminal.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se",
+        "mobile-webkit"
+      ]
+    },
+    "triage-pinned.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "triage-review.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "ux-mobile-keyboard.e2e.ts": {
+      "projects": [
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "viewport-mode-terminal.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "visual-makeover.e2e.ts": {
+      "projects": [
+        "desktop"
+      ]
+    },
+    "workspace-layout-broker.e2e.ts": {
+      "projects": [
+        "iphone-14",
+        "mobile-webkit"
+      ]
+    }
+  },
+  "full": {
+    "apple-reskin.e2e.ts": {
+      "projects": [
+        "iphone-se"
+      ]
+    },
+    "asset-build.e2e.ts": {
+      "projects": [
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "broker-passive-inspection.e2e.ts": {
+      "projects": [
+        "iphone-14"
+      ]
+    },
+    "broker-restart.e2e.ts": {
+      "projects": [
+        "desktop"
+      ]
+    },
+    "broker-scroll-lock.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "broker-shell-reconnect.e2e.ts": {
+      "projects": [
+        "desktop"
+      ]
+    },
+    "broker-take-control.e2e.ts": {
+      "projects": [
+        "desktop"
+      ]
+    },
+    "broker-tui-reconnect.e2e.ts": {
+      "projects": [
+        "desktop"
+      ]
+    },
+    "delegation-sessions.e2e.ts": {
+      "projects": [
+        "desktop"
+      ]
+    },
+    "desktop-workspace-tools.e2e.ts": {
+      "projects": [
+        "desktop"
+      ]
+    },
+    "extensions-frontend.e2e.ts": {
+      "projects": [
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "ghostty-render-idle.e2e.ts": {
+      "projects": [
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "ghostty-render-suspension.e2e.ts": {
+      "projects": [
+        "desktop"
+      ]
+    },
+    "ghostty-scrollback.e2e.ts": {
+      "projects": [
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "ghostty-synchronized-output.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "ghostty-viewport-batching.e2e.ts": {
+      "projects": [
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "grid.e2e.ts": {
+      "projects": [
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "keyboard-viewport.e2e.ts": {
+      "projects": [
+        "desktop"
+      ]
+    },
+    "machine-groups.e2e.ts": {
+      "projects": [
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "mobile-accessory-enter.e2e.ts": {
+      "projects": [
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "mobile-discover.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "mobile-navigation.e2e.ts": {
+      "projects": [
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "mobile-scrolling.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14"
+      ]
+    },
+    "refresh-coordinator.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "session-organization-scope.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "session-state-visualization.e2e.ts": {
+      "projects": [
+        "iphone-14"
+      ]
+    },
+    "session-summary.e2e.ts": {
+      "projects": [
+        "iphone-14"
+      ]
+    },
+    "sidebar-freshness.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "sidebar-grid-marker.e2e.ts": {
+      "projects": [
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "tailnet-peer-discovery.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "task-worker-readiness.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "terminal-lifecycle.e2e.ts": {
+      "projects": [
+        "iphone-14"
+      ]
+    },
+    "terminal-resource-soak.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "trim-preservation.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "ux-input-recovery.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "ux-mobile-keyboard.e2e.ts": {
+      "projects": [
+        "desktop"
+      ]
+    },
+    "ux-navigation.e2e.ts": {
+      "projects": [
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "widget-rail.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ]
+    },
+    "workspace-layout-broker.e2e.ts": {
+      "projects": [
+        "iphone-se"
+      ]
+    }
+  },
+  "quarantine": {
+    "asset-build.e2e.ts": {
+      "projects": [
+        "desktop"
+      ],
+      "reason": "deterministic or intermittent failures in the three isolated baseline runs",
+      "failing": [
+        "[desktop] canonical stylesheet preserves cascade, animations and accessibility (normal)",
+        "[desktop] canonical stylesheet preserves cascade, animations and accessibility (reduced-motion)"
+      ]
+    },
+    "broker-take-control.e2e.ts": {
+      "projects": [
+        "iphone-se"
+      ],
+      "reason": "deterministic or intermittent failures in the three isolated baseline runs",
+      "failing": [
+        "[iphone-se] broker take-control: redraw burst does not force browser reconnect"
+      ]
+    },
+    "delegation-sessions.e2e.ts": {
+      "projects": [
+        "iphone-14",
+        "iphone-se"
+      ],
+      "reason": "deterministic or intermittent failures in the three isolated baseline runs",
+      "failing": [
+        "[iphone-se] expanded child cards stay compact and inside the session list",
+        "[iphone-14] expanded child cards stay compact and inside the session list"
+      ]
+    },
+    "directory-browser.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ],
+      "reason": "deterministic or intermittent failures in the three isolated baseline runs",
+      "failing": [
+        "[iphone-se] jumps to an absolute server path without client-side path composition",
+        "[iphone-14] jumps to an absolute server path without client-side path composition",
+        "[desktop] jumps to an absolute server path without client-side path composition",
+        "[desktop] submits a folder path after project-card keyboard navigation"
+      ]
+    },
+    "extension-loader-spike.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ],
+      "reason": "deterministic or intermittent failures in the three isolated baseline runs",
+      "failing": [
+        "[iphone-se] selected-host browser component isolates same-UUID remote bundles and reuses verified warm code",
+        "[iphone-14] selected-host browser component isolates same-UUID remote bundles and reuses verified warm code",
+        "[desktop] selected-host browser component isolates same-UUID remote bundles and reuses verified warm code"
+      ]
+    },
+    "extensions-frontend.e2e.ts": {
+      "projects": [
+        "desktop"
+      ],
+      "reason": "deterministic or intermittent failures in the three isolated baseline runs",
+      "failing": [
+        "[desktop] remote scopes have no empty widget dock and preserve local collapse across sessions and reloads"
+      ]
+    },
+    "first-session-guide.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ],
+      "reason": "deterministic or intermittent failures in the three isolated baseline runs",
+      "failing": [
+        "[iphone-se] authoritative empty sessions render one accessible first-session path that disappears after refresh",
+        "[iphone-14] authoritative empty sessions render one accessible first-session path that disappears after refresh",
+        "[desktop] authoritative empty sessions render one accessible first-session path that disappears after refresh",
+        "[desktop] remote empty-state activation preserves the verified machine selector"
+      ]
+    },
+    "ghostty-render-idle.e2e.ts": {
+      "projects": [
+        "desktop"
+      ],
+      "reason": "deterministic or intermittent failures in the three isolated baseline runs",
+      "failing": [
+        "[desktop] forced and incremental pixels retain the pre-change canvas sequence (esm, monospace)",
+        "[desktop] forced and incremental pixels retain the pre-change canvas sequence (umd, monospace)"
+      ]
+    },
+    "ghostty-viewport-batching.e2e.ts": {
+      "projects": [
+        "desktop"
+      ],
+      "reason": "deterministic or intermittent failures in the three isolated baseline runs",
+      "failing": [
+        "[desktop] batches viewport reads without changing real rendered pixels at 24 rows (umd)",
+        "[desktop] batches viewport reads without changing real rendered pixels at 70 rows (umd)",
+        "[desktop] batches viewport reads without changing real rendered pixels at 24 rows (esm)",
+        "[desktop] batches viewport reads without changing real rendered pixels at 70 rows (esm)"
+      ]
+    },
+    "grid-hydration-broker.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ],
+      "reason": "deterministic or intermittent failures in the three isolated baseline runs",
+      "failing": [
+        "[iphone-se] grid ready after hydration reveal stays live on initial attach and reconnect",
+        "[iphone-14] grid ready after hydration reveal stays live on initial attach and reconnect",
+        "[desktop] grid ready after hydration reveal stays live on initial attach and reconnect"
+      ]
+    },
+    "grid.e2e.ts": {
+      "projects": [
+        "desktop"
+      ],
+      "reason": "deterministic or intermittent failures in the three isolated baseline runs",
+      "failing": [
+        "[desktop] stopping a grid session removes only that cell and preserves the focused survivor"
+      ]
+    },
+    "homepage-install.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14"
+      ],
+      "reason": "deterministic or intermittent failures in the three isolated baseline runs",
+      "failing": [
+        "[iphone-14] Watch the demo opens the tour player, loads nothing until play, and closes back to the link",
+        "[desktop] Watch the demo opens the tour player, loads nothing until play, and closes back to the link"
+      ]
+    },
+    "html-attribute-escaping.e2e.ts": {
+      "projects": [
+        "iphone-14",
+        "iphone-se"
+      ],
+      "reason": "deterministic or intermittent failures in the three isolated baseline runs",
+      "failing": [
+        "[iphone-se] served app bundle contains peer metadata within the machine-header title",
+        "[iphone-14] served app bundle contains peer metadata within the machine-header title"
+      ]
+    },
+    "impeccable-refinement.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ],
+      "reason": "deterministic or intermittent failures in the three isolated baseline runs",
+      "failing": [
+        "[iphone-se] settings feedback is readable and native choices fit on narrow screens",
+        "[iphone-se] native task-worker choice remains readable beside the pinned sidebar at intermediate widths",
+        "[iphone-se] debug labels and reset have readable contrast rather than disabled-looking text",
+        "[iphone-se] long quick command labels keep edit and delete actions inside the settings row",
+        "[iphone-14] settings feedback is readable and native choices fit on narrow screens",
+        "[iphone-14] native task-worker choice remains readable beside the pinned sidebar at intermediate widths",
+        "[iphone-14] debug labels and reset have readable contrast rather than disabled-looking text",
+        "[iphone-14] long quick command labels keep edit and delete actions inside the settings row",
+        "[desktop] native task-worker choice remains readable beside the pinned sidebar at intermediate widths"
+      ]
+    },
+    "keyboard-viewport-broker.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ],
+      "reason": "deterministic or intermittent failures in the three isolated baseline runs",
+      "failing": [
+        "[iphone-se] main visualViewport resize retains the first native PTY row, exact session and one attach",
+        "[iphone-14] main visualViewport resize retains the first native PTY row, exact session and one attach",
+        "[desktop] main visualViewport resize retains the first native PTY row, exact session and one attach"
+      ]
+    },
+    "panel-pin.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ],
+      "reason": "deterministic or intermittent failures in the three isolated baseline runs",
+      "failing": [
+        "[iphone-se] panel pin baseline 1: mixed pinned area ignores hover on collapsed B",
+        "[iphone-14] panel pin baseline 1: mixed pinned area ignores hover on collapsed B",
+        "[desktop] panel pin baseline 1: mixed pinned area ignores hover on collapsed B"
+      ]
+    },
+    "reskin-review.e2e.ts": {
+      "projects": [
+        "iphone-14",
+        "iphone-se"
+      ],
+      "reason": "Control C hit-target assertion failed during PR-tier verification",
+      "failing": [
+        "[iphone-14] M1 Control C is hittable and preserves terminal focus",
+        "[iphone-se] M1 Control C is hittable and preserves terminal focus"
+      ]
+    },
+    "selected-host-extensions.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ],
+      "reason": "deterministic or intermittent failures in the three isolated baseline runs",
+      "failing": [
+        "[iphone-se] real installed peer code and SDK data switch through current host without a local package or terminal replacement",
+        "[iphone-se] pending inline approval allows real peer card navigation with collapsed widgets and no stale imports",
+        "[iphone-se] expired extension credentials prompt passively while an already attached real terminal remains usable",
+        "[iphone-se] real manual and delegation grids select owning peer and exact pane scope without draft or context reuse",
+        "[iphone-14] real installed peer code and SDK data switch through current host without a local package or terminal replacement",
+        "[iphone-14] pending inline approval allows real peer card navigation with collapsed widgets and no stale imports",
+        "[iphone-14] expired extension credentials prompt passively while an already attached real terminal remains usable",
+        "[iphone-14] real manual and delegation grids select owning peer and exact pane scope without draft or context reuse",
+        "[desktop] pending inline approval allows real peer card navigation with collapsed widgets and no stale imports",
+        "[desktop] real manual and delegation grids select owning peer and exact pane scope without draft or context reuse"
+      ]
+    },
+    "session-grouping.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ],
+      "reason": "deterministic or intermittent failures in the three isolated baseline runs",
+      "failing": [
+        "[iphone-se] headerless free rows ignore obsolete collapse on drawer mixed",
+        "[iphone-se] external group refresh retains owned drawer focus",
+        "[iphone-se] full inventory groups matching nested children under their ancestor and moves only its root",
+        "[iphone-se] grouped drawer preserves accessible session lists when expanded and collapsed",
+        "[iphone-14] headerless free rows ignore obsolete collapse on drawer mixed",
+        "[iphone-14] grouped drawer preserves accessible session lists when expanded and collapsed",
+        "[desktop] served grouping assets are source-bound and grouping controls are accessible"
+      ]
+    },
+    "session-organization.e2e.ts": {
+      "projects": [
+        "desktop"
+      ],
+      "reason": "deterministic or intermittent failures in the three isolated baseline runs",
+      "failing": [
+        "[desktop] organization touch editor bounds Unicode safely and escapes group text and attributes"
+      ]
+    },
+    "session-state-visualization.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-se"
+      ],
+      "reason": "deterministic or intermittent failures in the three isolated baseline runs",
+      "failing": [
+        "[iphone-se] a delayed acknowledgement cannot clobber a newer runtime transition",
+        "[desktop] opening a terminal clears its acknowledged review change after websocket open",
+        "[desktop] a delayed acknowledgement cannot clobber a newer runtime transition"
+      ]
+    },
+    "session-switch.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ],
+      "reason": "deterministic or intermittent failures in the three isolated baseline runs",
+      "failing": [
+        "[iphone-se] mobile keyboard viewport shift does not take over terminal view transform",
+        "[iphone-14] mobile keyboard viewport shift does not take over terminal view transform",
+        "[desktop] single take-control retries with takeover attach when control_granted stalls"
+      ]
+    },
+    "terminal-caret.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ],
+      "reason": "deterministic or intermittent failures in the three isolated baseline runs",
+      "failing": [
+        "[iphone-se] single terminal has no browser caret while real PTY input and canvas cursor remain available",
+        "[iphone-14] single terminal has no browser caret while real PTY input and canvas cursor remain available",
+        "[desktop] single terminal has no browser caret while real PTY input and canvas cursor remain available"
+      ]
+    },
+    "terminal-lifecycle.e2e.ts": {
+      "projects": [
+        "desktop"
+      ],
+      "reason": "deterministic or intermittent failures in the three isolated baseline runs",
+      "failing": [
+        "[desktop] pinned sidebar transitions settle delegation grid cells before reveal"
+      ]
+    },
+    "ui-polish.e2e.ts": {
+      "projects": [
+        "desktop",
+        "iphone-14",
+        "iphone-se"
+      ],
+      "reason": "deterministic or intermittent failures in the three isolated baseline runs",
+      "failing": [
+        "[iphone-se] mobile session and terminal controls fit and expose intent",
+        "[iphone-14] mobile session and terminal controls fit and expose intent",
+        "[desktop] desktop session shell uses named controls and bounded content",
+        "[desktop] desktop first load shows the sessions overview beside a default-pinned sidebar",
+        "[desktop] desktop sidebar restores saved unpin and pin choices after reload",
+        "[desktop] desktop session creation and grid controls are visually distinct"
+      ]
+    },
+    "ux-navigation.e2e.ts": {
+      "projects": [
+        "desktop"
+      ],
+      "reason": "deterministic or intermittent failures in the three isolated baseline runs",
+      "failing": [
+        "[desktop] desktop groups structured sub-agents directly under their parent",
+        "[desktop] desktop stopping a focused child returns to its parent instead of session cards"
+      ]
+    },
+    "visual-makeover.e2e.ts": {
+      "projects": [
+        "iphone-14",
+        "iphone-se"
+      ],
+      "reason": "deterministic or intermittent failures in the three isolated baseline runs",
+      "failing": [
+        "[iphone-se] existing command dialog is centered, bounded, and remains keyboard cancellable",
+        "[iphone-14] existing command dialog is centered, bounded, and remains keyboard cancellable"
+      ]
+    },
+    "workspace-layout-broker.e2e.ts": {
+      "projects": [
+        "desktop"
+      ],
+      "reason": "deterministic or intermittent failures in the three isolated baseline runs",
+      "failing": [
+        "[desktop] Sessions docking resizes the fixed grid without replacing live terminals",
+        "[desktop] real broker desktop keyboard follows the rendered narrow vertical layout"
+      ]
+    }
+  }
+}

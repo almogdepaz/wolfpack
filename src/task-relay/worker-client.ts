@@ -3,7 +3,7 @@ import { RelayOwnerFailure, isRelayOwnerFailureData, type RelayOwnerFailureData 
 import { assertSupportedBunRuntime } from "../runtime-version.ts";
 import { types as utilTypes } from "node:util";
 import { join, resolve } from "node:path";
-import { createLogger } from "../log.ts";
+import { createLogger, errMsg } from "../log.ts";
 import { resolveWolfpackDir } from "../wolfpack-dir.ts";
 import type { RelayEndpoint } from "./domain.ts";
 import type { GatewayOptions } from "./gateway.ts";
@@ -127,10 +127,12 @@ export class WorkerRelayGateway implements RelayGateway {
       this.#worker = worker = new Worker(new URL("./worker-entry.js", import.meta.url), { workerData: configuration.value });
       this.#startupTimer = setTimeout(() => this.#fail("relay worker startup timed out"), LIMIT.startupMs);
       this.#worker.on("message", (message: WorkerMessage) => this.#message(message));
-      this.#worker.on("error", () => this.#fail("relay worker failed"));
+      this.#worker.on("error", (error: unknown) => this.#fail("relay worker failed", error));
       this.#worker.on("exit", () => { if (!this.#closed) this.#fail("relay worker exited unexpectedly"); });
       this.#worker.unref();
     } catch (error) {
+      // The owner keeps the native cause locally; callers and public replies receive only bounded codes.
+      log.warn("relay worker construction failed", { error: errMsg(error) });
       const termination = worker ? this.close().then(() => this.#terminationConfirmed) : Promise.resolve(true);
       if (!worker) this.#releaseOwner();
       throw new WorkerUnavailable(error instanceof Error ? error.message : "relay worker construction failed", { cause: error }, termination);
@@ -212,9 +214,9 @@ export class WorkerRelayGateway implements RelayGateway {
     }
   }
 
-  #fail(reason: string): void {
+  #fail(reason: string, cause?: unknown): void {
     if (this.#closed) return;
-    log.warn(reason, { recovery: this.#ownerFailure && !this.#ownerFailure.retryable
+    log.warn(reason, { ...(cause !== undefined && { error: errMsg(cause) }), recovery: this.#ownerFailure && !this.#ownerFailure.retryable
       ? "relay remains blocked; preserve evidence and consult docs/task-recovery.md; loss/reset requires explicit approval"
       : this.storage === "sqlite" ? "replace terminated worker; reopen committed journal; caller retries stable protocol identities" : "explicit rebind after volatile epoch loss" });
     void this.close();

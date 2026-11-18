@@ -204,6 +204,7 @@ test("a worker reset before the envelope was posted falls back to one typed note
     expect(watch.posted).toEqual([]);
     expect(notes).toHaveLength(1);
     expect(notes[0]).toContain("child error");
+    expect(notes[0]).not.toContain("not task completion");
   } finally {
     watch.restore();
   }
@@ -254,4 +255,5 @@ test("a relay that accepted and then reset gives one relay delivery and no typed
   await observeIdleParent();
   expect(notes).toHaveLength(1);
   expect(notes[0]).toContain("child error");
+  expect(notes[0]).not.toContain("not task completion");
 });

@@ -95,7 +95,11 @@ pub struct SessionState {
 }
 
 impl SessionState {
-    pub fn to_info(&self, output_seq: u64, program_status: Option<ProgramStatusRecord>) -> SessionInfo {
+    pub fn to_info(
+        &self,
+        output_seq: u64,
+        program_status: Option<ProgramStatusRecord>,
+    ) -> SessionInfo {
         SessionInfo {
             id: self.id,
             name: self.name.clone(),
@@ -274,7 +278,8 @@ impl Session {
         // when a caller accidentally forwards its parent's session environment.
         let id = Uuid::new_v4();
         opts.env.retain(|(key, _)| key != "WOLFPACK_SESSION_ID");
-        opts.env.push(("WOLFPACK_SESSION_ID".into(), id.to_string()));
+        opts.env
+            .push(("WOLFPACK_SESSION_ID".into(), id.to_string()));
 
         let pty_system = native_pty_system();
         let pair = pty_system
@@ -326,7 +331,9 @@ impl Session {
         fail_forced_setup_step(ForcedSetupFailure::MasterDup)?;
         let reply_fd = dup_master_fd(pair.master.as_ref())
             .map_err(|e| SpawnError::MasterDup(e.to_string()))?;
-        let fd = reply_fd.as_ref().ok_or_else(|| SpawnError::MasterNonblocking("master exposes no fd".into()))?;
+        let fd = reply_fd
+            .as_ref()
+            .ok_or_else(|| SpawnError::MasterNonblocking("master exposes no fd".into()))?;
         fd_status_flags(fd.as_fd())
             .and_then(|flags| set_fd_status_flags(fd.as_fd(), flags | libc::O_NONBLOCK))
             .map_err(|e| SpawnError::MasterNonblocking(e.to_string()))?;
@@ -370,7 +377,10 @@ impl Session {
             id,
             events.clone(),
             PROGRAM_STATUS_EVENT_INTERVAL,
-            Some(Arc::new(ForegroundWatch::new(Arc::clone(&terminal), Arc::clone(&foreground)))),
+            Some(Arc::new(ForegroundWatch::new(
+                Arc::clone(&terminal),
+                Arc::clone(&foreground),
+            ))),
         ));
         let drain_effects = DrainEffects {
             input: Arc::clone(&input),
@@ -379,13 +389,27 @@ impl Session {
         };
         let mut drain_child_killer = child.clone_killer();
         if let Err(e) = spawn_named_thread(format!("broker-pty-read-{drain_id}"), move || {
-            if let Err(error) = drain_reader(reader, drain_terminal, Arc::clone(&drain_seq), drain_bus, drain_effects) {
+            if let Err(error) = catch_reader_panic(|| {
+                drain_reader(
+                    reader,
+                    drain_terminal,
+                    Arc::clone(&drain_seq),
+                    drain_bus,
+                    drain_effects,
+                )
+            }) {
                 tracing::error!(
                     session_id = %drain_id,
                     error = %error,
                     "PTY reader failed; terminating session"
                 );
-                mark_pty_read_failed(&drain_inner, drain_id, &error, &drain_events, drain_seq.load(Ordering::SeqCst));
+                mark_pty_read_failed(
+                    &drain_inner,
+                    drain_id,
+                    &error,
+                    &drain_events,
+                    drain_seq.load(Ordering::SeqCst),
+                );
                 if let Err(kill_error) = drain_child_killer.kill() {
                     tracing::error!(
                         session_id = %drain_id,
@@ -457,7 +481,10 @@ impl Session {
 
     /// Every OSC 7501 program status record (root and children), sorted by id.
     pub fn program_status_records(&self) -> Vec<ProgramStatusRecord> {
-        self.terminal.lock().expect("terminal poisoned").program_status_records()
+        self.terminal
+            .lock()
+            .expect("terminal poisoned")
+            .program_status_records()
     }
 
     pub fn id(&self) -> Uuid {
@@ -567,8 +594,12 @@ impl Session {
         target_cols: Option<u16>,
     ) -> Result<Arc<Snapshot>, TerminalStateError> {
         self.capture_and_materialize(
-            scrollback_lines, target_cols, |_| (), RawSnapshot::materialize,
-        ).map(|(snapshot, ())| snapshot)
+            scrollback_lines,
+            target_cols,
+            |_| (),
+            RawSnapshot::materialize,
+        )
+        .map(|(snapshot, ())| snapshot)
     }
 
     /// Atomically capture terminal state and establish the replay/live cut.
@@ -610,7 +641,13 @@ impl Session {
         let captured = at_capture(seq);
         drop(term);
         let snapshot = Arc::new(materialize(raw)?);
-        self.cache_snapshot(seq, generation, scrollback_lines, target_cols, Arc::clone(&snapshot));
+        self.cache_snapshot(
+            seq,
+            generation,
+            scrollback_lines,
+            target_cols,
+            Arc::clone(&snapshot),
+        );
         Ok((snapshot, captured))
     }
 
@@ -624,9 +661,11 @@ impl Session {
             .lock()
             .expect("snapshot cache poisoned")
             .as_ref()
-            .filter(|cached| cached.seq == seq
-                && cached.scrollback_lines == scrollback_lines
-                && cached.target_cols == target_cols)
+            .filter(|cached| {
+                cached.seq == seq
+                    && cached.scrollback_lines == scrollback_lines
+                    && cached.target_cols == target_cols
+            })
             .map(|cached| Arc::clone(&cached.snapshot))
     }
 
@@ -848,7 +887,12 @@ impl PtyInput {
     }
 
     /// Synchronous backpressure without ever entering a blocking write(2).
-    fn write_blocking(&self, writer: &mut dyn Write, data: &[u8], cancelled: &AtomicBool) -> Result<(), (usize, io::Error)> {
+    fn write_blocking(
+        &self,
+        writer: &mut dyn Write,
+        data: &[u8],
+        cancelled: &AtomicBool,
+    ) -> Result<(), (usize, io::Error)> {
         if cancelled.load(Ordering::Acquire) {
             return Err((0, io::ErrorKind::Interrupted.into()));
         }
@@ -878,7 +922,11 @@ impl PtyInput {
             match writer.write(&data[count..]) {
                 Ok(0) => return Err((count, io::ErrorKind::WriteZero.into())),
                 Ok(n) => count += n,
-                Err(error) if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                    ) => {}
                 Err(error) => return Err((count, error)),
             }
         }
@@ -890,7 +938,10 @@ impl PtyInput {
             return;
         }
         {
-            let mut pending = self.pending_replies.lock().expect("pending replies poisoned");
+            let mut pending = self
+                .pending_replies
+                .lock()
+                .expect("pending replies poisoned");
             if pending.bytes() + reply.len() > MAX_PENDING_REPLY_BYTES {
                 tracing::debug!(session_id = %self.session_id, "too many pending program status query replies; dropped one");
                 return;
@@ -901,7 +952,12 @@ impl PtyInput {
     }
 
     fn flush_replies_if_idle(&self, mode: ReplyWrite) {
-        if self.pending_replies.lock().expect("pending replies poisoned").is_empty() {
+        if self
+            .pending_replies
+            .lock()
+            .expect("pending replies poisoned")
+            .is_empty()
+        {
             return;
         }
         // Busy: the current holder flushes after its write and re-checks
@@ -913,20 +969,32 @@ impl PtyInput {
 
     /// Caller holds the writer.
     fn flush_replies(&self, writer: &mut Box<dyn Write + Send>, mode: ReplyWrite) {
-        let replies = std::mem::take(&mut *self.pending_replies.lock().expect("pending replies poisoned"));
+        let replies = std::mem::take(
+            &mut *self
+                .pending_replies
+                .lock()
+                .expect("pending replies poisoned"),
+        );
         if replies.is_empty() {
             return;
         }
         let batch = replies.batch();
         let written = match mode {
             ReplyWrite::NonBlocking => write_counting(writer, &batch),
-            ReplyWrite::Blocking(cancelled) => self.write_blocking(writer.as_mut(), &batch, cancelled),
+            ReplyWrite::Blocking(cancelled) => {
+                self.write_blocking(writer.as_mut(), &batch, cancelled)
+            }
         };
         // Best effort, like the probe itself: a dropped or failed reply only
         // means the program sees the protocol as unsupported.
         match written {
             Ok(()) => {}
-            Err((count, error)) if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) => {
+            Err((count, error))
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) =>
+            {
                 self.requeue_cut_reply(&replies, count);
                 tracing::debug!(
                     session_id = %self.session_id,
@@ -949,7 +1017,10 @@ impl PtyInput {
         let Some(tail) = replies.cut_tail(count) else {
             return;
         };
-        let mut pending = self.pending_replies.lock().expect("pending replies poisoned");
+        let mut pending = self
+            .pending_replies
+            .lock()
+            .expect("pending replies poisoned");
         while !pending.whole.is_empty() && pending.bytes() + tail.len() > MAX_PENDING_REPLY_BYTES {
             pending.whole.pop();
             tracing::debug!(session_id = %self.session_id, "too many pending program status query replies; dropped one");
@@ -1047,7 +1118,12 @@ struct PublisherState {
 }
 
 impl ProgramStatusPublisher {
-    fn new(session_id: Uuid, events: EventSender, interval: Duration, watch: Option<Arc<ForegroundWatch>>) -> Self {
+    fn new(
+        session_id: Uuid,
+        events: EventSender,
+        interval: Duration,
+        watch: Option<Arc<ForegroundWatch>>,
+    ) -> Self {
         Self {
             session_id,
             events,
@@ -1058,7 +1134,12 @@ impl ProgramStatusPublisher {
     }
 
     fn root(&self) -> Option<ProgramStatusRecord> {
-        self.shared.0.lock().expect("program status poisoned").root.clone()
+        self.shared
+            .0
+            .lock()
+            .expect("program status poisoned")
+            .root
+            .clone()
     }
 
     /// Record a changed root and schedule its event.
@@ -1140,10 +1221,14 @@ impl ProgramStatusPublisher {
                                 state = wake.wait(state).expect("program status poisoned");
                                 continue;
                             };
-                            let due = *next_check.get_or_insert_with(|| Instant::now() + FOREGROUND_CHECK_INTERVAL);
+                            let due = *next_check
+                                .get_or_insert_with(|| Instant::now() + FOREGROUND_CHECK_INTERVAL);
                             let now = Instant::now();
                             if now < due {
-                                state = wake.wait_timeout(state, due - now).expect("program status poisoned").0;
+                                state = wake
+                                    .wait_timeout(state, due - now)
+                                    .expect("program status poisoned")
+                                    .0;
                                 continue;
                             }
                             next_check = None;
@@ -1159,7 +1244,10 @@ impl ProgramStatusPublisher {
                         state.dirty = false;
                         state.root.clone()
                     };
-                    let _ = events.send(Event::ProgramStatusChanged { session_id, program_status: root });
+                    let _ = events.send(Event::ProgramStatusChanged {
+                        session_id,
+                        program_status: root,
+                    });
                     // Hold later changes for the interval; closing cuts the
                     // wait short so a pending change flushes promptly.
                     let state = lock.lock().expect("program status poisoned");
@@ -1188,7 +1276,11 @@ struct ForegroundGroup {
 
 impl ForegroundGroup {
     fn new(session_id: Uuid, fd: Option<OwnedFd>) -> Self {
-        Self { session_id, fd, unreadable_logged: AtomicBool::new(false) }
+        Self {
+            session_id,
+            fd,
+            unreadable_logged: AtomicBool::new(false),
+        }
     }
 
     /// `None` when the platform or PTY does not report one.
@@ -1261,7 +1353,8 @@ fn drop_if_reporter_left(
     let Some(reporter) = term.watched_program_status_group() else {
         return false;
     };
-    reporter_left_foreground(reporter, foreground, group_exists) && term.drop_transient_program_status()
+    reporter_left_foreground(reporter, foreground, group_exists)
+        && term.drop_transient_program_status()
 }
 
 /// An unreadable foreground keeps the records (no new information). A
@@ -1300,7 +1393,11 @@ enum ReplyWrite<'a> {
 /// One bounded readiness wait. EINTR returns to the caller so it can also
 /// re-check lifecycle state rather than extending the wait indefinitely.
 fn poll_fd(fd: BorrowedFd<'_>, events: libc::c_short) -> io::Result<libc::c_short> {
-    let mut pollfd = libc::pollfd { fd: fd.as_raw_fd(), events, revents: 0 };
+    let mut pollfd = libc::pollfd {
+        fd: fd.as_raw_fd(),
+        events,
+        revents: 0,
+    };
     // SAFETY: pollfd points to one initialized entry and fd stays borrowed.
     let result = unsafe { libc::poll(&mut pollfd, 1, PTY_POLL_TIMEOUT_MS) };
     if result < 0 {
@@ -1355,6 +1452,15 @@ fn drain_reader_with_terminal<R: Read, T: TerminalFeed>(
     bus: Arc<OutputBus>,
     effects: &DrainEffects,
 ) -> io::Result<()> {
+    // Signal "drainer done; every byte produced has been ingested" so
+    // attached subscribers see Closed and sync waiters wake up.
+    struct CloseBusOnDrop(Arc<OutputBus>);
+    impl Drop for CloseBusOnDrop {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _close_bus = CloseBusOnDrop(Arc::clone(&bus));
     let mut buf = [0u8; 8192];
     let outcome = loop {
         if bus.is_closed() {
@@ -1393,7 +1499,9 @@ fn drain_reader_with_terminal<R: Read, T: TerminalFeed>(
                         effects.program_status.update(term.program_status_root());
                     }
                     if outcome.program_status_changed || outcome.program_status_reported {
-                        effects.program_status.set_watching(term.watched_program_status_group().is_some());
+                        effects
+                            .program_status
+                            .set_watching(term.watched_program_status_group().is_some());
                     }
                     // Publish before releasing the terminal lock. Atomic
                     // snapshot+subscribe takes the same terminal→bus order,
@@ -1430,10 +1538,13 @@ fn drain_reader_with_terminal<R: Read, T: TerminalFeed>(
             Err(error) => break Err(error),
         }
     };
-    // Signal "drainer done; every byte produced has been ingested" so
-    // attached subscribers see Closed and sync waiters wake up.
-    bus.close();
     outcome
+}
+
+/// Converts a reader-thread panic into an error so the session is marked failed and the child is killed.
+fn catch_reader_panic(read: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(read))
+        .unwrap_or_else(|_| Err(io::Error::other("PTY reader panicked")))
 }
 
 fn mark_pty_read_failed(
@@ -1485,7 +1596,10 @@ where
             ));
         }
     }
-    thread::Builder::new().name(name).stack_size(512 * 1024).spawn(f)
+    thread::Builder::new()
+        .name(name)
+        .stack_size(512 * 1024)
+        .spawn(f)
 }
 
 #[cfg(test)]
@@ -1638,6 +1752,14 @@ mod tests {
         }
     }
 
+    struct TerminalFeedPanic;
+
+    impl TerminalFeed for TerminalFeedPanic {
+        fn try_feed_chunk(&mut self, _data: &[u8]) -> Result<FeedOutcome, TerminalStateError> {
+            panic!("terminal feed panicked");
+        }
+    }
+
     struct TerminalFeedFailure;
 
     impl TerminalFeed for TerminalFeedFailure {
@@ -1658,7 +1780,10 @@ mod tests {
 
     impl Write for CapturedWrites {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.0.lock().expect("captured writes").extend_from_slice(buf);
+            self.0
+                .lock()
+                .expect("captured writes")
+                .extend_from_slice(buf);
             Ok(buf.len())
         }
 
@@ -1672,7 +1797,12 @@ mod tests {
         let (events, receiver) = broadcast::channel(16);
         let effects = DrainEffects {
             input: Arc::new(PtyInput::new(Uuid::nil(), Box::new(writes.clone()), None)),
-            program_status: Arc::new(ProgramStatusPublisher::new(Uuid::nil(), events, Duration::from_secs(1), None)),
+            program_status: Arc::new(ProgramStatusPublisher::new(
+                Uuid::nil(),
+                events,
+                Duration::from_secs(1),
+                None,
+            )),
             foreground: Arc::new(ForegroundGroup::new(Uuid::nil(), None)),
         };
         (effects, writes, receiver)
@@ -1691,8 +1821,18 @@ mod tests {
     }
 
     impl GatedWrites {
-        fn new(captured: CapturedWrites, entered: std::sync::mpsc::Sender<()>, gate: Arc<(Mutex<bool>, Condvar)>) -> Self {
-            Self { captured, entered, gate, budget: Arc::new(Mutex::new(None)), on_write: None }
+        fn new(
+            captured: CapturedWrites,
+            entered: std::sync::mpsc::Sender<()>,
+            gate: Arc<(Mutex<bool>, Condvar)>,
+        ) -> Self {
+            Self {
+                captured,
+                entered,
+                gate,
+                budget: Arc::new(Mutex::new(None)),
+                on_write: None,
+            }
         }
     }
 
@@ -1739,21 +1879,34 @@ mod tests {
         let gate = Arc::new((Mutex::new(false), Condvar::new()));
         let input = Arc::new(PtyInput::new(
             Uuid::nil(),
-            Box::new(GatedWrites::new(captured.clone(), entered_tx, Arc::clone(&gate))),
+            Box::new(GatedWrites::new(
+                captured.clone(),
+                entered_tx,
+                Arc::clone(&gate),
+            )),
             None,
         ));
         let client = Arc::clone(&input);
         let typing = thread::spawn(move || client.write_input(b"typed").expect("client write"));
-        entered_rx.recv_timeout(Duration::from_secs(2)).expect("client write in flight");
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("client write in flight");
 
         let started = std::time::Instant::now();
         input.send_reply(b"\x1b]7501;?\x07");
-        assert!(started.elapsed() < Duration::from_millis(100), "reply waited for the client write");
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "reply waited for the client write"
+        );
         assert!(captured.bytes().is_empty());
 
         open_gate(&gate);
         typing.join().expect("client thread");
-        assert_eq!(captured.bytes(), b"typed\x1b]7501;?\x07", "queued reply follows the client write");
+        assert_eq!(
+            captured.bytes(),
+            b"typed\x1b]7501;?\x07",
+            "queued reply follows the client write"
+        );
 
         // With the writer free, a reply is written immediately.
         input.send_reply(b"\x1b]7501;?\x1b\\");
@@ -1767,12 +1920,18 @@ mod tests {
         let gate = Arc::new((Mutex::new(false), Condvar::new()));
         let input = Arc::new(PtyInput::new(
             Uuid::nil(),
-            Box::new(GatedWrites::new(captured.clone(), entered_tx, Arc::clone(&gate))),
+            Box::new(GatedWrites::new(
+                captured.clone(),
+                entered_tx,
+                Arc::clone(&gate),
+            )),
             None,
         ));
         let client = Arc::clone(&input);
         let typing = thread::spawn(move || client.write_input(b"typed").expect("client write"));
-        entered_rx.recv_timeout(Duration::from_secs(2)).expect("client write in flight");
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("client write in flight");
 
         // The program floods queries while the client write holds the writer.
         let fits = MAX_PENDING_REPLY_BYTES / QUERY_REPLY_BEL.len();
@@ -1787,8 +1946,15 @@ mod tests {
             expected.extend_from_slice(QUERY_REPLY_BEL);
         }
         assert!(fits * QUERY_REPLY_BEL.len() <= MAX_PENDING_REPLY_BYTES);
-        assert_eq!(captured.bytes(), expected, "exactly the replies within the bound, each whole");
-        assert!(input.pending_replies.lock().expect("pending").is_empty(), "nothing left queued");
+        assert_eq!(
+            captured.bytes(),
+            expected,
+            "exactly the replies within the bound, each whole"
+        );
+        assert!(
+            input.pending_replies.lock().expect("pending").is_empty(),
+            "nothing left queued"
+        );
     }
 
     #[test]
@@ -1801,7 +1967,9 @@ mod tests {
         let input = Arc::new(PtyInput::new(Uuid::nil(), Box::new(writes), None));
         let client = Arc::clone(&input);
         let typing = thread::spawn(move || client.write_input(b"typed").expect("client write"));
-        entered_rx.recv_timeout(Duration::from_secs(2)).expect("client write in flight");
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("client write in flight");
 
         // Two replies queue behind the client write. The program's input queue
         // then takes the client's 5 bytes and only 5 bytes of the reply batch.
@@ -1810,7 +1978,11 @@ mod tests {
         *budget.lock().expect("budget") = Some(b"typed".len() + 5);
         open_gate(&gate);
         typing.join().expect("client thread");
-        assert_eq!(captured.bytes(), b"typed\x1b]750", "the queue accepted a partial first reply");
+        assert_eq!(
+            captured.bytes(),
+            b"typed\x1b]750",
+            "the queue accepted a partial first reply"
+        );
 
         // The program reads again. Its parser is inside an OSC, so the cut
         // reply's tail must land before any further client input; the whole
@@ -1831,7 +2003,10 @@ mod tests {
         for _ in 0..fits {
             input.send_reply(QUERY_REPLY_BEL);
         }
-        assert_eq!(input.pending_replies.lock().expect("pending").whole.len(), fits);
+        assert_eq!(
+            input.pending_replies.lock().expect("pending").whole.len(),
+            fits
+        );
 
         // A batch holding one reply was cut after its ESC: the 8-byte tail
         // does not fit beside the queue, so one whole reply makes room.
@@ -1841,7 +2016,11 @@ mod tests {
         {
             let pending = input.pending_replies.lock().expect("pending");
             assert_eq!(pending.tail, QUERY_REPLY_BEL[1..].to_vec());
-            assert_eq!(pending.whole.len(), fits - 1, "one whole reply dropped, never half");
+            assert_eq!(
+                pending.whole.len(),
+                fits - 1,
+                "one whole reply dropped, never half"
+            );
             assert!(pending.bytes() <= MAX_PENDING_REPLY_BYTES);
         }
 
@@ -1852,7 +2031,11 @@ mod tests {
             expected.extend_from_slice(QUERY_REPLY_BEL);
         }
         expected.extend_from_slice(b"more");
-        assert_eq!(captured.bytes(), expected, "tail first, then whole replies, then the client input");
+        assert_eq!(
+            captured.bytes(),
+            expected,
+            "tail first, then whole replies, then the client input"
+        );
     }
 
     #[test]
@@ -1870,7 +2053,12 @@ mod tests {
             if !buf.starts_with(b"\x1b") {
                 return;
             }
-            if let Some(input) = hook_sender.lock().expect("late sender").take().and_then(|weak| weak.upgrade()) {
+            if let Some(input) = hook_sender
+                .lock()
+                .expect("late sender")
+                .take()
+                .and_then(|weak| weak.upgrade())
+            {
                 input.send_reply(b"\x1b]7501;?\x1b\\");
             }
         }));
@@ -1879,7 +2067,9 @@ mod tests {
 
         let client = Arc::clone(&input);
         let typing = thread::spawn(move || client.write_input(b"typed").expect("client write"));
-        entered_rx.recv_timeout(Duration::from_secs(2)).expect("client write in flight");
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("client write in flight");
         input.send_reply(QUERY_REPLY_BEL);
         open_gate(&gate);
         typing.join().expect("client thread");
@@ -1907,14 +2097,48 @@ mod tests {
     }
 
     #[test]
+    fn reader_panic_becomes_an_error() {
+        let error =
+            catch_reader_panic(|| panic!("x")).expect_err("reader panic must become an error");
+        assert_eq!(error.to_string(), "PTY reader panicked");
+        assert!(catch_reader_panic(|| Ok(())).is_ok());
+    }
+
+    #[test]
+    fn drainer_panic_closes_the_output_bus() {
+        let bus = OutputBus::with_defaults();
+        let (effects, _writes, _events) = test_drain_effects();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            drain_reader_with_terminal(
+                ChunkReader {
+                    chunks: [b"x".as_slice()].into(),
+                },
+                Arc::new(Mutex::new(TerminalFeedPanic)),
+                Arc::new(AtomicU64::new(0)),
+                Arc::clone(&bus),
+                &effects,
+            )
+        }));
+        assert!(result.is_err(), "the double must panic");
+        assert!(
+            bus.is_closed(),
+            "a panicking drainer must still close the bus"
+        );
+    }
+
+    #[test]
     fn drainer_writes_only_the_program_status_reply_back_to_the_pty() {
-        let terminal = Arc::new(Mutex::new(TerminalState::try_new(80, 24).expect("terminal init")));
+        let terminal = Arc::new(Mutex::new(
+            TerminalState::try_new(80, 24).expect("terminal init"),
+        ));
         let bus = OutputBus::with_defaults();
         let (effects, writes, _events) = test_drain_effects();
         // The emitters' probe: 7501 query then DA1; plus DSR and XTVERSION.
         let probe: &'static [u8] = b"\x1b]7501;?\x1b\\\x1b[c\x1b[6n\x1b[>q";
         drain_reader_with_terminal(
-            ChunkReader { chunks: [probe].into() },
+            ChunkReader {
+                chunks: [probe].into(),
+            },
             terminal,
             Arc::new(AtomicU64::new(0)),
             Arc::clone(&bus),
@@ -1925,15 +2149,25 @@ mod tests {
         assert_eq!(writes.bytes(), b"\x1b]7501;?\x1b\\");
         // Byte fidelity: the query stays in the published output stream.
         let replay = bus.subscribe(Some(0)).replay;
-        assert_eq!(replay.iter().flat_map(|chunk| chunk.data.iter().copied()).collect::<Vec<_>>(), probe);
+        assert_eq!(
+            replay
+                .iter()
+                .flat_map(|chunk| chunk.data.iter().copied())
+                .collect::<Vec<_>>(),
+            probe
+        );
     }
 
     #[test]
     fn drainer_writes_nothing_for_device_attribute_and_status_queries() {
-        let terminal = Arc::new(Mutex::new(TerminalState::try_new(80, 24).expect("terminal init")));
+        let terminal = Arc::new(Mutex::new(
+            TerminalState::try_new(80, 24).expect("terminal init"),
+        ));
         let (effects, writes, mut events) = test_drain_effects();
         drain_reader_with_terminal(
-            ChunkReader { chunks: [&b"\x1b[c\x1b[>c\x1b[5n\x1b[6n\x1b[>q\x1b[?1$p"[..]].into() },
+            ChunkReader {
+                chunks: [&b"\x1b[c\x1b[>c\x1b[5n\x1b[6n\x1b[>q\x1b[?1$p"[..]].into(),
+            },
             terminal,
             Arc::new(AtomicU64::new(0)),
             OutputBus::with_defaults(),
@@ -1941,14 +2175,23 @@ mod tests {
         )
         .expect("drain");
 
-        assert!(writes.bytes().is_empty(), "broker must not answer: {:?}", writes.bytes());
+        assert!(
+            writes.bytes().is_empty(),
+            "broker must not answer: {:?}",
+            writes.bytes()
+        );
         effects.program_status.close();
-        assert!(events.try_recv().is_err(), "no program status event without a report");
+        assert!(
+            events.try_recv().is_err(),
+            "no program status event without a report"
+        );
     }
 
     #[test]
     fn drainer_publishes_record_changes_ending_on_the_latest_root() {
-        let terminal = Arc::new(Mutex::new(TerminalState::try_new(80, 24).expect("terminal init")));
+        let terminal = Arc::new(Mutex::new(
+            TerminalState::try_new(80, 24).expect("terminal init"),
+        ));
         let (effects, writes, mut events) = test_drain_effects();
         drain_reader_with_terminal(
             ChunkReader {
@@ -1966,7 +2209,11 @@ mod tests {
             &effects,
         )
         .expect("drain");
-        assert_eq!(effects.program_status.root(), None, "the cached root follows every chunk");
+        assert_eq!(
+            effects.program_status.root(),
+            None,
+            "the cached root follows every chunk"
+        );
         effects.program_status.close();
 
         let mut roots = Vec::new();
@@ -1978,10 +2225,16 @@ mod tests {
         }
         // Paced: the leading event saw whichever root was current when the
         // pacer ran; the clear is always the final event.
-        assert!(matches!(roots.as_slice(), [None] | [Some(_), None]), "{roots:?}");
+        assert!(
+            matches!(roots.as_slice(), [None] | [Some(_), None]),
+            "{roots:?}"
+        );
         if let [Some(root), None] = roots.as_slice() {
             assert_eq!(root.state, crate::protocol::ProgramStatusState::Blocked);
-            assert_eq!(root.kind, Some(crate::protocol::ProgramStatusKind::Question));
+            assert_eq!(
+                root.kind,
+                Some(crate::protocol::ProgramStatusKind::Question)
+            );
         }
         assert!(writes.bytes().is_empty(), "reports are never echoed");
     }
@@ -1999,7 +2252,10 @@ mod tests {
         })
     }
 
-    fn next_root(events: &mut broadcast::Receiver<Event>, within: Duration) -> Option<Option<crate::protocol::ProgramStatusState>> {
+    fn next_root(
+        events: &mut broadcast::Receiver<Event>,
+        within: Duration,
+    ) -> Option<Option<crate::protocol::ProgramStatusState>> {
         let deadline = std::time::Instant::now() + within;
         loop {
             match events.try_recv() {
@@ -2007,7 +2263,9 @@ mod tests {
                     return Some(program_status.map(|record| record.state))
                 }
                 Ok(other) => panic!("unexpected {other:?}"),
-                Err(_) if std::time::Instant::now() < deadline => thread::sleep(Duration::from_millis(5)),
+                Err(_) if std::time::Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(5))
+                }
                 Err(_) => return None,
             }
         }
@@ -2017,24 +2275,48 @@ mod tests {
     fn publisher_sends_the_first_change_at_once_and_coalesces_the_rest_to_the_latest() {
         use crate::protocol::ProgramStatusState::{Blocked, Done, Working};
         let (events, mut rx) = broadcast::channel(16);
-        let publisher = ProgramStatusPublisher::new(Uuid::nil(), events, Duration::from_millis(400), None);
+        let publisher =
+            ProgramStatusPublisher::new(Uuid::nil(), events, Duration::from_millis(400), None);
 
         publisher.update(record(Working));
-        assert_eq!(next_root(&mut rx, Duration::from_millis(150)), Some(Some(Working)), "leading edge");
+        assert_eq!(
+            next_root(&mut rx, Duration::from_millis(150)),
+            Some(Some(Working)),
+            "leading edge"
+        );
         publisher.update(record(Blocked));
         publisher.update(record(Done));
         assert_eq!(publisher.root().map(|record| record.state), Some(Done));
-        assert_eq!(next_root(&mut rx, Duration::from_millis(150)), None, "held for the interval");
-        assert_eq!(next_root(&mut rx, Duration::from_secs(1)), Some(Some(Done)), "trailing edge carries the latest");
-        assert_eq!(next_root(&mut rx, Duration::from_millis(500)), None, "one trailing event");
+        assert_eq!(
+            next_root(&mut rx, Duration::from_millis(150)),
+            None,
+            "held for the interval"
+        );
+        assert_eq!(
+            next_root(&mut rx, Duration::from_secs(1)),
+            Some(Some(Done)),
+            "trailing edge carries the latest"
+        );
+        assert_eq!(
+            next_root(&mut rx, Duration::from_millis(500)),
+            None,
+            "one trailing event"
+        );
 
         // A change held by the interval flushes promptly on close; afterwards
         // updates go out at once.
         publisher.update(record(Working));
-        assert_eq!(next_root(&mut rx, Duration::from_millis(150)), Some(Some(Working)));
+        assert_eq!(
+            next_root(&mut rx, Duration::from_millis(150)),
+            Some(Some(Working))
+        );
         publisher.update(record(Blocked));
         publisher.close();
-        assert_eq!(next_root(&mut rx, Duration::from_millis(50)), Some(Some(Blocked)), "flushed on close");
+        assert_eq!(
+            next_root(&mut rx, Duration::from_millis(50)),
+            Some(Some(Blocked)),
+            "flushed on close"
+        );
         publisher.update(None);
         assert_eq!(next_root(&mut rx, Duration::from_millis(50)), Some(None));
     }
@@ -2225,7 +2507,11 @@ mod tests {
     fn spawn_injects_its_own_uuid_and_overrides_supplied_identity() {
         let mut previous = None;
         for _ in 0..2 {
-            let mut options = opts(vec!["/bin/sh", "-c", "printf '%s' \"$WOLFPACK_SESSION_ID\""]);
+            let mut options = opts(vec![
+                "/bin/sh",
+                "-c",
+                "printf '%s' \"$WOLFPACK_SESSION_ID\"",
+            ]);
             options.env = vec![
                 ("WOLFPACK_SESSION_ID".into(), "parent-session-id".into()),
                 ("WOLFPACK_SESSION_ID".into(), "caller-override".into()),
@@ -2301,7 +2587,11 @@ mod tests {
             );
             if failure == ForcedSetupFailure::MasterDup {
                 assert!(matches!(err, SpawnError::MasterDup(_)), "{err:?}");
-                assert!(err.to_string().starts_with("PTY master fd duplication failed"), "{err}");
+                assert!(
+                    err.to_string()
+                        .starts_with("PTY master fd duplication failed"),
+                    "{err}"
+                );
             }
             let (spawned_pid, reaped_pid) = take_cleanup_observation_for_test();
             assert_eq!(reaped_pid, spawned_pid, "{failure:?} must reap its child");
@@ -2385,20 +2675,27 @@ mod tests {
             let probe_observed = Arc::clone(&observed);
             crate::terminal_state::CONVERSION_PROBE.with(|probe| {
                 *probe.borrow_mut() = Some(Box::new(move || {
-                    assert!(terminal.try_lock().is_ok(), "styled conversion holds terminal lock");
+                    assert!(
+                        terminal.try_lock().is_ok(),
+                        "styled conversion holds terminal lock"
+                    );
                     probe_observed.fetch_add(1, Ordering::SeqCst);
                 }));
             });
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 if subscribe {
-                    sess.snapshot_and_subscribe(None, Some(40)).expect("snapshot subscribe");
+                    sess.snapshot_and_subscribe(None, Some(40))
+                        .expect("snapshot subscribe");
                 } else {
                     sess.snapshot_terminal(None, Some(40)).expect("snapshot");
                 }
             }));
             crate::terminal_state::CONVERSION_PROBE.with(|probe| *probe.borrow_mut() = None);
             assert!(result.is_ok(), "conversion must release terminal lock");
-            assert!(observed.load(Ordering::SeqCst) > 0, "probe must exercise real conversion");
+            assert!(
+                observed.load(Ordering::SeqCst) > 0,
+                "probe must exercise real conversion"
+            );
         }
     }
 
@@ -2406,44 +2703,59 @@ mod tests {
     fn output_advances_during_materialization_and_atomic_subscription_retains_it() {
         let sess = spawn_session(opts(vec!["cat"])).expect("spawn");
         let mut observer = sess.output_bus().subscribe(None);
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
         let marker = b"POST-CAPTURE";
-        let (snapshot, mut sub) = sess.capture_and_materialize(None, None,
-            |seq| sess.bus.subscribe(Some(seq)),
-            |raw| {
-                // This is the actual materialization boundary, not a delay:
-                // require the real PTY drainer to publish before allowing
-                // conversion to finish. Holding the terminal lock deadlocks.
-                sess.write_stdin(b"POST-CAPTURE\n").expect("input");
-                runtime.block_on(async {
-                    tokio::time::timeout(Duration::from_secs(5), async {
-                        let mut bytes = Vec::new();
-                        loop {
-                            let chunk = observer.receiver.recv().await.expect("live output");
-                            bytes.extend_from_slice(&chunk.data);
-                            if bytes.windows(marker.len()).any(|w| w == marker) {
-                                break;
-                            }
-                        }
-                    }).await
-                }).expect("drainer blocked during materialization");
-                raw.materialize()
-            }).expect("snapshot and subscription");
+        let (snapshot, mut sub) = sess
+            .capture_and_materialize(
+                None,
+                None,
+                |seq| sess.bus.subscribe(Some(seq)),
+                |raw| {
+                    // This is the actual materialization boundary, not a delay:
+                    // require the real PTY drainer to publish before allowing
+                    // conversion to finish. Holding the terminal lock deadlocks.
+                    sess.write_stdin(b"POST-CAPTURE\n").expect("input");
+                    runtime
+                        .block_on(async {
+                            tokio::time::timeout(Duration::from_secs(5), async {
+                                let mut bytes = Vec::new();
+                                loop {
+                                    let chunk =
+                                        observer.receiver.recv().await.expect("live output");
+                                    bytes.extend_from_slice(&chunk.data);
+                                    if bytes.windows(marker.len()).any(|w| w == marker) {
+                                        break;
+                                    }
+                                }
+                            })
+                            .await
+                        })
+                        .expect("drainer blocked during materialization");
+                    raw.materialize()
+                },
+            )
+            .expect("snapshot and subscription");
         assert!(!screen_contains(&snapshot, "POST-CAPTURE"));
         assert_eq!(sub.current_seq, snapshot.seq);
-        runtime.block_on(async {
-            tokio::time::timeout(Duration::from_secs(5), async {
-                let mut bytes = Vec::new();
-                loop {
-                    let chunk = sub.receiver.recv().await.expect("atomic live output");
-                    assert!(chunk.seq > snapshot.seq);
-                    bytes.extend_from_slice(&chunk.data);
-                    if bytes.windows(marker.len()).any(|w| w == marker) {
-                        break;
+        runtime
+            .block_on(async {
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    let mut bytes = Vec::new();
+                    loop {
+                        let chunk = sub.receiver.recv().await.expect("atomic live output");
+                        assert!(chunk.seq > snapshot.seq);
+                        bytes.extend_from_slice(&chunk.data);
+                        if bytes.windows(marker.len()).any(|w| w == marker) {
+                            break;
+                        }
                     }
-                }
-            }).await
-        }).expect("post-capture bytes lost");
+                })
+                .await
+            })
+            .expect("post-capture bytes lost");
         let _ = sess.kill(libc::SIGKILL);
         assert!(sess.wait_for_exit(Duration::from_secs(5)));
     }
@@ -2452,13 +2764,27 @@ mod tests {
     fn resize_during_materialization_cannot_repopulate_stale_cache() {
         let (events, _) = broadcast::channel(16);
         let sess = spawn_session(opts(vec!["sleep", "30"])).expect("spawn");
-        let (before, ()) = sess.capture_and_materialize(None, None, |_| (), |raw| {
-            sess.resize(132, 50, &events).expect("resize during conversion");
-            raw.materialize()
-        }).expect("captured snapshot");
+        let (before, ()) = sess
+            .capture_and_materialize(
+                None,
+                None,
+                |_| (),
+                |raw| {
+                    sess.resize(132, 50, &events)
+                        .expect("resize during conversion");
+                    raw.materialize()
+                },
+            )
+            .expect("captured snapshot");
         assert_eq!((before.cols, before.rows), (80, 24));
-        assert!(sess.snapshot_cache.lock().expect("snapshot cache poisoned").is_none());
-        let after = sess.snapshot_terminal(None, None).expect("post-resize snapshot");
+        assert!(sess
+            .snapshot_cache
+            .lock()
+            .expect("snapshot cache poisoned")
+            .is_none());
+        let after = sess
+            .snapshot_terminal(None, None)
+            .expect("post-resize snapshot");
         assert_eq!(after.seq, before.seq, "resize does not advance output seq");
         assert_eq!((after.cols, after.rows), (132, 50));
         let repeated = sess.snapshot_terminal(None, None).expect("cache hit");
@@ -2471,9 +2797,16 @@ mod tests {
     fn repeated_snapshot_key_reuses_immutable_cache_without_deep_copying() {
         let sess = spawn_session(opts(vec!["printf", "cached"])).expect("spawn");
         assert!(sess.output_bus().wait_closed(Duration::from_secs(5)));
-        let first = sess.snapshot_terminal(Some(10), Some(80)).expect("snapshot");
-        let second = sess.snapshot_terminal(Some(10), Some(80)).expect("cached snapshot");
-        assert!(Arc::ptr_eq(&first, &second), "cache hit must share the snapshot graph");
+        let first = sess
+            .snapshot_terminal(Some(10), Some(80))
+            .expect("snapshot");
+        let second = sess
+            .snapshot_terminal(Some(10), Some(80))
+            .expect("cached snapshot");
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "cache hit must share the snapshot graph"
+        );
         let cache = sess.snapshot_cache.lock().expect("snapshot cache poisoned");
         let cached = cache.as_ref().expect("snapshot should be cached");
         assert!(Arc::ptr_eq(&first, &cached.snapshot));
@@ -2496,9 +2829,22 @@ mod tests {
         drop(first);
         drop(second);
         drop(caller_copy);
-        let replacement = sess.snapshot_terminal(Some(9), Some(80)).expect("different key materializes replacement");
-        assert!(old.upgrade().is_none(), "replaced cache must not retain old graph");
-        assert_eq!(sess.snapshot_cache.lock().expect("snapshot cache poisoned").as_ref().unwrap().seq, replacement.seq);
+        let replacement = sess
+            .snapshot_terminal(Some(9), Some(80))
+            .expect("different key materializes replacement");
+        assert!(
+            old.upgrade().is_none(),
+            "replaced cache must not retain old graph"
+        );
+        assert_eq!(
+            sess.snapshot_cache
+                .lock()
+                .expect("snapshot cache poisoned")
+                .as_ref()
+                .unwrap()
+                .seq,
+            replacement.seq
+        );
     }
 
     #[test]
@@ -2514,8 +2860,14 @@ mod tests {
         sess.write_stdin(b"SECOND\\n").expect("write second marker");
         wait_for_bus_quiet(&sess, Duration::from_millis(100), Duration::from_secs(5));
         let second = sess.snapshot_terminal(None, None).expect("second snapshot");
-        assert!(second.seq > first_seq, "new terminal output must advance the cache key");
-        assert!(old.upgrade().is_none(), "new cache entry must release unheld prior graph");
+        assert!(
+            second.seq > first_seq,
+            "new terminal output must advance the cache key"
+        );
+        assert!(
+            old.upgrade().is_none(),
+            "new cache entry must release unheld prior graph"
+        );
 
         let _ = sess.kill(libc::SIGKILL);
         let _ = sess.wait_for_exit(Duration::from_secs(5));
@@ -2545,8 +2897,13 @@ mod tests {
         let _ = sess.wait_for_exit(Duration::from_secs(5));
 
         let info = sess.info();
-        let output_seq = info.output_seq.expect("new broker session info must include output_seq");
-        assert_ne!(output_seq, "0", "session info must expose ingested PTY output");
+        let output_seq = info
+            .output_seq
+            .expect("new broker session info must include output_seq");
+        assert_ne!(
+            output_seq, "0",
+            "session info must expose ingested PTY output"
+        );
         assert_eq!(output_seq, sess.output_bus().current_seq().to_string());
     }
 
@@ -2720,7 +3077,10 @@ mod tests {
         .expect_err("PTY resize failure must abort transaction");
 
         assert!(matches!(error, ResizeError::Pty(_)));
-        assert!(cached_weak.upgrade().is_some(), "failed resize must retain valid cache");
+        assert!(
+            cached_weak.upgrade().is_some(),
+            "failed resize must retain valid cache"
+        );
         assert!(cache.lock().expect("snapshot cache poisoned").is_some());
         assert_eq!(pty.calls, vec![(132, 50)]);
         let terminal = terminal.lock().expect("terminal poisoned");
@@ -2765,12 +3125,17 @@ mod tests {
         let sess = spawn_session(opts(vec!["sleep", "30"])).expect("spawn");
         let before = sess.snapshot();
         assert_eq!((before.cols, before.rows), (80, 24));
-        let stale = sess.snapshot_terminal(None, None).expect("snapshot before resize");
+        let stale = sess
+            .snapshot_terminal(None, None)
+            .expect("snapshot before resize");
         let stale_weak = Arc::downgrade(&stale);
         drop(stale);
 
         sess.resize(132, 50, &test_events()).expect("resize ok");
-        assert!(stale_weak.upgrade().is_none(), "successful resize must release cache ownership");
+        assert!(
+            stale_weak.upgrade().is_none(),
+            "successful resize must release cache ownership"
+        );
 
         let after = sess.snapshot();
         assert_eq!((after.cols, after.rows), (132, 50));
@@ -2899,9 +3264,7 @@ mod tests {
 
         // subscribe(sinceSeq: prefill_seq) — this is what the client calls
         // after completing its prefill paint.
-        let sub = sess
-            .output_bus()
-            .subscribe(Some(prefill_seq));
+        let sub = sess.output_bus().subscribe(Some(prefill_seq));
 
         // Every replayed chunk must have seq > prefill_seq (the gate works).
         for chunk in &sub.replay {
@@ -2945,7 +3308,15 @@ mod tests {
             .iter()
             .map(line_text)
             .find(|line| line.contains("reply=["))
-            .unwrap_or_else(|| panic!("no reply line: {:?}", snap.visible_screen.iter().map(line_text).collect::<Vec<_>>()))
+            .unwrap_or_else(|| {
+                panic!(
+                    "no reply line: {:?}",
+                    snap.visible_screen
+                        .iter()
+                        .map(line_text)
+                        .collect::<Vec<_>>()
+                )
+            })
             .trim()
             .to_string()
     }
@@ -2953,8 +3324,14 @@ mod tests {
     #[test]
     fn broker_answers_the_program_status_query_on_a_real_pty() {
         // ESC ] 7501 ; ? ESC \ written back by the broker, with no viewer.
-        assert_eq!(pty_reply_to("\\033]7501;?\\033\\\\"), "reply=[1b5d373530313b3f1b5c]");
-        assert_eq!(pty_reply_to("\\033]7501;?\\007"), "reply=[1b5d373530313b3f07]");
+        assert_eq!(
+            pty_reply_to("\\033]7501;?\\033\\\\"),
+            "reply=[1b5d373530313b3f1b5c]"
+        );
+        assert_eq!(
+            pty_reply_to("\\033]7501;?\\007"),
+            "reply=[1b5d373530313b3f07]"
+        );
     }
 
     #[test]
@@ -2998,7 +3375,11 @@ mod tests {
 
     #[test]
     fn stdin_lock_contention_does_not_add_a_pty_poll_interval_to_typing() {
-        let input = Arc::new(PtyInput::new(Uuid::nil(), Box::new(CapturedWrites::default()), None));
+        let input = Arc::new(PtyInput::new(
+            Uuid::nil(),
+            Box::new(CapturedWrites::default()),
+            None,
+        ));
         let guard = input.writer.lock().expect("writer");
         let writing_input = input.clone();
         let (started_tx, started_rx) = std::sync::mpsc::channel();
@@ -3008,11 +3389,16 @@ mod tests {
             let _ = done_tx.send(writing_input.write_input(b"typed"));
         });
         started_rx.recv().expect("writer started");
-        assert!(done_rx.recv_timeout(Duration::from_millis(20)).is_err(), "writer must contend on the held lock");
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(20)).is_err(),
+            "writer must contend on the held lock"
+        );
         drop(guard);
         let responsive = done_rx.recv_timeout(Duration::from_millis(100));
         writing.join().expect("writer thread");
-        responsive.expect("brief lock contention delayed typing by a full PTY poll interval").expect("input");
+        responsive
+            .expect("brief lock contention delayed typing by a full PTY poll interval")
+            .expect("input");
     }
 
     #[test]
@@ -3029,12 +3415,19 @@ mod tests {
             let _ = tx.send(input.write_input(&vec![b'x'; BYTES]));
         });
         let early = rx.recv_timeout(Duration::from_millis(100));
-        assert!(matches!(early, Err(std::sync::mpsc::RecvTimeoutError::Timeout)), "nonblocking input must wait for capacity, got {early:?}");
-        reader.set_read_timeout(Some(Duration::from_secs(5))).expect("read timeout");
+        assert!(
+            matches!(early, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
+            "nonblocking input must wait for capacity, got {early:?}"
+        );
+        reader
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("read timeout");
         let mut received = vec![0; BYTES];
         reader.read_exact(&mut received).expect("drain input");
         assert!(received.iter().all(|byte| *byte == b'x'));
-        rx.recv_timeout(Duration::from_secs(5)).expect("write finished").expect("write succeeded");
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("write finished")
+            .expect("write succeeded");
         writing.join().expect("writer thread");
     }
 
@@ -3049,10 +3442,16 @@ mod tests {
         let writing = thread::spawn(move || {
             let _ = tx.send(writing_input.write_input(&vec![b'x'; 1 << 20]));
         });
-        assert!(matches!(rx.recv_timeout(Duration::from_millis(100)), Err(std::sync::mpsc::RecvTimeoutError::Timeout)));
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_millis(100)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
         // The peer remains open, as when a descendant retains the PTY slave.
         input.child_exited.store(true, Ordering::Release);
-        let error = rx.recv_timeout(Duration::from_secs(2)).expect("exit must interrupt backpressure").expect_err("child exited");
+        let error = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("exit must interrupt backpressure")
+            .expect_err("child exited");
         assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
         writing.join().expect("writer thread");
     }
@@ -3069,9 +3468,20 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(5);
         let descendant = loop {
             let snap = sess.snapshot_terminal(None, None).expect("snapshot");
-            if let Some(line) = snap.visible_screen.iter().map(line_text).find(|line| line.contains("READY")) {
+            if let Some(line) = snap
+                .visible_screen
+                .iter()
+                .map(line_text)
+                .find(|line| line.contains("READY"))
+            {
                 break if hold_slave_open {
-                    Some(line.trim().strip_prefix("READY:").expect("descendant marker").parse::<i32>().expect("pid"))
+                    Some(
+                        line.trim()
+                            .strip_prefix("READY:")
+                            .expect("descendant marker")
+                            .parse::<i32>()
+                            .expect("pid"),
+                    )
                 } else {
                     None
                 };
@@ -3085,7 +3495,13 @@ mod tests {
             let result = writer.write_stdin(&vec![b'x'; 1 << 20]);
             let _ = done_tx.send(result);
         });
-        assert!(matches!(done_rx.recv_timeout(Duration::from_millis(100)), Err(std::sync::mpsc::RecvTimeoutError::Timeout)), "stdin should be blocked");
+        assert!(
+            matches!(
+                done_rx.recv_timeout(Duration::from_millis(100)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ),
+            "stdin should be blocked"
+        );
         sess.kill(libc::SIGKILL).expect("kill child");
         let result = done_rx.recv_timeout(Duration::from_secs(5));
         // Clean up the exact descendant even on the pre-fix timeout path.
@@ -3093,7 +3509,9 @@ mod tests {
             // SAFETY: pid is the child-reported sleep process owned by this test.
             unsafe { libc::kill(pid, libc::SIGKILL) };
         }
-        assert!(result.expect("stdin write stayed blocked after child exit").is_err());
+        assert!(result
+            .expect("stdin write stayed blocked after child exit")
+            .is_err());
         writing.join().expect("writer thread");
         assert!(sess.wait_for_exit(Duration::from_secs(10)));
     }
@@ -3143,7 +3561,10 @@ mod tests {
             }
             thread::sleep(Duration::from_millis(50));
         };
-        assert!(!blocked_write.is_finished(), "stdin write was expected to block");
+        assert!(
+            !blocked_write.is_finished(),
+            "stdin write was expected to block"
+        );
         assert!(drained, "drainer stalled behind the blocked stdin write");
 
         // The program drains stdin: the client write completes and the reply
@@ -3171,14 +3592,21 @@ mod tests {
     fn info_does_not_wait_for_the_terminal_lock() {
         let sess = Arc::new(
             Session::spawn(
-                opts(vec!["sh", "-c", "printf '\\033]7501;state=working\\007'; sleep 5"]),
+                opts(vec![
+                    "sh",
+                    "-c",
+                    "printf '\\033]7501;state=working\\007'; sleep 5",
+                ]),
                 test_events(),
             )
             .expect("spawn"),
         );
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while sess.info().program_status.is_none() {
-            assert!(std::time::Instant::now() < deadline, "root record never reported");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "root record never reported"
+            );
             std::thread::sleep(Duration::from_millis(20));
         }
         // list_sessions builds one info() per session: it must not queue
@@ -3226,13 +3654,21 @@ mod tests {
         // At most one event per pacing interval (plus the leading edge and
         // the exit flush), however fast the program reports.
         let bound = (elapsed.as_millis() / PROGRAM_STATUS_EVENT_INTERVAL.as_millis()) as usize + 3;
-        assert!(changes.len() <= bound, "{} events in {elapsed:?} (bound {bound})", changes.len());
+        assert!(
+            changes.len() <= bound,
+            "{} events in {elapsed:?} (bound {bound})",
+            changes.len()
+        );
         // The latest state is always delivered: blocked, then exit drops it.
         let blocked = changes
             .iter()
             .rposition(|change| matches!(change, Some(record) if record.state == crate::protocol::ProgramStatusState::Blocked))
             .expect("final blocked report was delivered");
-        assert_eq!(changes.len(), blocked + 2, "only the exit change follows: {changes:?}");
+        assert_eq!(
+            changes.len(),
+            blocked + 2,
+            "only the exit change follows: {changes:?}"
+        );
         assert_eq!(changes.last(), Some(&None));
     }
 
@@ -3254,15 +3690,25 @@ mod tests {
             if let Some(root) = sess.info().program_status {
                 break root;
             }
-            assert!(std::time::Instant::now() < deadline, "root record never reported");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "root record never reported"
+            );
             std::thread::sleep(Duration::from_millis(20));
         };
         assert_eq!(root.state, crate::protocol::ProgramStatusState::Blocked);
         assert_eq!(sess.program_status_records().len(), 2);
 
         assert!(sess.wait_for_exit(Duration::from_secs(5)));
-        assert!(sess.info().program_status.is_none(), "exit drops the blocked root");
-        let remaining: Vec<String> = sess.program_status_records().into_iter().map(|record| record.id).collect();
+        assert!(
+            sess.info().program_status.is_none(),
+            "exit drops the blocked root"
+        );
+        let remaining: Vec<String> = sess
+            .program_status_records()
+            .into_iter()
+            .map(|record| record.id)
+            .collect();
         assert_eq!(remaining, vec!["build"], "done records survive exit");
 
         let mut changes = Vec::new();
@@ -3271,21 +3717,43 @@ mod tests {
                 changes.push(program_status.map(|record| record.state));
             }
         }
-        assert_eq!(changes.last(), Some(&None), "exit publishes the cleared root: {changes:?}");
+        assert_eq!(
+            changes.last(),
+            Some(&None),
+            "exit publishes the cleared root: {changes:?}"
+        );
     }
 
     #[test]
     fn reporter_left_foreground_only_on_a_readable_change_or_a_vanished_group() {
         let exists = |_| true;
-        assert!(!reporter_left_foreground(10, Some(10), exists), "same group keeps");
-        assert!(reporter_left_foreground(10, Some(11), exists), "another foreground group drops");
-        assert!(reporter_left_foreground(10, Some(10), |_| false), "a vanished group drops");
-        assert!(!reporter_left_foreground(10, None, exists), "unreadable foreground keeps");
-        assert!(!reporter_left_foreground(10, None, |_| false), "unreadable foreground keeps");
+        assert!(
+            !reporter_left_foreground(10, Some(10), exists),
+            "same group keeps"
+        );
+        assert!(
+            reporter_left_foreground(10, Some(11), exists),
+            "another foreground group drops"
+        );
+        assert!(
+            reporter_left_foreground(10, Some(10), |_| false),
+            "a vanished group drops"
+        );
+        assert!(
+            !reporter_left_foreground(10, None, exists),
+            "unreadable foreground keeps"
+        );
+        assert!(
+            !reporter_left_foreground(10, None, |_| false),
+            "unreadable foreground keeps"
+        );
     }
 
     fn ids_of(term: &TerminalState) -> Vec<String> {
-        term.program_status_records().into_iter().map(|record| record.id).collect()
+        term.program_status_records()
+            .into_iter()
+            .map(|record| record.id)
+            .collect()
     }
 
     #[test]
@@ -3298,14 +3766,23 @@ mod tests {
         .expect("feed");
         term.set_program_status_reporter(Some(10));
 
-        assert!(!drop_if_reporter_left(&mut term, Some(10), |_| true), "same group");
-        assert!(!drop_if_reporter_left(&mut term, None, |_| true), "unreadable foreground");
+        assert!(
+            !drop_if_reporter_left(&mut term, Some(10), |_| true),
+            "same group"
+        );
+        assert!(
+            !drop_if_reporter_left(&mut term, None, |_| true),
+            "unreadable foreground"
+        );
         assert_eq!(ids_of(&term), vec!["", "b", "d", "e"]);
 
         assert!(drop_if_reporter_left(&mut term, Some(11), |_| true));
         assert_eq!(ids_of(&term), vec!["d", "e"]);
         assert!(term.program_status_root().is_none());
-        assert!(!drop_if_reporter_left(&mut term, Some(12), |_| false), "nothing left to watch");
+        assert!(
+            !drop_if_reporter_left(&mut term, Some(12), |_| false),
+            "nothing left to watch"
+        );
     }
 
     #[test]
@@ -3318,13 +3795,21 @@ mod tests {
     }
 
     fn foreground_checks(sess: &Session) -> u64 {
-        sess.program_status.watch.as_ref().expect("session watch").checks.load(Ordering::SeqCst)
+        sess.program_status
+            .watch
+            .as_ref()
+            .expect("session watch")
+            .checks
+            .load(Ordering::SeqCst)
     }
 
     fn wait_until(what: &str, within: Duration, mut done: impl FnMut() -> bool) {
         let deadline = std::time::Instant::now() + within;
         while !done() {
-            assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for {what}"
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
     }
@@ -3343,22 +3828,48 @@ mod tests {
         let mut rx = events.subscribe();
         let sess = Session::spawn(o, events).expect("spawn");
         let shell_group = sess.pid().expect("shell pid") as libc::pid_t;
-        let foreground = || sess.program_status.watch.as_ref().expect("session watch").foreground.group();
-        wait_until("the shell to own the foreground", Duration::from_secs(5), || foreground() == Some(shell_group));
+        let foreground = || {
+            sess.program_status
+                .watch
+                .as_ref()
+                .expect("session watch")
+                .foreground
+                .group()
+        };
+        wait_until(
+            "the shell to own the foreground",
+            Duration::from_secs(5),
+            || foreground() == Some(shell_group),
+        );
 
         // A done record alone (reported by the shell itself) needs no checks.
-        sess.write_stdin(b"printf '\\033]7501;state=done:id=d\\007'\n").expect("write");
-        wait_until("the done record", Duration::from_secs(5), || !sess.program_status_records().is_empty());
+        sess.write_stdin(b"printf '\\033]7501;state=done:id=d\\007'\n")
+            .expect("write");
+        wait_until("the done record", Duration::from_secs(5), || {
+            !sess.program_status_records().is_empty()
+        });
         std::thread::sleep(FOREGROUND_CHECK_INTERVAL * 2 + Duration::from_millis(100));
-        assert_eq!(foreground_checks(&sess), 0, "no working/blocked record: no foreground checks");
+        assert_eq!(
+            foreground_checks(&sess),
+            0,
+            "no working/blocked record: no foreground checks"
+        );
 
-        sess.write_stdin(b"sh -c \"printf '\\033]7501;state=working\\007'; exec sleep 30\"\n").expect("write");
-        wait_until("the working root", Duration::from_secs(5), || sess.info().program_status.is_some());
+        sess.write_stdin(b"sh -c \"printf '\\033]7501;state=working\\007'; exec sleep 30\"\n")
+            .expect("write");
+        wait_until("the working root", Duration::from_secs(5), || {
+            sess.info().program_status.is_some()
+        });
         let reporter = foreground().expect("readable foreground group");
-        assert_ne!(reporter, shell_group, "job control runs the reporter in its own group");
+        assert_ne!(
+            reporter, shell_group,
+            "job control runs the reporter in its own group"
+        );
 
         // Its group keeps the foreground: checks run and keep the record.
-        wait_until("a foreground check", FOREGROUND_CHECK_INTERVAL * 3, || foreground_checks(&sess) > 0);
+        wait_until("a foreground check", FOREGROUND_CHECK_INTERVAL * 3, || {
+            foreground_checks(&sess) > 0
+        });
         assert_eq!(
             sess.info().program_status.map(|record| record.state),
             Some(crate::protocol::ProgramStatusState::Working)
@@ -3367,21 +3878,34 @@ mod tests {
         // SAFETY: signals only the reporter's own process group.
         assert_eq!(unsafe { libc::kill(-reporter, libc::SIGKILL) }, 0);
         let killed = std::time::Instant::now();
-        wait_until("the working root to drop", Duration::from_secs(5), || sess.info().program_status.is_none());
+        wait_until("the working root to drop", Duration::from_secs(5), || {
+            sess.info().program_status.is_none()
+        });
         let latency = killed.elapsed();
-        assert!(latency <= FOREGROUND_CHECK_INTERVAL * 2, "dropped {latency:?} after the kill");
-        assert_eq!(ids_of(&sess.terminal.lock().expect("terminal")), vec!["d"], "done survives");
+        assert!(
+            latency <= FOREGROUND_CHECK_INTERVAL * 2,
+            "dropped {latency:?} after the kill"
+        );
+        assert_eq!(
+            ids_of(&sess.terminal.lock().expect("terminal")),
+            vec!["d"],
+            "done survives"
+        );
         assert!(sess.alive(), "the shell (PTY leader) is still running");
         // Published like any other change (paced), while the shell lives on.
         let mut last = None;
-        wait_until("the cleared root event", PROGRAM_STATUS_EVENT_INTERVAL * 3, || {
-            while let Ok(event) = rx.try_recv() {
-                if let Event::ProgramStatusChanged { program_status, .. } = event {
-                    last = Some(program_status);
+        wait_until(
+            "the cleared root event",
+            PROGRAM_STATUS_EVENT_INTERVAL * 3,
+            || {
+                while let Ok(event) = rx.try_recv() {
+                    if let Event::ProgramStatusChanged { program_status, .. } = event {
+                        last = Some(program_status);
+                    }
                 }
-            }
-            last == Some(None)
-        });
+                last == Some(None)
+            },
+        );
 
         let _ = sess.kill(libc::SIGKILL);
         assert!(sess.wait_for_exit(Duration::from_secs(5)));

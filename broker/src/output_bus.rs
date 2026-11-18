@@ -90,7 +90,11 @@ impl OutputBus {
         Self::new_with_byte_limit(ring_capacity, DEFAULT_RING_MAX_BYTES, broadcast_capacity)
     }
 
-    pub fn new_with_byte_limit(ring_capacity: usize, ring_max_bytes: usize, broadcast_capacity: usize) -> Arc<Self> {
+    pub fn new_with_byte_limit(
+        ring_capacity: usize,
+        ring_max_bytes: usize,
+        broadcast_capacity: usize,
+    ) -> Arc<Self> {
         let (tx, _rx) = broadcast::channel(broadcast_capacity);
         Arc::new(Self {
             sender: Mutex::new(Some(tx)),
@@ -259,7 +263,10 @@ mod tests {
         bus.publish(chunk(1, b"x"));
         bus.close();
         let mut sub: Subscription = bus.subscribe(Some(0));
-        assert_eq!(sub.replay.iter().map(|chunk| chunk.seq).collect::<Vec<_>>(), vec![1]);
+        assert_eq!(
+            sub.replay.iter().map(|chunk| chunk.seq).collect::<Vec<_>>(),
+            vec![1]
+        );
         assert!(sub.receiver.recv().await.is_err());
         assert!(bus.is_closed());
     }

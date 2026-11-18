@@ -3,15 +3,13 @@ import {
 } from "../tailnet-origin-fixture.ts";
 import type { TailnetOriginReadyMessage } from "../tailnet-origin-fixture.ts";
 
-process.env.WOLFPACK_TEST = "1";
 
-const { __setTestBackend } = await import("../../../src/server/backend.ts");
+const { createServerContext } = await import("../../../src/server/context.ts");
 const { MockBackend } = await import("../../../src/server/mock-backend.ts");
-const { activePtySessions } = await import("../../../src/server/websocket.ts");
-__setTestBackend(new MockBackend({ sessions: ["dispatch-session"] }));
+const context = createServerContext({ backend: new MockBackend({ sessions: ["dispatch-session"] }) });
 
 const { createServerInstance } = await import("../../../src/server/index.ts");
-const { server } = createServerInstance();
+const { server } = createServerInstance(context, { allowLocalOrigins: true });
 
 process.on("message", (message: unknown) => {
   if (!message || typeof message !== "object") return;
@@ -20,7 +18,7 @@ process.on("message", (message: unknown) => {
   process.send?.({
     type: TAILNET_ORIGIN_IPC_MESSAGE_TYPE.DISPATCH_STATE,
     requestId: request.requestId,
-    dispatched: activePtySessions.get(request.session)?.alive === true,
+    dispatched: context.terminals.activePtySessions.get(request.session)?.alive === true,
   });
 });
 

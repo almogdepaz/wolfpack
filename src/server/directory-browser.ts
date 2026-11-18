@@ -2,10 +2,9 @@ import type { Dir, Dirent, PathLike, Stats } from "node:fs";
 import { lstat, opendir, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, parse, relative, sep } from "node:path";
 
-import { MAX_PROJECT_DIR_LENGTH } from "./validate-project-dir.js";
+import { MAX_PROJECT_DIR_LENGTH } from "../directory-browse-contract.js";
 
 import { DIRECTORY_BROWSE_LIMIT, DIRECTORY_BREADCRUMB_LIMIT } from "../directory-browse-contract.js";
-export { DIRECTORY_BROWSE_LIMIT, DIRECTORY_BREADCRUMB_LIMIT } from "../directory-browse-contract.js";
 export const DIRECTORY_BROWSE_SCAN_LIMIT = 1_000;
 
 // One stalled authorization still leaves capacity for an independent browse.

@@ -12,8 +12,16 @@ pub fn encode(bytes: &[u8]) -> String {
         let triple = (b0 << 16) | (b1 << 8) | b2;
         out.push(char::from(ALPHABET[(triple >> 18) as usize & 63]));
         out.push(char::from(ALPHABET[(triple >> 12) as usize & 63]));
-        out.push(if chunk.len() > 1 { char::from(ALPHABET[(triple >> 6) as usize & 63]) } else { '=' });
-        out.push(if chunk.len() > 2 { char::from(ALPHABET[triple as usize & 63]) } else { '=' });
+        out.push(if chunk.len() > 1 {
+            char::from(ALPHABET[(triple >> 6) as usize & 63])
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            char::from(ALPHABET[triple as usize & 63])
+        } else {
+            '='
+        });
     }
     out
 }
@@ -47,7 +55,9 @@ mod tests {
     fn encodes_every_byte_value() {
         let bytes: Vec<u8> = (0..=255).collect();
         let encoded = encode(&bytes);
-        assert!(encoded.starts_with("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4v"));
+        assert!(
+            encoded.starts_with("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4v")
+        );
         assert!(encoded.ends_with("+/w=="));
         assert_eq!(encoded.len(), encoded_len(bytes.len()));
     }

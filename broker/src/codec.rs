@@ -30,7 +30,9 @@ fn max_payload_for_kind(kind: u8) -> Option<u32> {
 
 fn validate_payload_len(kind: u8, len: u32) -> Result<()> {
     let max = max_payload_for_kind(kind).ok_or(CodecError::UnknownKind(kind))?;
-    if len > max { return Err(CodecError::FrameTooLarge(len)); }
+    if len > max {
+        return Err(CodecError::FrameTooLarge(len));
+    }
     Ok(())
 }
 
@@ -235,7 +237,9 @@ fn decode_payload(kind: u8, payload: &[u8]) -> Result<Frame> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{methods, ControlResponse, Event, ProtocolError, ErrorCode, ResponsePayload};
+    use crate::protocol::{
+        methods, ControlResponse, ErrorCode, Event, ProtocolError, ResponsePayload,
+    };
     use serde_json::json;
     use std::io::Cursor;
     use std::pin::Pin;
@@ -309,7 +313,10 @@ mod tests {
     fn control_response_roundtrip() {
         let resp = ControlResponse::err(
             2,
-            ProtocolError { code: ErrorCode::UnknownMethod, message: "nope".into() },
+            ProtocolError {
+                code: ErrorCode::UnknownMethod,
+                message: "nope".into(),
+            },
         );
         let mut buf = Vec::new();
         write_frame(&mut buf, &Frame::ControlResponse(resp.clone())).unwrap();
@@ -382,7 +389,10 @@ mod tests {
 
     #[test]
     fn input_binary_roundtrip() {
-        let inp = InputFrame { session_id: nil(), data: vec![0x03] };
+        let inp = InputFrame {
+            session_id: nil(),
+            data: vec![0x03],
+        };
         let mut buf = Vec::new();
         write_frame(&mut buf, &Frame::InputBinary(inp.clone())).unwrap();
         assert_eq!(buf[0], FRAME_KIND_INPUT_BINARY);
@@ -395,7 +405,11 @@ mod tests {
 
     #[test]
     fn event_roundtrip() {
-        let ev = Event::SessionResized { session_id: nil(), cols: 100, rows: 40 };
+        let ev = Event::SessionResized {
+            session_id: nil(),
+            cols: 100,
+            rows: 40,
+        };
         let mut buf = Vec::new();
         write_frame(&mut buf, &Frame::Event(ev.clone())).unwrap();
         assert_eq!(buf[0], FRAME_KIND_EVENT);
@@ -460,7 +474,9 @@ mod tests {
             let mut buf = vec![kind];
             buf.extend_from_slice(&length.to_be_bytes());
             let mut cur = Cursor::new(buf);
-            assert!(matches!(read_frame(&mut cur), Err(CodecError::FrameTooLarge(n)) if n == length));
+            assert!(
+                matches!(read_frame(&mut cur), Err(CodecError::FrameTooLarge(n)) if n == length)
+            );
         }
     }
 
@@ -471,9 +487,23 @@ mod tests {
             method: methods::SUBSCRIBE.into(),
             params: json!({ "session_id": Uuid::nil() }),
         };
-        let resp = ControlResponse::ok(1, ResponsePayload::Subscribe { ok: true, current_seq: 0, replay_truncated: false });
-        let out = OutputFrame { session_id: nil(), seq: 1, data: Arc::new(b"abc".to_vec()) };
-        let inp = InputFrame { session_id: nil(), data: b"\r".to_vec() };
+        let resp = ControlResponse::ok(
+            1,
+            ResponsePayload::Subscribe {
+                ok: true,
+                current_seq: 0,
+                replay_truncated: false,
+            },
+        );
+        let out = OutputFrame {
+            session_id: nil(),
+            seq: 1,
+            data: Arc::new(b"abc".to_vec()),
+        };
+        let inp = InputFrame {
+            session_id: nil(),
+            data: b"\r".to_vec(),
+        };
         let ev = Event::SnapshotInvalidated { session_id: nil() };
 
         let mut buf = Vec::new();

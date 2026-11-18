@@ -10,8 +10,8 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 use wolfpack_broker::codec::{
-    read_frame_async, write_frame_async, Frame, InputFrame, OutputFrame, FRAME_KIND_CONTROL_REQUEST,
-    FRAME_KIND_CONTROL_RESPONSE, FRAME_KIND_EVENT,
+    read_frame_async, write_frame_async, Frame, InputFrame, OutputFrame,
+    FRAME_KIND_CONTROL_REQUEST, FRAME_KIND_CONTROL_RESPONSE, FRAME_KIND_EVENT,
 };
 use wolfpack_broker::protocol::{
     methods, ControlRequest, ControlResponse, ErrorCode, Event, ResponsePayload, Status,
@@ -264,10 +264,7 @@ async fn session_info_returns_session_for_known_id_and_unknown_session_for_missi
     )
     .await;
     assert_eq!(resp.status, Status::Error);
-    assert_eq!(
-        resp.error.expect("error").code,
-        ErrorCode::UnknownSession
-    );
+    assert_eq!(resp.error.expect("error").code, ErrorCode::UnknownSession);
 
     drop(stream);
     h.shutdown().await;
@@ -381,11 +378,7 @@ async fn killing_already_dead_session_returns_session_not_alive() {
 
     // `true` exits immediately; we poll until the reaper flips alive=false
     // before issuing the second kill so we exercise the dead-session branch.
-    let resp = round_trip(
-        &mut stream,
-        create_request(1, Some("flicker"), &["true"]),
-    )
-    .await;
+    let resp = round_trip(&mut stream, create_request(1, Some("flicker"), &["true"])).await;
     let created = match resp.payload.expect("payload") {
         ResponsePayload::CreateSession { session } => session,
         other => panic!("unexpected: {other:?}"),
@@ -402,10 +395,7 @@ async fn killing_already_dead_session_returns_session_not_alive() {
     )
     .await;
     assert_eq!(resp.status, Status::Error);
-    assert_eq!(
-        resp.error.expect("error").code,
-        ErrorCode::SessionNotAlive
-    );
+    assert_eq!(resp.error.expect("error").code, ErrorCode::SessionNotAlive);
 
     drop(stream);
     h.shutdown().await;
@@ -499,20 +489,39 @@ async fn assert_input_overtakes_full_history(method: &str) {
     let mut req = create_request(1, Some("heavy-history"), &["sh", "-c",
         "i=0; while [ \"$i\" -lt 52 ]; do read start; awk 'BEGIN { for (i=0;i<200;i++) s=s \"x\"; for (i=0;i<100;i++) print s }'; printf 'BATCH-READY\\n'; i=$((i+1)); done; exec cat"]);
     req.params["cols"] = json!(200);
-    let heavy = match round_trip(&mut control, req).await.payload.expect("payload") {
+    let heavy = match round_trip(&mut control, req)
+        .await
+        .payload
+        .expect("payload")
+    {
         ResponsePayload::CreateSession { session } => session.id,
         other => panic!("unexpected: {other:?}"),
     };
-    let input = match round_trip(&mut control,
-        create_request(2, Some("input-target"), &["cat"])).await.payload.expect("payload") {
+    let input = match round_trip(
+        &mut control,
+        create_request(2, Some("input-target"), &["cat"]),
+    )
+    .await
+    .payload
+    .expect("payload")
+    {
         ResponsePayload::CreateSession { session } => session.id,
         other => panic!("unexpected: {other:?}"),
     };
     for (id, session_id) in [(3, heavy), (4, input)] {
-        assert_eq!(round_trip(&mut observer, ControlRequest {
-            id, method: methods::SUBSCRIBE.into(),
-            params: json!({ "session_id": session_id }),
-        }).await.status, Status::Ok);
+        assert_eq!(
+            round_trip(
+                &mut observer,
+                ControlRequest {
+                    id,
+                    method: methods::SUBSCRIBE.into(),
+                    params: json!({ "session_id": session_id }),
+                }
+            )
+            .await
+            .status,
+            Status::Ok
+        );
     }
     // A single 5200-line burst can overflow the existing 256-chunk broadcast
     // window when native reads are small. Child/client handshakes bound setup
@@ -520,18 +529,31 @@ async fn assert_input_overtakes_full_history(method: &str) {
     let mut history_bytes = 0;
     timeout(TEST_TIMEOUT, async {
         for _ in 0..52 {
-            write_frame_async(&mut control, &Frame::InputBinary(InputFrame {
-                session_id: heavy, data: b"start\n".to_vec(),
-            })).await.expect("start history batch");
+            write_frame_async(
+                &mut control,
+                &Frame::InputBinary(InputFrame {
+                    session_id: heavy,
+                    data: b"start\n".to_vec(),
+                }),
+            )
+            .await
+            .expect("start history batch");
             let mut batch = Vec::new();
             loop {
-                let frame = read_frame_async(&mut observer).await.expect("history output");
-                assert!(!matches!(frame, Frame::Event(Event::SubscriptionDropped { .. })),
-                    "history subscription dropped: {frame:?}");
+                let frame = read_frame_async(&mut observer)
+                    .await
+                    .expect("history output");
+                assert!(
+                    !matches!(frame, Frame::Event(Event::SubscriptionDropped { .. })),
+                    "history subscription dropped: {frame:?}"
+                );
                 if let Frame::OutputBinary(output) = frame {
                     if output.session_id == heavy {
                         batch.extend_from_slice(&output.data);
-                        if batch.windows(b"BATCH-READY".len()).any(|w| w == b"BATCH-READY") {
+                        if batch
+                            .windows(b"BATCH-READY".len())
+                            .any(|w| w == b"BATCH-READY")
+                        {
                             break;
                         }
                     }
@@ -539,22 +561,45 @@ async fn assert_input_overtakes_full_history(method: &str) {
             }
             history_bytes += batch.len();
         }
-    }).await.expect("history ready timeout");
-    assert!(history_bytes >= 200 * 5200, "full history must be populated");
+    })
+    .await
+    .expect("history ready timeout");
+    assert!(
+        history_bytes >= 200 * 5200,
+        "full history must be populated"
+    );
 
     let marker = format!("MARK-{}", Uuid::new_v4());
-    write_frame_async(&mut control, &Frame::ControlRequest(ControlRequest {
-        id: 5, method: method.into(), params: json!({ "session_id": heavy }),
-    })).await.expect("request snapshot");
-    write_frame_async(&mut control, &Frame::InputBinary(InputFrame {
-        session_id: input, data: format!("{marker}\n").into_bytes(),
-    })).await.expect("input after snapshot");
+    write_frame_async(
+        &mut control,
+        &Frame::ControlRequest(ControlRequest {
+            id: 5,
+            method: method.into(),
+            params: json!({ "session_id": heavy }),
+        }),
+    )
+    .await
+    .expect("request snapshot");
+    write_frame_async(
+        &mut control,
+        &Frame::InputBinary(InputFrame {
+            session_id: input,
+            data: format!("{marker}\n").into_bytes(),
+        }),
+    )
+    .await
+    .expect("input after snapshot");
 
     let response_start = async {
         loop {
             let mut header = [0; 5];
-            control.read_exact(&mut header).await.expect("response header");
-            if header[0] == FRAME_KIND_CONTROL_RESPONSE { break; }
+            control
+                .read_exact(&mut header)
+                .await
+                .expect("response header");
+            if header[0] == FRAME_KIND_CONTROL_RESPONSE {
+                break;
+            }
             assert_eq!(header[0], FRAME_KIND_EVENT);
             let len = u32::from_be_bytes(header[1..5].try_into().expect("length")) as usize;
             let mut event = vec![0; len];
@@ -564,10 +609,15 @@ async fn assert_input_overtakes_full_history(method: &str) {
     let marker_output = async {
         let mut bytes = Vec::new();
         loop {
-            if let Frame::OutputBinary(output) = read_frame_async(&mut observer).await.expect("marker output") {
+            if let Frame::OutputBinary(output) = read_frame_async(&mut observer)
+                .await
+                .expect("marker output")
+            {
                 if output.session_id == input {
                     bytes.extend_from_slice(&output.data);
-                    if bytes.windows(marker.len()).any(|w| w == marker.as_bytes()) { break; }
+                    if bytes.windows(marker.len()).any(|w| w == marker.as_bytes()) {
+                        break;
+                    }
                 }
             }
         }
@@ -578,36 +628,65 @@ async fn assert_input_overtakes_full_history(method: &str) {
             () = response_start => false,
             () = marker_output => true,
         }
-    }).await.expect("ordering timeout");
+    })
+    .await
+    .expect("ordering timeout");
     drop(control);
     drop(observer);
     h.shutdown().await;
-    assert!(overtook, "snapshot response started before queued input was observed");
+    assert!(
+        overtook,
+        "snapshot response started before queued input was observed"
+    );
 }
 
 #[tokio::test]
 async fn queued_controls_preserve_snapshot_resize_and_subscription_order() {
     let h = Harness::boot().await;
     let mut stream = connect(&h.socket_path).await;
-    let session_id = match round_trip(&mut stream,
-        create_request(1, Some("ordered-controls"), &["sleep", "30"])).await.payload.expect("payload") {
+    let session_id = match round_trip(
+        &mut stream,
+        create_request(1, Some("ordered-controls"), &["sleep", "30"]),
+    )
+    .await
+    .payload
+    .expect("payload")
+    {
         ResponsePayload::CreateSession { session } => session.id,
         other => panic!("unexpected: {other:?}"),
     };
     for (id, method, params) in [
         (2, methods::SNAPSHOT, json!({ "session_id": session_id })),
-        (3, methods::RESIZE, json!({ "session_id": session_id, "cols": 132, "rows": 50 })),
-        (4, methods::SNAPSHOT_SUBSCRIBE, json!({ "session_id": session_id })),
+        (
+            3,
+            methods::RESIZE,
+            json!({ "session_id": session_id, "cols": 132, "rows": 50 }),
+        ),
+        (
+            4,
+            methods::SNAPSHOT_SUBSCRIBE,
+            json!({ "session_id": session_id }),
+        ),
         (5, methods::UNSUBSCRIBE, json!({ "session_id": session_id })),
     ] {
-        write_frame_async(&mut stream, &Frame::ControlRequest(ControlRequest {
-            id, method: method.into(), params,
-        })).await.expect("enqueue control");
+        write_frame_async(
+            &mut stream,
+            &Frame::ControlRequest(ControlRequest {
+                id,
+                method: method.into(),
+                params,
+            }),
+        )
+        .await
+        .expect("enqueue control");
     }
     timeout(TEST_TIMEOUT, async {
         for id in 2..=5 {
             let response = loop {
-                match read_frame_async(&mut stream).await.expect("ordered response") {
+                match read_frame_async(&mut stream)
+                    .await
+                    .expect("ordered response")
+                {
                     Frame::ControlResponse(response) => break response,
                     Frame::Event(_) => continue,
                     other => panic!("unexpected: {other:?}"),
@@ -616,8 +695,14 @@ async fn queued_controls_preserve_snapshot_resize_and_subscription_order() {
             assert_eq!(response.id, id, "controls must retain wire request order");
             assert_eq!(response.status, Status::Ok);
             match response.payload.expect("payload") {
-                ResponsePayload::Snapshot { snapshot } => assert_eq!((snapshot.cols, snapshot.rows), (80, 24)),
-                ResponsePayload::SnapshotSubscribe { snapshot, current_seq, .. } => {
+                ResponsePayload::Snapshot { snapshot } => {
+                    assert_eq!((snapshot.cols, snapshot.rows), (80, 24))
+                }
+                ResponsePayload::SnapshotSubscribe {
+                    snapshot,
+                    current_seq,
+                    ..
+                } => {
                     assert_eq!((snapshot.cols, snapshot.rows), (132, 50));
                     assert_eq!(snapshot.seq, current_seq);
                 }
@@ -625,7 +710,9 @@ async fn queued_controls_preserve_snapshot_resize_and_subscription_order() {
                 other => panic!("unexpected payload: {other:?}"),
             }
         }
-    }).await.expect("ordered controls timeout");
+    })
+    .await
+    .expect("ordered controls timeout");
     drop(stream);
     h.shutdown().await;
 }
@@ -636,20 +723,33 @@ async fn snapshot_subscribe_establishes_atomic_live_cut() {
     let mut stream = connect(&h.socket_path).await;
     let resp = round_trip(
         &mut stream,
-        create_request(1, Some("atomic-cut"), &["sh", "-c", "sleep 0.2; printf atomic-output; sleep 30"]),
-    ).await;
+        create_request(
+            1,
+            Some("atomic-cut"),
+            &["sh", "-c", "sleep 0.2; printf atomic-output; sleep 30"],
+        ),
+    )
+    .await;
     let created = match resp.payload.expect("payload") {
         ResponsePayload::CreateSession { session } => session,
         other => panic!("unexpected: {other:?}"),
     };
 
-    let resp = round_trip(&mut stream, ControlRequest {
-        id: 2,
-        method: methods::SNAPSHOT_SUBSCRIBE.into(),
-        params: json!({ "session_id": created.id, "scrollback_lines": 10 }),
-    }).await;
+    let resp = round_trip(
+        &mut stream,
+        ControlRequest {
+            id: 2,
+            method: methods::SNAPSHOT_SUBSCRIBE.into(),
+            params: json!({ "session_id": created.id, "scrollback_lines": 10 }),
+        },
+    )
+    .await;
     let snapshot_seq = match resp.payload.expect("payload") {
-        ResponsePayload::SnapshotSubscribe { snapshot, current_seq, replay_truncated } => {
+        ResponsePayload::SnapshotSubscribe {
+            snapshot,
+            current_seq,
+            replay_truncated,
+        } => {
             assert_eq!(snapshot.seq, current_seq);
             assert!(!replay_truncated);
             snapshot.seq
@@ -660,7 +760,11 @@ async fn snapshot_subscribe_establishes_atomic_live_cut() {
     let deadline = tokio::time::Instant::now() + TEST_TIMEOUT;
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        match timeout(remaining, read_frame_async(&mut stream)).await.expect("output timeout").expect("output frame") {
+        match timeout(remaining, read_frame_async(&mut stream))
+            .await
+            .expect("output timeout")
+            .expect("output frame")
+        {
             Frame::OutputBinary(output) if output.session_id == created.id => {
                 assert!(output.seq > snapshot_seq);
                 assert!(String::from_utf8_lossy(&output.data).contains("atomic-output"));
@@ -738,10 +842,22 @@ fn expect_ansi_cut(resp: ControlResponse) -> AnsiCut {
     assert_eq!(resp.status, Status::Ok, "{:?}", resp.error);
     match resp.payload.expect("payload") {
         ResponsePayload::SnapshotSubscribeAnsi {
-            seq, current_seq, replay_truncated, cursor, trimmed_lines, ansi_base64, ..
+            seq,
+            current_seq,
+            replay_truncated,
+            cursor,
+            trimmed_lines,
+            ansi_base64,
+            ..
         } => {
             assert!(!replay_truncated);
-            AnsiCut { seq, current_seq, cursor_col: cursor.col, trimmed_lines, ansi: decode_base64(&ansi_base64) }
+            AnsiCut {
+                seq,
+                current_seq,
+                cursor_col: cursor.col,
+                trimmed_lines,
+                ansi: decode_base64(&ansi_base64),
+            }
         }
         other => panic!("unexpected: {other:?}"),
     }
@@ -755,10 +871,13 @@ async fn snapshot_subscribe_ansi_cut_loses_and_duplicates_no_output() {
     let script = format!(
         "i=0; while [ $i -lt {LINES} ]; do printf 'N%05d\\n' $i; i=$((i+1)); sleep 0.002; done; sleep 30"
     );
-    let created = match round_trip(&mut stream, create_request(1, Some("ansi-cut"), &["sh", "-c", &script]))
-        .await
-        .payload
-        .expect("payload")
+    let created = match round_trip(
+        &mut stream,
+        create_request(1, Some("ansi-cut"), &["sh", "-c", &script]),
+    )
+    .await
+    .payload
+    .expect("payload")
     {
         ResponsePayload::CreateSession { session } => session,
         other => panic!("unexpected: {other:?}"),
@@ -776,11 +895,23 @@ async fn snapshot_subscribe_ansi_cut_loses_and_duplicates_no_output() {
     let last = format!("N{:05}", LINES - 1);
     let mut live = Vec::new();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    while !live.windows(last.len()).any(|window| window == last.as_bytes()) {
+    while !live
+        .windows(last.len())
+        .any(|window| window == last.as_bytes())
+    {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        match timeout(remaining, read_frame_async(&mut stream)).await.expect("live timeout").expect("frame") {
+        match timeout(remaining, read_frame_async(&mut stream))
+            .await
+            .expect("live timeout")
+            .expect("frame")
+        {
             Frame::OutputBinary(output) if output.session_id == created.id => {
-                assert!(output.seq > cut.seq, "live frame {} at or before the cut {}", output.seq, cut.seq);
+                assert!(
+                    output.seq > cut.seq,
+                    "live frame {} at or before the cut {}",
+                    output.seq,
+                    cut.seq
+                );
                 live.extend_from_slice(&output.data);
             }
             Frame::Event(_) => continue,
@@ -804,8 +935,15 @@ async fn snapshot_subscribe_ansi_cut_loses_and_duplicates_no_output() {
         })
         .collect();
     let prefill_numbers = prefill.lines().filter(|line| line.starts_with('N')).count();
-    assert!(prefill_numbers > 0 && prefill_numbers < LINES, "cut was not mid-stream: {prefill_numbers}");
-    assert_eq!(numbers, (0..LINES).collect::<Vec<_>>(), "prefill + live must be gapless and duplicate-free");
+    assert!(
+        prefill_numbers > 0 && prefill_numbers < LINES,
+        "cut was not mid-stream: {prefill_numbers}"
+    );
+    assert_eq!(
+        numbers,
+        (0..LINES).collect::<Vec<_>>(),
+        "prefill + live must be gapless and duplicate-free"
+    );
 
     drop(stream);
     h.shutdown().await;
@@ -824,15 +962,24 @@ async fn snapshot_subscribe_ansi_budget_trims_history_and_validates_max_bytes() 
         other => panic!("unexpected: {other:?}"),
     };
     let mut seen = Vec::new();
-    round_trip(&mut stream, ControlRequest {
-        id: 2, method: methods::SUBSCRIBE.into(), params: json!({ "session_id": created.id, "since_seq": 0 }),
-    }).await;
+    round_trip(
+        &mut stream,
+        ControlRequest {
+            id: 2,
+            method: methods::SUBSCRIBE.into(),
+            params: json!({ "session_id": created.id, "since_seq": 0 }),
+        },
+    )
+    .await;
     let deadline = tokio::time::Instant::now() + TEST_TIMEOUT;
     while !seen.windows(4).any(|window| window == b"DONE") {
         for frame in collect_output_until(&mut stream, created.id, 1, deadline).await {
             seen.extend_from_slice(&frame.data);
         }
-        assert!(tokio::time::Instant::now() < deadline, "history never completed");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "history never completed"
+        );
     }
 
     let cut = expect_ansi_cut(round_trip(&mut stream, ControlRequest {
@@ -846,20 +993,39 @@ async fn snapshot_subscribe_ansi_budget_trims_history_and_validates_max_bytes() 
     assert!(text.contains("history line 299\nDONE"), "{text:?}");
     assert!(!text.contains("history line 000"));
 
-    for (id, max_bytes) in [(4, json!(4 * 1024 * 1024 + 1)), (5, json!(-1)), (6, json!(null))] {
-        let invalid = round_trip(&mut stream, ControlRequest {
-            id,
-            method: methods::SNAPSHOT_SUBSCRIBE_ANSI.into(),
-            params: json!({ "session_id": created.id, "max_bytes": max_bytes }),
-        }).await;
-        assert_eq!(invalid.error.expect("error").code, ErrorCode::InvalidRequest, "max_bytes={max_bytes}");
+    for (id, max_bytes) in [
+        (4, json!(4 * 1024 * 1024 + 1)),
+        (5, json!(-1)),
+        (6, json!(null)),
+    ] {
+        let invalid = round_trip(
+            &mut stream,
+            ControlRequest {
+                id,
+                method: methods::SNAPSHOT_SUBSCRIBE_ANSI.into(),
+                params: json!({ "session_id": created.id, "max_bytes": max_bytes }),
+            },
+        )
+        .await;
+        assert_eq!(
+            invalid.error.expect("error").code,
+            ErrorCode::InvalidRequest,
+            "max_bytes={max_bytes}"
+        );
     }
-    let unknown = round_trip(&mut stream, ControlRequest {
-        id: 7,
-        method: methods::SNAPSHOT_SUBSCRIBE_ANSI.into(),
-        params: json!({ "session_id": Uuid::new_v4(), "max_bytes": 1024 }),
-    }).await;
-    assert_eq!(unknown.error.expect("error").code, ErrorCode::UnknownSession);
+    let unknown = round_trip(
+        &mut stream,
+        ControlRequest {
+            id: 7,
+            method: methods::SNAPSHOT_SUBSCRIBE_ANSI.into(),
+            params: json!({ "session_id": Uuid::new_v4(), "max_bytes": 1024 }),
+        },
+    )
+    .await;
+    assert_eq!(
+        unknown.error.expect("error").code,
+        ErrorCode::UnknownSession
+    );
 
     drop(stream);
     h.shutdown().await;
@@ -954,10 +1120,7 @@ async fn spawning_nonexistent_command_returns_spawn_failed() {
     // acceptable; we just refuse to consider a still-alive session a pass.
     match resp.status {
         Status::Error => {
-            assert_eq!(
-                resp.error.expect("error").code,
-                ErrorCode::SpawnFailed
-            );
+            assert_eq!(resp.error.expect("error").code, ErrorCode::SpawnFailed);
         }
         Status::Ok => {
             let session = match resp.payload.expect("payload") {
@@ -1163,7 +1326,11 @@ async fn subscribe_streams_live_pty_output_to_subscriber() {
     .await;
     assert_eq!(resp.status, Status::Ok);
     match resp.payload.expect("payload") {
-        ResponsePayload::Subscribe { ok, current_seq: _, replay_truncated: _ } => assert!(ok),
+        ResponsePayload::Subscribe {
+            ok,
+            current_seq: _,
+            replay_truncated: _,
+        } => assert!(ok),
         other => panic!("unexpected: {other:?}"),
     }
 
@@ -1239,13 +1406,19 @@ async fn subscribe_after_drainer_close_replays_retained_final_output() {
         },
     )
     .await;
-    assert_eq!(resp.status, Status::Ok, "closed buses remain replayable during tombstone retention");
+    assert_eq!(
+        resp.status,
+        Status::Ok,
+        "closed buses remain replayable during tombstone retention"
+    );
     let output = timeout(TEST_TIMEOUT, read_frame_async(&mut stream))
         .await
         .expect("final replay timeout")
         .expect("final replay frame");
     match output {
-        Frame::OutputBinary(frame) => assert!(String::from_utf8_lossy(&frame.data).contains("first-then-done")),
+        Frame::OutputBinary(frame) => {
+            assert!(String::from_utf8_lossy(&frame.data).contains("first-then-done"))
+        }
         other => panic!("expected final output replay, got {other:?}"),
     }
 
@@ -1305,7 +1478,11 @@ async fn subscribe_with_since_seq_replays_then_streams_live() {
     .await;
     assert_eq!(resp.status, Status::Ok);
     let current_seq = match resp.payload.expect("payload") {
-        ResponsePayload::Subscribe { ok, current_seq, replay_truncated: _ } => {
+        ResponsePayload::Subscribe {
+            ok,
+            current_seq,
+            replay_truncated: _,
+        } => {
             assert!(ok);
             current_seq
         }
@@ -1361,11 +1538,7 @@ async fn unsubscribe_stops_further_output_frames() {
         create_request(
             1,
             Some("chatty"),
-            &[
-                "bash",
-                "-c",
-                "while true; do printf tick; sleep 0.05; done",
-            ],
+            &["bash", "-c", "while true; do printf tick; sleep 0.05; done"],
         ),
     )
     .await;
@@ -1517,24 +1690,44 @@ async fn resubscribe_after_unsubscribe_delivers_only_new_session_output() {
     let mut stream = connect(&h.socket_path).await;
 
     // Create two sessions — A (fast ticker) and B (also a ticker).
-    let resp_a = round_trip(&mut stream, create_request(1, Some("a"), &["sh", "-c", "while true; do echo a; sleep 0.05; done"])).await;
+    let resp_a = round_trip(
+        &mut stream,
+        create_request(
+            1,
+            Some("a"),
+            &["sh", "-c", "while true; do echo a; sleep 0.05; done"],
+        ),
+    )
+    .await;
     let id_a = match resp_a.payload.expect("payload") {
         ResponsePayload::CreateSession { session } => session.id,
         other => panic!("unexpected: {other:?}"),
     };
 
-    let resp_b = round_trip(&mut stream, create_request(2, Some("b"), &["sh", "-c", "while true; do echo b; sleep 0.05; done"])).await;
+    let resp_b = round_trip(
+        &mut stream,
+        create_request(
+            2,
+            Some("b"),
+            &["sh", "-c", "while true; do echo b; sleep 0.05; done"],
+        ),
+    )
+    .await;
     let id_b = match resp_b.payload.expect("payload") {
         ResponsePayload::CreateSession { session } => session.id,
         other => panic!("unexpected: {other:?}"),
     };
 
     // Subscribe to A.
-    round_trip(&mut stream, ControlRequest {
-        id: 3,
-        method: methods::SUBSCRIBE.into(),
-        params: json!({ "session_id": id_a }),
-    }).await;
+    round_trip(
+        &mut stream,
+        ControlRequest {
+            id: 3,
+            method: methods::SUBSCRIBE.into(),
+            params: json!({ "session_id": id_a }),
+        },
+    )
+    .await;
 
     // Drain frames from A to confirm it's flowing. Under parallel cargo test
     // load, the shell/timer can take longer than a fixed 120ms sleep to emit.
@@ -1552,16 +1745,24 @@ async fn resubscribe_after_unsubscribe_delivers_only_new_session_output() {
     assert!(a_frames >= 1, "expected at least one output frame from A");
 
     // Unsubscribe A, then immediately subscribe B.
-    round_trip(&mut stream, ControlRequest {
-        id: 4,
-        method: methods::UNSUBSCRIBE.into(),
-        params: json!({ "session_id": id_a }),
-    }).await;
-    round_trip(&mut stream, ControlRequest {
-        id: 5,
-        method: methods::SUBSCRIBE.into(),
-        params: json!({ "session_id": id_b }),
-    }).await;
+    round_trip(
+        &mut stream,
+        ControlRequest {
+            id: 4,
+            method: methods::UNSUBSCRIBE.into(),
+            params: json!({ "session_id": id_a }),
+        },
+    )
+    .await;
+    round_trip(
+        &mut stream,
+        ControlRequest {
+            id: 5,
+            method: methods::SUBSCRIBE.into(),
+            params: json!({ "session_id": id_b }),
+        },
+    )
+    .await;
 
     // Collect output frames for 200ms. All must belong to B, not A.
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1571,27 +1772,41 @@ async fn resubscribe_after_unsubscribe_delivers_only_new_session_output() {
     loop {
         match timeout(Duration::from_millis(50), read_frame_async(&mut r2)).await {
             Ok(Ok(Frame::OutputBinary(f))) => {
-                if f.session_id == id_a { a_after += 1; }
-                else if f.session_id == id_b { b_after += 1; }
+                if f.session_id == id_a {
+                    a_after += 1;
+                } else if f.session_id == id_b {
+                    b_after += 1;
+                }
             }
             Ok(Ok(Frame::Event(_))) => {} // lifecycle events are expected
             _ => break,
         }
     }
     assert!(b_after > 0, "expected output from B after resubscribe");
-    assert_eq!(a_after, 0, "no frames from A should arrive after unsubscribe, got {a_after}");
+    assert_eq!(
+        a_after, 0,
+        "no frames from A should arrive after unsubscribe, got {a_after}"
+    );
 
     // Kill both sessions.
-    let _ = round_trip(&mut stream, ControlRequest {
-        id: 6,
-        method: methods::KILL_SESSION.into(),
-        params: json!({ "session_id": id_a, "signal": libc::SIGKILL }),
-    }).await;
-    let _ = round_trip(&mut stream, ControlRequest {
-        id: 7,
-        method: methods::KILL_SESSION.into(),
-        params: json!({ "session_id": id_b, "signal": libc::SIGKILL }),
-    }).await;
+    let _ = round_trip(
+        &mut stream,
+        ControlRequest {
+            id: 6,
+            method: methods::KILL_SESSION.into(),
+            params: json!({ "session_id": id_a, "signal": libc::SIGKILL }),
+        },
+    )
+    .await;
+    let _ = round_trip(
+        &mut stream,
+        ControlRequest {
+            id: 7,
+            method: methods::KILL_SESSION.into(),
+            params: json!({ "session_id": id_b, "signal": libc::SIGKILL }),
+        },
+    )
+    .await;
 
     drop(stream);
     h.shutdown().await;
@@ -1693,9 +1908,12 @@ async fn lifecycle_events_are_delivered_to_connected_client() {
     };
 
     let deadline = tokio::time::Instant::now() + TEST_TIMEOUT;
-    match await_event_buffered(&mut stream, &mut events, deadline, |ev| {
-        matches!(ev, Event::SessionStarted { session } if session.id == created.id)
-    })
+    match await_event_buffered(
+        &mut stream,
+        &mut events,
+        deadline,
+        |ev| matches!(ev, Event::SessionStarted { session } if session.id == created.id),
+    )
     .await
     {
         Event::SessionStarted { session } => {
@@ -1719,9 +1937,12 @@ async fn lifecycle_events_are_delivered_to_connected_client() {
     assert_eq!(resp.status, Status::Ok);
 
     let deadline = tokio::time::Instant::now() + TEST_TIMEOUT;
-    match await_event_buffered(&mut stream, &mut events, deadline, |ev| {
-        matches!(ev, Event::SessionResized { session_id, .. } if *session_id == created.id)
-    })
+    match await_event_buffered(
+        &mut stream,
+        &mut events,
+        deadline,
+        |ev| matches!(ev, Event::SessionResized { session_id, .. } if *session_id == created.id),
+    )
     .await
     {
         Event::SessionResized { cols, rows, .. } => {
@@ -1730,9 +1951,12 @@ async fn lifecycle_events_are_delivered_to_connected_client() {
         other => panic!("unexpected: {other:?}"),
     }
     let deadline = tokio::time::Instant::now() + TEST_TIMEOUT;
-    match await_event_buffered(&mut stream, &mut events, deadline, |ev| {
-        matches!(ev, Event::SnapshotInvalidated { session_id } if *session_id == created.id)
-    })
+    match await_event_buffered(
+        &mut stream,
+        &mut events,
+        deadline,
+        |ev| matches!(ev, Event::SnapshotInvalidated { session_id } if *session_id == created.id),
+    )
     .await
     {
         Event::SnapshotInvalidated { session_id } => assert_eq!(session_id, created.id),
@@ -1753,9 +1977,12 @@ async fn lifecycle_events_are_delivered_to_connected_client() {
     assert_eq!(resp.status, Status::Ok);
 
     let deadline = tokio::time::Instant::now() + TEST_TIMEOUT;
-    match await_event_buffered(&mut stream, &mut events, deadline, |ev| {
-        matches!(ev, Event::SessionExited { session_id, .. } if *session_id == created.id)
-    })
+    match await_event_buffered(
+        &mut stream,
+        &mut events,
+        deadline,
+        |ev| matches!(ev, Event::SessionExited { session_id, .. } if *session_id == created.id),
+    )
     .await
     {
         Event::SessionExited { session_id, .. } => assert_eq!(session_id, created.id),
@@ -1788,14 +2015,20 @@ async fn events_fan_out_to_every_connected_client() {
     };
 
     let deadline = tokio::time::Instant::now() + TEST_TIMEOUT;
-    let _ = await_event_buffered(&mut a, &mut a_events, deadline, |ev| {
-        matches!(ev, Event::SessionStarted { session } if session.id == created.id)
-    })
+    let _ = await_event_buffered(
+        &mut a,
+        &mut a_events,
+        deadline,
+        |ev| matches!(ev, Event::SessionStarted { session } if session.id == created.id),
+    )
     .await;
     let deadline = tokio::time::Instant::now() + TEST_TIMEOUT;
-    let _ = await_event_buffered(&mut b, &mut b_events, deadline, |ev| {
-        matches!(ev, Event::SessionStarted { session } if session.id == created.id)
-    })
+    let _ = await_event_buffered(
+        &mut b,
+        &mut b_events,
+        deadline,
+        |ev| matches!(ev, Event::SessionStarted { session } if session.id == created.id),
+    )
     .await;
 
     // Cleanup the long-running sleep so harness shutdown is fast.
@@ -1899,10 +2132,7 @@ async fn socket_file_has_mode_0600() {
 
     let meta = std::fs::metadata(&h.socket_path).expect("stat socket");
     let mode = meta.permissions().mode() & 0o777;
-    assert_eq!(
-        mode, 0o600,
-        "socket must have mode 0o600, got 0o{mode:03o}"
-    );
+    assert_eq!(mode, 0o600, "socket must have mode 0o600, got 0o{mode:03o}");
 
     h.shutdown().await;
 }
@@ -2031,10 +2261,7 @@ async fn socket_file_has_mode_0600_custom_path() {
 
     let meta = std::fs::metadata(&socket_path).expect("stat socket");
     let mode = meta.permissions().mode() & 0o777;
-    assert_eq!(
-        mode, 0o600,
-        "socket must have mode 0o600, got 0o{mode:03o}"
-    );
+    assert_eq!(mode, 0o600, "socket must have mode 0o600, got 0o{mode:03o}");
 
     // Parent directory must be 0o700
     let parent = socket_path.parent().unwrap();
@@ -2075,7 +2302,11 @@ async fn malformed_json_frame_drops_connection() {
     let mut good = connect(&h.socket_path).await;
     let resp = round_trip(
         &mut good,
-        ControlRequest { id: 1, method: methods::LIST_SESSIONS.into(), params: json!({}) },
+        ControlRequest {
+            id: 1,
+            method: methods::LIST_SESSIONS.into(),
+            params: json!({}),
+        },
     )
     .await;
     assert_eq!(resp.status, Status::Ok);
@@ -2108,7 +2339,11 @@ async fn oversized_frame_drops_connection_server_survives() {
     let mut good = connect(&h.socket_path).await;
     let resp = round_trip(
         &mut good,
-        ControlRequest { id: 1, method: methods::LIST_SESSIONS.into(), params: json!({}) },
+        ControlRequest {
+            id: 1,
+            method: methods::LIST_SESSIONS.into(),
+            params: json!({}),
+        },
     )
     .await;
     assert_eq!(resp.status, Status::Ok);
@@ -2138,12 +2373,19 @@ async fn create_rejects_metadata_that_cannot_fit_the_started_event() {
     .await;
     assert_eq!(resp.status, Status::Error);
     assert_eq!(resp.error.expect("error").code, ErrorCode::InvalidRequest);
-    assert!(h.registry.list().is_empty(), "rejected create must not spawn");
+    assert!(
+        h.registry.list().is_empty(),
+        "rejected create must not spawn"
+    );
 
     for (stream, id) in [(&mut creator, 2), (&mut observer, 3)] {
         let resp = round_trip(
             stream,
-            ControlRequest { id, method: methods::LIST_SESSIONS.into(), params: json!({}) },
+            ControlRequest {
+                id,
+                method: methods::LIST_SESSIONS.into(),
+                params: json!({}),
+            },
         )
         .await;
         assert_eq!(resp.status, Status::Ok, "connection {id} must stay usable");
@@ -2162,9 +2404,12 @@ async fn create_rejects_metadata_that_cannot_fit_the_started_event() {
         other => panic!("unexpected: {other:?}"),
     };
     let deadline = tokio::time::Instant::now() + TEST_TIMEOUT;
-    let _ = await_event_buffered(&mut observer, &mut observer_events, deadline, |ev| {
-        matches!(ev, Event::SessionStarted { session } if session.id == created.id)
-    })
+    let _ = await_event_buffered(
+        &mut observer,
+        &mut observer_events,
+        deadline,
+        |ev| matches!(ev, Event::SessionStarted { session } if session.id == created.id),
+    )
     .await;
 
     h.shutdown().await;
@@ -2181,43 +2426,95 @@ async fn blocked_pty_input_preserves_other_session_fifo_and_control_on_same_conn
         ResponsePayload::CreateSession { session } => session.id,
         other => panic!("unexpected {other:?}"),
     };
-    let echo = round_trip(&mut stream, create_request(2, None, &["sh", "-c", "stty raw -echo; exec cat"])).await;
+    let echo = round_trip(
+        &mut stream,
+        create_request(2, None, &["sh", "-c", "stty raw -echo; exec cat"]),
+    )
+    .await;
     let echo_id = match echo.payload.expect("payload") {
         ResponsePayload::CreateSession { session } => session.id,
         other => panic!("unexpected {other:?}"),
     };
-    round_trip(&mut stream, ControlRequest {
-        id: 3, method: methods::SUBSCRIBE.into(), params: json!({ "session_id": echo_id }),
-    }).await;
+    round_trip(
+        &mut stream,
+        ControlRequest {
+            id: 3,
+            method: methods::SUBSCRIBE.into(),
+            params: json!({ "session_id": echo_id }),
+        },
+    )
+    .await;
     timeout(TEST_TIMEOUT, async {
-        while !ready.exists() { tokio::time::sleep(POLL_INTERVAL).await; }
-    }).await.expect("raw mode ready");
-    write_frame_async(&mut stream, &Frame::InputBinary(InputFrame {
-        session_id: blocked_id, data: vec![b'x'; 256 * 1024 - 16],
-    })).await.expect("blocked input");
+        while !ready.exists() {
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+    })
+    .await
+    .expect("raw mode ready");
+    write_frame_async(
+        &mut stream,
+        &Frame::InputBinary(InputFrame {
+            session_id: blocked_id,
+            data: vec![b'x'; 256 * 1024 - 16],
+        }),
+    )
+    .await
+    .expect("blocked input");
     for data in [b"FIRST\n".to_vec(), b"SECOND\n".to_vec()] {
-        write_frame_async(&mut stream, &Frame::InputBinary(InputFrame { session_id: echo_id, data })).await.expect("echo input");
+        write_frame_async(
+            &mut stream,
+            &Frame::InputBinary(InputFrame {
+                session_id: echo_id,
+                data,
+            }),
+        )
+        .await
+        .expect("echo input");
     }
     // Fill the blocked session's accepted frame queue without exceeding it:
     // the reader must still dispatch control and the other session's input.
     for _ in 0..16 {
-        write_frame_async(&mut stream, &Frame::InputBinary(InputFrame {
-            session_id: blocked_id, data: vec![b'x'],
-        })).await.expect("queued blocked input");
+        write_frame_async(
+            &mut stream,
+            &Frame::InputBinary(InputFrame {
+                session_id: blocked_id,
+                data: vec![b'x'],
+            }),
+        )
+        .await
+        .expect("queued blocked input");
     }
     let mut received = Vec::new();
     let responsive = timeout(Duration::from_secs(1), async {
         loop {
-            if let Frame::OutputBinary(output) = read_frame_async(&mut stream).await.expect("read output") {
-                if output.session_id == echo_id { received.extend_from_slice(&output.data); }
-                if String::from_utf8_lossy(&received).contains("FIRST\nSECOND\n") { break; }
+            if let Frame::OutputBinary(output) =
+                read_frame_async(&mut stream).await.expect("read output")
+            {
+                if output.session_id == echo_id {
+                    received.extend_from_slice(&output.data);
+                }
+                if String::from_utf8_lossy(&received).contains("FIRST\nSECOND\n") {
+                    break;
+                }
             }
         }
-        round_trip(&mut stream, ControlRequest { id: 4, method: methods::HELLO.into(), params: json!({}) }).await
-    }).await;
+        round_trip(
+            &mut stream,
+            ControlRequest {
+                id: 4,
+                method: methods::HELLO.into(),
+                params: json!({}),
+            },
+        )
+        .await
+    })
+    .await;
     drop(stream);
     h.shutdown().await;
-    assert!(responsive.is_ok(), "blocked session stalled other input/control; received {received:?}");
+    assert!(
+        responsive.is_ok(),
+        "blocked session stalled other input/control; received {received:?}"
+    );
     assert_eq!(responsive.unwrap().status, Status::Ok);
 }
 
@@ -2231,28 +2528,65 @@ async fn blocked_pty_input_does_not_stall_other_connections() {
     let script = format!("stty raw -echo; : > '{}'; exec sleep 30", ready.display());
     let mut writer = connect(&h.socket_path).await;
     let mut other = connect(&h.socket_path).await;
-    let resp = round_trip(&mut writer, create_request(1, Some("stalled-input"), &["sh", "-c", &script])).await;
+    let resp = round_trip(
+        &mut writer,
+        create_request(1, Some("stalled-input"), &["sh", "-c", &script]),
+    )
+    .await;
     assert_eq!(resp.status, Status::Ok);
     let session_id = match resp.payload.expect("payload") {
         ResponsePayload::CreateSession { session } => session.id,
         other => panic!("unexpected: {other:?}"),
     };
     timeout(TEST_TIMEOUT, async {
-        while !ready.exists() { tokio::time::sleep(POLL_INTERVAL).await; }
-    }).await.expect("raw mode ready timeout");
+        while !ready.exists() {
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+    })
+    .await
+    .expect("raw mode ready timeout");
 
-    timeout(TEST_TIMEOUT, write_frame_async(&mut writer, &Frame::InputBinary(InputFrame {
-        session_id, data: vec![b'x'; 256 * 1024 - 16],
-    }))).await.expect("input write timeout").expect("input write");
+    timeout(
+        TEST_TIMEOUT,
+        write_frame_async(
+            &mut writer,
+            &Frame::InputBinary(InputFrame {
+                session_id,
+                data: vec![b'x'; 256 * 1024 - 16],
+            }),
+        ),
+    )
+    .await
+    .expect("input write timeout")
+    .expect("input write");
 
-    let list = timeout(Duration::from_secs(1), round_trip(&mut other, ControlRequest {
-        id: 2, method: methods::LIST_SESSIONS.into(), params: json!({}),
-    })).await.expect("list must be served while another connection's input is blocked");
+    let list = timeout(
+        Duration::from_secs(1),
+        round_trip(
+            &mut other,
+            ControlRequest {
+                id: 2,
+                method: methods::LIST_SESSIONS.into(),
+                params: json!({}),
+            },
+        ),
+    )
+    .await
+    .expect("list must be served while another connection's input is blocked");
     assert_eq!(list.status, Status::Ok);
-    let kill = timeout(Duration::from_secs(1), round_trip(&mut other, ControlRequest {
-        id: 3, method: methods::KILL_SESSION.into(),
-        params: json!({ "session_id": session_id, "signal": libc::SIGKILL }),
-    })).await.expect("kill must be served while another connection's input is blocked");
+    let kill = timeout(
+        Duration::from_secs(1),
+        round_trip(
+            &mut other,
+            ControlRequest {
+                id: 3,
+                method: methods::KILL_SESSION.into(),
+                params: json!({ "session_id": session_id, "signal": libc::SIGKILL }),
+            },
+        ),
+    )
+    .await
+    .expect("kill must be served while another connection's input is blocked");
     assert_eq!(kill.status, Status::Ok);
 
     drop(writer);

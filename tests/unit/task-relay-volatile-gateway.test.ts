@@ -47,6 +47,7 @@ test("profile is mandatory before registration; scopes, identities and inert inp
   expect(await f.gateway.request({ ...bob, callerSession: "mallory", operation: "receive", cursor: "0" })).toMatchObject({ ok: false, error: { code: "SOURCE_MISMATCH" } });
   expect(await f.gateway.request({ ...alice, epoch: randomUUID(), operation: "receive", cursor: "0" })).toMatchObject({ ok: false, error: { code: "RELAY_RESET", retryable: false } });
   expect(await f.gateway.request({ ...alice, operation: "send", envelope: envelope(bob.endpoint, alice.endpoint) })).toMatchObject({ ok: false, error: { code: "SOURCE_MISMATCH" } });
+  take(await f.gateway.request({ ...alice, operation: "disconnect" }), "disconnected");
   const replaced = await f.connect("alice", "new-generation");
   expect(replaced.endpoint).not.toEqual(alice.endpoint);
   expect(await f.gateway.request({ ...alice, operation: "receive", cursor: "0" })).toMatchObject({ ok: false, error: { code: "REGISTRATION_EXPIRED" } });

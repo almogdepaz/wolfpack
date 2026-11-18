@@ -148,7 +148,6 @@ export async function start(opts?: {
       stdio: ["pipe", "pipe", "pipe"],
       env: {
         ...process.env,
-        WOLFPACK_TEST: "1",
         WOLFPACK_BROKER_SOCKET: socketPath,
         WOLFPACK_PORT: "0",
         ...(opts?.envOverrides ?? {}),

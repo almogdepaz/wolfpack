@@ -59,8 +59,13 @@ const MAIN_MARKER = "MAIN_SCREEN_PRE_TUI";
 // Single-quoting the argument means zsh passes \033 literally to printf, which
 // interprets it as ESC (octal 033). The terminal (120×40) has room at row 9
 // without triggering scrollback.
+//
+// `sleep 30` keeps the fixture in the foreground, as a real TUI holds the
+// terminal. Without it the shell prints its next prompt into the alt-screen;
+// bash (the Linux CI shell) redraws that prompt from column 1 and overwrites
+// TUI_LINE_BOT. The session is torn down after the test.
 const TUI_CMD =
-  `printf '\\033[?1049h\\033[2J\\033[H\\033[1;1H${TUI_TOKEN_TOP}\\033[5;5H\\033[31;1m${TUI_TOKEN_RED}\\033[0m\\033[9;1H${TUI_TOKEN_BOT}'`;
+  `printf '\\033[?1049h\\033[2J\\033[H\\033[1;1H${TUI_TOKEN_TOP}\\033[5;5H\\033[31;1m${TUI_TOKEN_RED}\\033[0m\\033[9;1H${TUI_TOKEN_BOT}'; sleep 30`;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -200,8 +205,8 @@ test("broker TUI: alt-screen reconnect restores canvas and has no scrollback ble
   }, TUI_CMD);
   await page.keyboard.press("Enter");
 
-  // Wait for terminal output to settle after the TUI command. The shell will
-  // execute printf (drawing the TUI) then emit a new prompt — idle detection
+  // Wait for terminal output to settle after the TUI command. The fixture draws
+  // the TUI and then stays in the foreground (no new prompt) — idle detection
   // confirms the fixture completed and the broker snapshot is stable.
   lastLen = conn1Output.length;
   idleCount = 0;

@@ -7,8 +7,20 @@ import { Database } from "bun:sqlite";
 import { chmodSync, existsSync, renameSync, mkdirSync, statSync } from "node:fs";
 import { createTaskRelayGateway } from "../../src/task-relay/gateway.ts";
 import { randomUUID } from "node:crypto";
-import { seedInvalidRelayJournal, relayJournalRows } from "../integration/fixtures/invalid-relay-journal.ts";
+import { seedInvalidRelayJournal, seedRetiredRelayJournal, relayJournalRows } from "../integration/fixtures/invalid-relay-journal.ts";
 import { createRecoveryStore } from "../../src/task-relay/recovery-store.ts";
+import { SESSION_TASK_RELAY_UNAVAILABLE } from "../../src/session-status-contract.ts";
+
+// Compatibility boundary (#484): retired senders keep accepted outgoing local mail, so that shape is valid storage
+// and must not be used as invalid-storage evidence. The containment tests below use a retired *target* instead.
+test("a retired mailbox source with retained outgoing mail remains valid storage across native reopen", () => {
+  const home = mkdtempSync(join(tmpdir(), "relay-retired-source-")), root = join(home, "relay");
+  try {
+    const epoch = seedRetiredRelayJournal(root, "source");
+    const owner = createRecoveryStore({ root });
+    try { expect(owner.store.epoch).toBe(epoch); } finally { owner.close(); }
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
 
 test("invalid relay storage cannot prevent core HTTP and session access or silently reset the journal", () => {
   const home = mkdtempSync(join(tmpdir(), "relay-startup-containment-")), root = join(home, "relay");
@@ -19,10 +31,10 @@ test("invalid relay storage cannot prevent core HTTP and session access or silen
     expect(() => createRecoveryStore({ root })).toThrow("RELAY_STORAGE_INVALID");
     const before = relayJournalRows(root);
     const result = spawnSync(process.execPath, ["-e", `
-      import { server, startServer } from "./src/server/index.ts";
+      import { startServer } from "./src/server/index.ts";
       import { MockBackend } from "./src/server/mock-backend.ts";
       import { getDefaultServerContext } from "./src/server/context.ts";
-      await startServer(0, "127.0.0.1", { backend: new MockBackend({ sessions: ["kept"], capturePane: async () => "terminal output" }) });
+      const { server } = await startServer(0, "127.0.0.1", { backend: new MockBackend({ sessions: ["kept"], capturePane: async () => "terminal output" }) });
       if (!server.listening) await new Promise(resolve => server.once("listening", resolve));
       const base = "http://127.0.0.1:" + server.address().port;
       const get = async path => { const r = await fetch(base + path); return { status: r.status, body: await r.json() }; };
@@ -71,7 +83,8 @@ for (const fault of ["construction", "termination", "timeout", "programming"] as
         throw new Error("termination confirmation unavailable");
       });
       if (${JSON.stringify(fault)} === "timeout") spyOn(Worker.prototype, "postMessage").mockImplementation(() => undefined);
-      const { server, startServer } = await import("./src/server/index.ts");
+      const { startServer } = await import("./src/server/index.ts");
+      let server;
       const { MockBackend } = await import("./src/server/mock-backend.ts");
       const { createTaskRelayGateway } = await import("./src/task-relay/gateway.ts");
       const { operationalHealth } = await import("./src/server/operability.ts");
@@ -84,7 +97,7 @@ for (const fault of ["construction", "termination", "timeout", "programming"] as
       const gateway = ${JSON.stringify(fault)} === "programming" ? { async initialize() { throw new TypeError("unrelated programming error"); } }
         : createTaskRelayGateway({ root: ${JSON.stringify(join(home, "relay"))}, storage: "sqlite", requestTimeoutMs: ${fault === "timeout" ? 20 : 1000} });
       try {
-        await startServer(0, "127.0.0.1", { backend, taskRelayGateway: gateway });
+        ({ server } = await startServer(0, "127.0.0.1", { backend, taskRelayGateway: gateway }));
         if (!server.listening) await new Promise(resolve => server.once("listening", resolve));
         const base = "http://127.0.0.1:" + server.address().port;
         const health = await (await fetch(base + "/api/health")).json();
@@ -103,10 +116,10 @@ for (const fault of ["construction", "termination", "timeout", "programming"] as
         console.log("RESULT:" + JSON.stringify({ health, workers: workers.size, beforeRecovery, recovery }));
       } catch(e) {
         if (${JSON.stringify(fault)} !== "programming") throw e;
-        console.log("RESULT:" + JSON.stringify({ error: e.message, listening: server.listening }));
+        console.log("RESULT:" + JSON.stringify({ error: e.message, listening: server?.listening ?? false }));
       } finally {
         if (gateway.close) await gateway.close();
-        if (server.listening) await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
+        if (server?.listening) await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
       }
     `], { encoding: "utf8", timeout: 10000, env: { ...process.env, HOME: home, WOLFPACK_DIR: join(home, ".wolfpack"), WOLFPACK_TEST: "1", WOLFPACK_JWT_SECRET: "", WOLFPACK_TASK_ROOT: join(home, "tasks"), WOLFPACK_TASK_RELAY_ROOT: join(home, "relay") } });
     expect(result.status, result.stderr).toBe(0);
@@ -116,6 +129,85 @@ for (const fault of ["construction", "termination", "timeout", "programming"] as
     else expect(output).toMatchObject({ health: { status: "ready", relay: { state: "unavailable", code: "RELAY_UNAVAILABLE", retryable: true } } });
     if (fault === "construction") expect(output).toMatchObject({ beforeRecovery: 1, workers: 2, recovery: { state: "ready" } });
     if (fault === "termination") expect(output).toMatchObject({ beforeRecovery: 1, workers: 1, recovery: { state: "unavailable", code: "RELAY_STORAGE_RECOVERY_BLOCKED", retryable: false } });
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+// Local diagnostics keep the private native cause once, at the worker owner boundary; public replies stay bounded.
+// "setup" injects failures after `new Worker` returns (post-creation unref), for the initial worker and two replacements:
+// one requested directly and one requested by the session list's optional relay enrichment, which has its own catch.
+// "event" emits a worker `error` event. Neither executes a real OS/native `new Worker` construction failure.
+for (const fault of ["setup", "event"] as const) test(`relay worker ${fault} failure cause is logged locally, never returned publicly`, () => {
+  const home = mkdtempSync(join(tmpdir(), "relay-cause-log-"));
+  const markers = fault === "setup" ? ["A", "B", "C"].map(label => `PRIVATE_NATIVE_CAUSE_${label}_${randomUUID()}`) : ["PRIVATE_WORKER_EVENT_" + randomUUID()];
+  try {
+    const result = spawnSync(process.execPath, ["-e", `
+      import { spyOn } from "bun:test";
+      import { Worker } from "node:worker_threads";
+      const markers = ${JSON.stringify(markers)};
+      let constructed = 0;
+      spyOn(Worker.prototype, "unref").mockImplementation(function() {
+        const marker = markers[constructed++];
+        if (!marker) throw new Error("unexpected extra relay worker");
+        if (${JSON.stringify(fault)} === "event") { this.emit("error", new Error(marker)); return this; }
+        throw new Error(marker);
+      });
+      const { startServer } = await import("./src/server/index.ts");
+      const { MockBackend } = await import("./src/server/mock-backend.ts");
+      const { createTaskRelayGateway } = await import("./src/task-relay/gateway.ts");
+      const gateway = createTaskRelayGateway({ root: ${JSON.stringify(join(home, "relay"))}, storage: "sqlite" });
+      let server;
+      try {
+        ({ server } = await startServer(0, "127.0.0.1", { backend: new MockBackend({ sessions: ["kept"] }), taskRelayGateway: gateway }));
+        if (!server.listening) await new Promise(resolve => server.once("listening", resolve));
+        const base = "http://127.0.0.1:" + server.address().port;
+        const text = async (path, init) => { const r = await fetch(base + path, init); return { path, status: r.status, body: await r.text() }; };
+        const connect = { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ operation: "connect", profile: "volatile-v1", callerSession: "kept", generation: "g", protocolVersions: [2] }) };
+        const replies = [await text("/api/health"), await text("/api/task-relay/profile"), await text("/api/task-relay/volatile-v1", connect)];
+        const awaitCooldown = async () => {
+          const cooldown = await gateway.volatile({ operation: "connect" });
+          if (cooldown.ok || cooldown.error.code !== "RELAY_STORAGE_RECOVERING") throw new Error("missing construction cooldown");
+          await Bun.sleep(cooldown.error.retryAfterMs + 20);
+        };
+        if (markers.length > 1) {
+          await awaitCooldown();
+          let replacement; try { await gateway.initialize(); } catch (error) { replacement = error.constructor.name; }
+          if (!replacement) throw new Error("replacement unexpectedly succeeded");
+          replies.push(await text("/api/health"), await text("/api/task-relay/volatile-v1", connect));
+          // The session list's registration lookup starts the next replacement; listing itself stays available.
+          await awaitCooldown();
+          replies.push(await text("/api/session-control/list"), await text("/api/health"));
+        }
+        console.log("RESULT:" + JSON.stringify({ constructed, replies }));
+      } finally {
+        await gateway.close();
+        if (server?.listening) await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
+      }
+    `], { encoding: "utf8", timeout: 10000, env: { ...process.env, HOME: home, WOLFPACK_DIR: join(home, ".wolfpack"), WOLFPACK_TEST: "1", WOLFPACK_JWT_SECRET: "", WOLFPACK_TASK_ROOT: join(home, "tasks"), WOLFPACK_TASK_RELAY_ROOT: join(home, "relay") } });
+    expect(result.status, result.stderr).toBe(0);
+    const lines = result.stdout.split("\n");
+    const line = lines.find(line => line.startsWith("RESULT:"));
+    expect(line).toBeDefined();
+    const output = JSON.parse(line!.slice(7)) as { constructed: number; replies: Array<{ path: string; status: number; body: string }> };
+    expect(output.constructed).toBe(markers.length);
+    const local = lines.filter(line => !line.startsWith("RESULT:")).join("\n") + result.stderr;
+    for (const marker of markers) {
+      // Exactly one local record per native cause: no log cascade across gateway/startup layers.
+      expect(local.split(marker).length - 1, marker).toBe(1);
+      expect(line).not.toContain(marker);
+    }
+    for (const reply of output.replies) {
+      if (reply.path === "/api/health") expect(JSON.parse(reply.body)).toMatchObject({ status: "ready", relay: { state: "unavailable", code: "RELAY_UNAVAILABLE", retryable: true } });
+      else if (reply.path === "/api/session-control/list") {
+        expect(reply.status).toBe(200);
+        const sessions = JSON.parse(reply.body).sessions as Array<{ session: string; taskRelay?: unknown }>;
+        expect(sessions.map(session => session.session)).toEqual(["kept"]);
+        expect(sessions[0]!.taskRelay).toEqual(SESSION_TASK_RELAY_UNAVAILABLE);
+      } else expect(reply.status).toBe(503);
+    }
+    expect(output.replies.some(reply => reply.path === "/api/session-control/list")).toBe(fault === "setup");
+    // The session route keeps its own bounded diagnostic; only the native text is owned by the worker log.
+    if (fault === "setup") expect(local).toContain("session task relay enrichment unavailable");
+    expect(local).toContain("relay unavailable; web and terminal access remain available");
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 

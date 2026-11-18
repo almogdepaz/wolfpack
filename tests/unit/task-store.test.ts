@@ -1,5 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
+import { EventBus, subscribeEvents } from "../../src/event-bus.ts";
 import { rebuildTaskState } from "../../src/tasks/domain.ts";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -100,6 +101,33 @@ async function createSender(store: TaskStore, taskId: string) {
 }
 
 describe("task append-only store", () => {
+  test("an explicit publisher delivers committed events only to its owner", async () => {
+    const root = testRoot();
+    const events = new EventBus();
+    const owned: string[] = [];
+    const global: string[] = [];
+    const stopOwned = events.subscribeEvents({}, event => owned.push(event.kind));
+    const stopGlobal = subscribeEvents({}, event => global.push(event.kind));
+    const store = new TaskStore({ root, publishEvent: body => events.publishEvent(body) });
+    try {
+      const ledger = await createSender(store, "owned-publication");
+      const result = await store.acceptCanonicalEvent(ledger.key, {
+        id: "created-owned-publication", taskId: "owned-publication", type: "task.created", actor: "parent",
+        occurredAt: "2026-08-03T00:00:00.000Z", message: undefined, replyToMessageId: undefined,
+        payload: { kind: "none" }, completion: undefined,
+      }, { actor: "parent", address: PARENT });
+      expect(result.kind).toBe("accepted");
+      expect(owned).toEqual(["task.updated"]);
+      expect(global).toEqual([]);
+    } finally {
+      stopOwned();
+      stopGlobal();
+      // Let the store's existing coalesced derived-cache write finish before removing its root.
+      await new Promise(resolve => setTimeout(resolve, 0));
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("uses a machine-global default root and containment-safe generated ledger paths", () => {
     expect(taskStorePaths().root).toBe(join(resolveWolfpackDir(), "tasks"));
     const root = testRoot();

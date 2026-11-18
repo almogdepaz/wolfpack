@@ -1,4 +1,4 @@
-import { beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { EventEmitter } from "node:events";
 import { assertNotificationFixtureHome } from "./run-notification-test.ts";
@@ -7,7 +7,6 @@ const { MockBackend } = await import("../../../src/server/mock-backend.ts");
 const { EventBus } = await import("../../../src/event-bus.ts");
 const { createServerContext } = await import("../../../src/server/context.ts");
 const { createSessionControlRoutes } = await import("../../../src/server/session-control-routes.ts");
-const { __resetChildEventsForTests, childMessageEvent, observeChildSession } = await import("../../../src/server/child-events.ts");
 const { clearParentInbox, PARENT_INBOX_BOOT_ID } = await import("../../../src/server/parent-inbox.ts");
 
 type Handler = (req: IncomingMessage, res: ServerResponse) => unknown;
@@ -36,10 +35,12 @@ function get(handler: Handler, url: string): { reply: Promise<Reply>; close: () 
 }
 
 const backend = new MockBackend();
-const ctx = createServerContext({ backend, events: new EventBus() });
-const routes = createSessionControlRoutes(ctx);
-const children = routes["GET /api/session-control/children"] as Handler;
-const wait = routes["GET /api/session-control/children/wait"] as Handler;
+let ctx = createServerContext({ backend, events: new EventBus() });
+let routes = createSessionControlRoutes(ctx);
+let children = routes["GET /api/session-control/children"] as Handler;
+let wait = routes["GET /api/session-control/children/wait"] as Handler;
+afterEach(async () => { await ctx.close(); });
+
 const loadSettings = () => ({ agentCmd: "claude" });
 const parent = await backend.createSession("lead", "/tmp", "claude", loadSettings);
 const parentSession = { wolfpackSessionId: parent.wolfpackSessionId, wolfpackSessionName: "lead" };
@@ -50,7 +51,7 @@ backend.setSessionAlive("gone", false);
 
 const publish = () => {};
 function observe(state: "working" | "idle") {
-  observeChildSession({
+  ctx.childEvents.observeChildSession({
     sessionId: worker.wolfpackSessionId,
     name: "worker",
     parentSession,
@@ -59,15 +60,19 @@ function observe(state: "working" | "idle") {
   }, publish);
 }
 
-beforeEach(() => {
-  __resetChildEventsForTests();
+beforeEach(async () => {
+  await ctx.close();
+  ctx = createServerContext({ backend, events: new EventBus() });
+  routes = createSessionControlRoutes(ctx);
+  children = routes["GET /api/session-control/children"] as Handler;
+  wait = routes["GET /api/session-control/children/wait"] as Handler;
   clearParentInbox(parent.wolfpackSessionId);
 });
 
 test("children lists only the parent's live children with settled state and the last event", async () => {
   observe("working");
   observe("idle");
-  childMessageEvent(parent.wolfpackSessionId, "worker", "phase 1 done", publish);
+  ctx.childEvents.childMessageEvent(parent.wolfpackSessionId, "worker", "phase 1 done", publish);
   const { reply } = get(children, "/api/session-control/children?session=lead");
   const response = await reply;
   expect(response.status).toBe(200);
@@ -98,7 +103,7 @@ test("wait any returns a child event after since and a timeout is a 200 check-in
   observe("working");
   const pending = get(wait, "/api/session-control/children/wait?session=lead&children=any&timeoutMs=5000");
   await new Promise(resolve => setTimeout(resolve, 10));
-  childMessageEvent(parent.wolfpackSessionId, "worker", "ready", publish);
+  ctx.childEvents.childMessageEvent(parent.wolfpackSessionId, "worker", "ready", publish);
   const events = await pending.reply;
   expect(events.status).toBe(200);
   expect(events.body).toMatchObject({ ok: true, children: "any", outcome: "events", bootId: PARENT_INBOX_BOOT_ID, since: 0, cursor: 1 });
@@ -144,14 +149,14 @@ test("wait all rereads a settled children snapshot that a child event invalidate
   try {
     while (!held) await new Promise(resolve => setTimeout(resolve, 0));
     const late = await backend.createSession("late", "/tmp", "claude", loadSettings, { parentSession });
-    observeChildSession({
+    ctx.childEvents.observeChildSession({
       sessionId: late.wolfpackSessionId,
       name: "late",
       parentSession,
       alive: true,
       runtimeState: { state: "working", authority: "fallback", freshness: "fresh", source: "screen-fallback", label: "working", stale: false, observedAt: "t", changedAt: "t", transitionSequence: 1, unseen: false },
     }, publish);
-    childMessageEvent(parent.wolfpackSessionId, "late", "started", publish);
+    ctx.childEvents.childMessageEvent(parent.wolfpackSessionId, "late", "started", publish);
     release();
     const response = await pending.reply;
     expect(response.body).toMatchObject({ outcome: "timeout", pending: [{ session: "late", sessionId: late.wolfpackSessionId }] });

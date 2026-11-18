@@ -2,10 +2,9 @@
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
-import { __setTestBackend } from "../../../src/server/backend.ts";
+import { createServerContext } from "../../../src/server/context.ts";
 import { MockBackend } from "../../../src/server/mock-backend.ts";
 import { createServerInstance } from "../../../src/server/index.ts";
-import { getTaskRelayGateway, __resetTaskRelayGatewayForTests } from "../../../src/server/task-gateways.ts";
 
 const [root, portText, profile, nonce] = process.argv.slice(2);
 if (!root || !nonce || !/^[0-9]+$/.test(portText ?? "") || profile !== "volatile-v1"
@@ -21,18 +20,18 @@ class PiBackend extends MockBackend {
     }]));
   }
 }
-__setTestBackend(new PiBackend({ sessions: ["sender", "receiver"] }));
+const context = createServerContext({ backend: new PiBackend({ sessions: ["sender", "receiver"] }) });
 // Durable mode only serves the profile rejection path. It must not open the
 // deliberately malformed historical ledger used by this fixture.
-if (profile === "volatile-v1") await getTaskRelayGateway().initialize();
-const { server, wss } = createServerInstance();
+if (profile === "volatile-v1") await context.taskRelayGateway.initialize();
+const { server, wss } = createServerInstance(context);
 let stopping = false;
 process.on("SIGTERM", () => {
   if (stopping) return; stopping = true;
   void (async () => {
     const closed = new Promise<void>(resolve => server.close(() => resolve()));
     server.closeAllConnections(); await closed; wss.close();
-    await __resetTaskRelayGatewayForTests(); process.exit(0);
+    await context.close(); process.exit(0);
   })();
 });
 await new Promise<void>(resolve => server.listen(Number(portText), "127.0.0.1", resolve));

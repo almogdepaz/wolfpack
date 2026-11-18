@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import { readBoundedRegularFile } from "../extensions/bounded-file.ts";
 import { call } from "./api.ts";
 import type { VerifiedMachineTarget } from "./machine-target.ts";
-import { print, printApiJson, printError } from "./formatting.ts";
+import { print, printError } from "../terminal-output.ts";
+import { printApiJson } from "./formatting.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 function parseTarget(value: string | undefined): { extensionId: string; documentId: string } | null { const [extensionId, documentId, extra] = (value ?? "").split("/"); return extensionId && documentId && !extra && /^[a-z][a-z0-9-]{0,63}$/.test(extensionId) && /^[a-z][a-z0-9-]{0,63}$/.test(documentId) ? { extensionId, documentId } : null; }

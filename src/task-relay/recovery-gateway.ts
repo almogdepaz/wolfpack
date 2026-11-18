@@ -79,6 +79,8 @@ export class RecoveryRelayGateway implements RelayGateway {
         if (error instanceof WorkerUnavailable && !replacement) this.#constructionFailure = error;
         if (replacement?.isClosed) this.#observe(replacement);
         else this.#backoff();
+        // The worker owner already logged the native cause; callers that log their own diagnostics see a bounded message.
+        if (error instanceof WorkerUnavailable && !replacement) throw new WorkerUnavailable("relay worker construction failed", { cause: error }, error.termination);
         throw error;
       }
     })().finally(() => { this.#replacing = undefined; });

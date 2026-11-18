@@ -57,7 +57,9 @@ const ANSI_RESPONSE_METADATA_BYTES: usize = 64 * 1024;
 // One `snapshot_subscribe_ansi` response must fit a frame: base64 prefill at
 // the cap plus a maximal title escaped at 6 bytes per byte (`\u00XX`).
 const _: () = assert!(
-    (MAX_ANSI_PREFILL_BYTES as usize).div_ceil(3) * 4 + 6 * MAX_TITLE_BYTES + ANSI_RESPONSE_METADATA_BYTES
+    (MAX_ANSI_PREFILL_BYTES as usize).div_ceil(3) * 4
+        + 6 * MAX_TITLE_BYTES
+        + ANSI_RESPONSE_METADATA_BYTES
         <= MAX_CONTROL_RESPONSE_PAYLOAD as usize
 );
 
@@ -65,7 +67,8 @@ const _: () = assert!(
 // per input byte (`\u00XX`), plus fixed field overhead per record. One root
 // record must fit an event frame; every record must fit a `session_info`
 // response next to the SessionInfo metadata.
-pub(crate) const PROGRAM_STATUS_RECORD_JSON_BYTES: usize = 6 * MAX_PROGRAM_STATUS_RECORD_TEXT_BYTES + 1024;
+pub(crate) const PROGRAM_STATUS_RECORD_JSON_BYTES: usize =
+    6 * MAX_PROGRAM_STATUS_RECORD_TEXT_BYTES + 1024;
 const _: () = assert!(PROGRAM_STATUS_RECORD_JSON_BYTES + 1024 <= MAX_EVENT_PAYLOAD as usize);
 const _: () = assert!(
     MAX_PROGRAM_STATUS_RECORDS * PROGRAM_STATUS_RECORD_JSON_BYTES + 4 * 1024 * 1024
@@ -96,7 +99,8 @@ struct WpProgramStatusReport {
 struct WpFeedSink {
     ctx: *mut c_void,
     pty_write: Option<unsafe extern "C" fn(ctx: *mut c_void, data: *const u8, len: usize)>,
-    program_status: Option<unsafe extern "C" fn(ctx: *mut c_void, report: *const WpProgramStatusReport)>,
+    program_status:
+        Option<unsafe extern "C" fn(ctx: *mut c_void, report: *const WpProgramStatusReport)>,
     prompt_start: Option<unsafe extern "C" fn(ctx: *mut c_void)>,
 }
 
@@ -218,7 +222,11 @@ impl GhosttyTerminal {
         })
     }
 
-    fn feed(&mut self, bytes: &[u8], effects: &mut FeedCollector<'_>) -> Result<(), TerminalStateError> {
+    fn feed(
+        &mut self,
+        bytes: &[u8],
+        effects: &mut FeedCollector<'_>,
+    ) -> Result<(), TerminalStateError> {
         let sink = WpFeedSink {
             ctx: (effects as *mut FeedCollector<'_>).cast(),
             pty_write: Some(collect_pty_write),
@@ -431,7 +439,9 @@ impl RawSnapshot {
             cursor: cursor_from_meta(self.meta),
             modes: modes_from_meta(self.meta),
             scroll_region: scroll_region_from_meta(self.meta),
-            title: self.title.map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
+            title: self
+                .title
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
             captured_at_ms: self.captured_at_ms,
         })
     }
@@ -523,7 +533,10 @@ fn report_kind(kind: u8) -> Option<ProgramStatusKind> {
 /// # Safety
 /// `ctx` is the `FeedCollector` passed to `wp_ghostty_terminal_feed`; `report`
 /// and its strings are valid for the duration of the call.
-unsafe extern "C" fn collect_program_status(ctx: *mut c_void, report: *const WpProgramStatusReport) {
+unsafe extern "C" fn collect_program_status(
+    ctx: *mut c_void,
+    report: *const WpProgramStatusReport,
+) {
     if ctx.is_null() || report.is_null() {
         return;
     }
@@ -630,8 +643,13 @@ impl TerminalState {
         target_cols: Option<usize>,
     ) -> Result<Snapshot, TerminalStateError> {
         self.try_capture_snapshot(
-            session_id, seq, captured_at_ms, scrollback_limit, target_cols,
-        )?.materialize()
+            session_id,
+            seq,
+            captured_at_ms,
+            scrollback_limit,
+            target_cols,
+        )?
+        .materialize()
     }
 
     /// Copy bounded native rows/text and metadata while the caller holds the
@@ -898,18 +916,22 @@ mod tests {
         // reply too would double them in the program's stdin.
         let mut terminal = TerminalState::try_new(80, 24).expect("real terminal");
         for query in [
-            &b"\x1b[c"[..],      // DA1
-            b"\x1b[0c",          // DA1
-            b"\x1b[>c",          // DA2
-            b"\x1b[5n",          // DSR status
-            b"\x1b[6n",          // DSR cursor position
-            b"\x1b[>q",          // XTVERSION
-            b"\x1b[?2026$p",     // DECRQM
+            &b"\x1b[c"[..],     // DA1
+            b"\x1b[0c",         // DA1
+            b"\x1b[>c",         // DA2
+            b"\x1b[5n",         // DSR status
+            b"\x1b[6n",         // DSR cursor position
+            b"\x1b[>q",         // XTVERSION
+            b"\x1b[?2026$p",    // DECRQM
             b"\x1b]10;?\x1b\\", // OSC 10 color query
-            b"\x05",             // ENQ
+            b"\x05",            // ENQ
         ] {
             let outcome = terminal.try_feed(query).expect("feed");
-            assert!(outcome.pty_reply.is_empty(), "unexpected reply to {query:?}: {:?}", outcome.pty_reply);
+            assert!(
+                outcome.pty_reply.is_empty(),
+                "unexpected reply to {query:?}: {:?}",
+                outcome.pty_reply
+            );
         }
         // The emitter's probe pair: only the 7501 reply crosses the broker.
         let mut probe = OSC_7501_QUERY_ST.to_vec();
@@ -929,19 +951,26 @@ mod tests {
         assert!(outcome.pty_reply.is_empty(), "reports are never echoed");
         let root = terminal.program_status_root().expect("root record");
         assert_eq!(root.state, crate::protocol::ProgramStatusState::Blocked);
-        assert_eq!(root.kind, Some(crate::protocol::ProgramStatusKind::Permission));
+        assert_eq!(
+            root.kind,
+            Some(crate::protocol::ProgramStatusKind::Permission)
+        );
         assert_eq!(root.app.as_deref(), Some("terraform"));
         assert_eq!(root.message.as_deref(), Some("Apply?"));
 
         // A report split across chunks lands once complete.
-        let outcome = terminal.try_feed(b"\x1b]7501;state=working:id=sync:msg=U3lu").expect("feed");
+        let outcome = terminal
+            .try_feed(b"\x1b]7501;state=working:id=sync:msg=U3lu")
+            .expect("feed");
         assert!(!outcome.program_status_changed);
         let outcome = terminal.try_feed(b"Y2luZw==\x07").expect("feed");
         assert!(outcome.program_status_changed);
         assert_eq!(terminal.program_status_records().len(), 2);
 
         // Identical report: no change.
-        let outcome = terminal.try_feed(b"\x1b]7501;state=working:id=sync:msg=U3luY2luZw==\x07").expect("feed");
+        let outcome = terminal
+            .try_feed(b"\x1b]7501;state=working:id=sync:msg=U3luY2luZw==\x07")
+            .expect("feed");
         assert!(!outcome.program_status_changed);
 
         // RIS clears every record.
@@ -953,21 +982,33 @@ mod tests {
     #[test]
     fn primary_shell_prompt_drops_live_program_records() {
         let mut terminal = TerminalState::try_new(80, 24).expect("real terminal");
-        terminal.try_feed(b"\x1b]7501;state=working\x07\x1b]7501;state=done:id=build\x07").expect("feed");
+        terminal
+            .try_feed(b"\x1b]7501;state=working\x07\x1b]7501;state=done:id=build\x07")
+            .expect("feed");
         let outcome = terminal.try_feed(b"\x1b]133;A\x07$ ").expect("feed");
         assert!(outcome.program_status_changed);
-        let ids: Vec<String> = terminal.program_status_records().into_iter().map(|record| record.id).collect();
+        let ids: Vec<String> = terminal
+            .program_status_records()
+            .into_iter()
+            .map(|record| record.id)
+            .collect();
         assert_eq!(ids, vec!["build"]);
     }
 
     #[test]
     fn stored_reports_are_flagged_even_when_unchanged() {
         let mut terminal = TerminalState::try_new(80, 24).expect("real terminal");
-        let outcome = terminal.try_feed(b"\x1b]7501;state=working\x07").expect("feed");
+        let outcome = terminal
+            .try_feed(b"\x1b]7501;state=working\x07")
+            .expect("feed");
         assert!(outcome.program_status_reported && outcome.program_status_changed);
-        let outcome = terminal.try_feed(b"\x1b]7501;state=working\x07").expect("feed");
+        let outcome = terminal
+            .try_feed(b"\x1b]7501;state=working\x07")
+            .expect("feed");
         assert!(outcome.program_status_reported && !outcome.program_status_changed);
-        let outcome = terminal.try_feed(b"\x1b]7501;state=clear\x07").expect("feed");
+        let outcome = terminal
+            .try_feed(b"\x1b]7501;state=clear\x07")
+            .expect("feed");
         assert!(!outcome.program_status_reported, "a clear stores nothing");
         let outcome = terminal.try_feed(b"\x1b]7501;?\x07plain").expect("feed");
         assert!(!outcome.program_status_reported);
@@ -976,7 +1017,9 @@ mod tests {
     #[test]
     fn exit_drop_keeps_done_and_error_records() {
         let mut terminal = TerminalState::try_new(80, 24).expect("real terminal");
-        terminal.try_feed(b"\x1b]7501;state=blocked\x07\x1b]7501;state=error:id=x\x07").expect("feed");
+        terminal
+            .try_feed(b"\x1b]7501;state=blocked\x07\x1b]7501;state=error:id=x\x07")
+            .expect("feed");
         assert!(terminal.drop_transient_program_status());
         assert!(terminal.program_status_root().is_none());
         assert_eq!(terminal.program_status_records().len(), 1);
@@ -990,25 +1033,37 @@ mod tests {
         assert!(!is_program_status_query_reply(b"\x1b]7501;?"));
         assert!(!is_program_status_query_reply(b"\x1b]7501;state=idle\x07"));
         assert!(!is_program_status_query_reply(b"\x1b[?62;22c"));
-        assert!(!is_program_status_query_reply(b"\x1b]7501;?\x1b\\\x1b[?62;22c"));
+        assert!(!is_program_status_query_reply(
+            b"\x1b]7501;?\x1b\\\x1b[?62;22c"
+        ));
     }
 
     #[test]
     fn dense_styled_snapshot_matches_pre_split_json() {
         let mut terminal = TerminalState::try_new(4, 2).expect("real terminal");
-        terminal.try_feed("\x1b]2;fixture\x07\x1b[1;31mAB界\r\nCDef\r\n\x1b[0;44mghij\r\nklmn".as_bytes())
+        terminal
+            .try_feed(
+                "\x1b]2;fixture\x07\x1b[1;31mAB界\r\nCDef\r\n\x1b[0;44mghij\r\nklmn".as_bytes(),
+            )
             .expect("native feed");
-        let snapshot = terminal.try_snapshot_with_reflow(Uuid::nil(), 7, 123, None, Some(3))
+        let snapshot = terminal
+            .try_snapshot_with_reflow(Uuid::nil(), 7, 123, None, Some(3))
             .expect("snapshot");
         let encoded = serde_json::to_string(&snapshot).expect("serialize");
-        assert_eq!(encoded, include_str!("../tests/fixtures/dense-styled-snapshot.json").trim());
+        assert_eq!(
+            encoded,
+            include_str!("../tests/fixtures/dense-styled-snapshot.json").trim()
+        );
     }
 
     #[test]
     fn snapshot_glyphs_outlive_terminal_and_mutate_independently() {
         let mut terminal = TerminalState::try_new(8, 2).expect("real terminal");
-        terminal.try_feed("\x1b[1m 界é\x1b[0m".as_bytes()).expect("native feed");
-        let mut snapshot = terminal.try_snapshot_with_reflow(Uuid::nil(), 1, 0, None, None)
+        terminal
+            .try_feed("\x1b[1m 界é\x1b[0m".as_bytes())
+            .expect("native feed");
+        let mut snapshot = terminal
+            .try_snapshot_with_reflow(Uuid::nil(), 1, 0, None, None)
             .expect("snapshot");
         drop(terminal);
         assert_eq!(snapshot.visible_screen[0].cells[0].ch, " ");
@@ -1016,11 +1071,26 @@ mod tests {
         assert_eq!(snapshot.visible_screen[0].cells[1].ch, "界");
         assert_eq!(snapshot.visible_screen[0].cells[2].ch, "");
         assert_eq!(snapshot.visible_screen[0].cells[3].ch, "é");
-        assert!(matches!(snapshot.visible_screen[0].cells[0].ch, Cow::Borrowed(" ")));
-        assert!(matches!(snapshot.visible_screen[0].cells[1].ch, Cow::Owned(_)));
-        assert!(matches!(snapshot.visible_screen[0].cells[2].ch, Cow::Borrowed("")));
-        assert!(matches!(snapshot.visible_screen[0].cells[3].ch, Cow::Owned(_)));
-        assert!(matches!(snapshot.visible_screen[0].cells[4].ch, Cow::Borrowed(" ")));
+        assert!(matches!(
+            snapshot.visible_screen[0].cells[0].ch,
+            Cow::Borrowed(" ")
+        ));
+        assert!(matches!(
+            snapshot.visible_screen[0].cells[1].ch,
+            Cow::Owned(_)
+        ));
+        assert!(matches!(
+            snapshot.visible_screen[0].cells[2].ch,
+            Cow::Borrowed("")
+        ));
+        assert!(matches!(
+            snapshot.visible_screen[0].cells[3].ch,
+            Cow::Owned(_)
+        ));
+        assert!(matches!(
+            snapshot.visible_screen[0].cells[4].ch,
+            Cow::Borrowed(" ")
+        ));
         let original = snapshot.clone();
         snapshot.visible_screen[0].cells[0].ch.to_mut().push('x');
         snapshot.visible_screen[0].cells[2].ch.to_mut().push('!');
@@ -1032,7 +1102,10 @@ mod tests {
         let mut decoded: Snapshot = serde_json::from_str(&encoded).expect("wire deserialize");
         drop(encoded);
         assert_eq!(decoded, original);
-        assert!(decoded.visible_screen.iter().chain(&decoded.scrollback)
+        assert!(decoded
+            .visible_screen
+            .iter()
+            .chain(&decoded.scrollback)
             .flat_map(|line| &line.cells)
             .all(|cell| matches!(cell.ch, Cow::Owned(_))));
         decoded.visible_screen[0].cells[0].ch.to_mut().push('y');
@@ -1042,30 +1115,46 @@ mod tests {
 
     #[test]
     fn converted_text_owns_native_buffer_and_preserves_lossy_utf8() {
-        let implicit = cell_to_styled(&WpGhosttyCell::default(), &[])
-            .expect("real implicit-space conversion");
+        let implicit =
+            cell_to_styled(&WpGhosttyCell::default(), &[]).expect("real implicit-space conversion");
         assert!(matches!(implicit.ch, Cow::Borrowed(" ")));
-        let explicit = cell_to_styled(&WpGhosttyCell {
-            text_len: 1,
-            ..Default::default()
-        }, b" ").expect("real explicit-space conversion");
+        let explicit = cell_to_styled(
+            &WpGhosttyCell {
+                text_len: 1,
+                ..Default::default()
+            },
+            b" ",
+        )
+        .expect("real explicit-space conversion");
         assert!(matches!(explicit.ch, Cow::Borrowed(" ")));
-        let continuation = cell_to_styled(&WpGhosttyCell {
-            continuation: 1,
-            ..Default::default()
-        }, &[]).expect("real wide-continuation conversion");
+        let continuation = cell_to_styled(
+            &WpGhosttyCell {
+                continuation: 1,
+                ..Default::default()
+            },
+            &[],
+        )
+        .expect("real wide-continuation conversion");
         assert!(matches!(continuation.ch, Cow::Borrowed("")));
-        let nonblank = cell_to_styled(&WpGhosttyCell {
-            text_len: 1,
-            ..Default::default()
-        }, b"a").expect("real nonblank conversion");
+        let nonblank = cell_to_styled(
+            &WpGhosttyCell {
+                text_len: 1,
+                ..Default::default()
+            },
+            b"a",
+        )
+        .expect("real nonblank conversion");
         assert_eq!(nonblank.ch, "a");
         assert!(matches!(nonblank.ch, Cow::Owned(_)));
         let bytes = vec![0xff, b'a'];
-        let cell = cell_to_styled(&WpGhosttyCell {
-            text_len: 2,
-            ..Default::default()
-        }, &bytes).expect("real checked conversion");
+        let cell = cell_to_styled(
+            &WpGhosttyCell {
+                text_len: 2,
+                ..Default::default()
+            },
+            &bytes,
+        )
+        .expect("real checked conversion");
         drop(bytes);
         assert_eq!(cell.ch, "�a");
         assert!(matches!(cell.ch, Cow::Owned(_)));

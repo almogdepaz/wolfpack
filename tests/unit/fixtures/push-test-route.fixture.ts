@@ -1,4 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { createPushFixture } from "./push-service-fixture.ts";
+const pushFixture = createPushFixture();
+afterAll(() => pushFixture.close());
 import { createServer } from "node:http";
 import { createECDH } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -7,8 +10,18 @@ import { isJsonObject, validateControlApiSchemaValue } from "../../control-api-s
 import type { JsonObject } from "../../control-api-schema-validator.ts";
 assertNotificationFixtureHome();
 const { CONTROL_API_SCHEMA_ARTIFACT } = await import("../../../src/control-api/schema.ts");
-const { addSubscription, removeSubscription, _testing } = await import("../../../src/server/push.ts");
-const { pushSubscriptionRoutes } = await import("../../../src/server/push-routes.ts");
+const { createPushSubscriptionRoutes } = await import("../../../src/server/push-routes.ts");
+const { createServerContext } = await import("../../../src/server/context.ts");
+const { MockBackend } = await import("../../../src/server/mock-backend.ts");
+let context = createServerContext({ backend: new MockBackend(), push: pushFixture.service });
+let pushSubscriptionRoutes = createPushSubscriptionRoutes(context);
+async function replaceContext(): Promise<void> {
+  await context.close();
+  pushFixture.reset();
+  context = createServerContext({ backend: new MockBackend(), push: pushFixture.service });
+  pushSubscriptionRoutes = createPushSubscriptionRoutes(context);
+}
+afterAll(() => context.close());
 const fetcher = globalThis.fetch;
 const artifact = JSON.parse(readFileSync(CONTROL_API_SCHEMA_ARTIFACT, "utf8")) as JsonObject;
 function validateResponse(status: number, body: unknown): void {
@@ -35,26 +48,26 @@ afterAll(async () => { globalThis.fetch = fetcher; await new Promise<void>(resol
 const post = (body: unknown) => fetcher(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
 test("test route rejects malformed/unknown endpoints and shares notify rate limit", async () => {
-  _testing.resetDebounce();
+  await replaceContext();
   const malformed = await post({});
   expect(malformed.status).toBe(400);
   validateResponse(malformed.status, await malformed.json());
   const unknown = await post({ endpoint: "https://fcm.googleapis.com/unknown" });
   expect(unknown.status).toBe(404);
   validateResponse(unknown.status, await unknown.json());
-  _testing.notifyTimestamps = Array(10).fill(Date.now());
+  while (pushFixture.service.checkNotifyRateLimit() === null) {}
   const limited = await post({ endpoint: "https://fcm.googleapis.com/unknown" });
   expect(limited.status).toBe(429);
   validateResponse(limited.status, await limited.json());
 });
 
 test("test notification delivers only to the registered caller endpoint and reports failure", async () => {
-  _testing.resetDebounce();
+  await replaceContext();
   const client = createECDH("prime256v1"); client.generateKeys();
   const keys = { p256dh: client.getPublicKey().toString("base64url"), auth: Buffer.alloc(16, 2).toString("base64url") };
   const endpoint = "https://fcm.googleapis.com/test-caller";
   const other = "https://fcm.googleapis.com/test-other";
-  addSubscription({ endpoint, keys }); addSubscription({ endpoint: other, keys });
+  pushFixture.service.addSubscription({ endpoint, keys }); pushFixture.service.addSubscription({ endpoint: other, keys });
   const calls: string[] = [];
   try {
     globalThis.fetch = Object.assign(async (input: Parameters<typeof fetch>[0]) => {
@@ -76,5 +89,5 @@ test("test notification delivers only to the registered caller endpoint and repo
     const expiredBody = await expired.json();
     expect(expiredBody).toEqual({ ok: false, sent: 0, failed: 0, pruned: 1 });
     validateResponse(expired.status, expiredBody);
-  } finally { globalThis.fetch = fetcher; removeSubscription(endpoint); removeSubscription(other); }
+  } finally { globalThis.fetch = fetcher; pushFixture.service.removeSubscription(endpoint); pushFixture.service.removeSubscription(other); }
 });

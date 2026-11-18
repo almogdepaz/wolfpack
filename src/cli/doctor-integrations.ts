@@ -3,6 +3,7 @@
  * Every probe is read-only; fixes are printed commands, never run by `--fix`.
  */
 import { readdirSync } from "node:fs";
+import { processAlive } from "../extensions/registry-lock.ts";
 import { dirname, join } from "node:path";
 import { AGENT_KIND } from "../agent-kind.js";
 import {
@@ -57,16 +58,6 @@ export interface ClaudeIntegrationDoctorOptions {
   /** Directory of the plugin's per-session status files. */
   readonly statusDirectory: string;
   readonly pidAlive: (pid: number) => boolean;
-}
-
-function processAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    // EPERM: the process exists but belongs to another user
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
 }
 
 function defaultClaudeIntegrationDoctorOptions(): ClaudeIntegrationDoctorOptions {

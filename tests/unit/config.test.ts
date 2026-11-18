@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { remoteUrl, type Config } from "../../src/cli/config.ts";
+import { remoteUrl, type Config } from "../../src/config.ts";
 import {
   planBinaryUpdateAction,
   planServiceEnsureAction,

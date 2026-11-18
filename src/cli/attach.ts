@@ -13,8 +13,10 @@ import {
   CLOSE_CODE_SERVER_ERROR,
   CLOSE_CODE_SESSION_UNAVAILABLE,
 } from "../ws-constants.js";
-import { baseUrl, call, issueJwt } from "./api.js";
-import { dim, printError, red, yellow } from "./formatting.js";
+import { issueJwt } from "../jwt-issue.js";
+import { baseUrl, call } from "./api.js";
+import { printError, yellow } from "../terminal-output.js";
+import { dim, red } from "./formatting.js";
 import { splitTerminalInputBytes } from "../terminal-input.js";
 
 export type AttachPrefillMode = CliAttachPrefillMode;

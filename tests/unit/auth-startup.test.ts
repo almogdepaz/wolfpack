@@ -22,8 +22,9 @@ describe("server startup JWT notice", () => {
     const home = mkdtempSync(join(tmpdir(), "wolfpack-no-jwt-"));
     try {
       const result = spawnSync(process.execPath, ["-e", `
-        const { startServer, server } = await import("${join(process.cwd(), "src/server/index.ts")}");
-        await startServer(0);
+        const { startServer } = await import("${join(process.cwd(), "src/server/index.ts")}");
+        const { MockBackend } = await import("${join(process.cwd(), "src/server/mock-backend.ts")}");
+        const { server } = await startServer(0, "127.0.0.1", { backend: new MockBackend() });
         await new Promise((resolve) => server.once("listening", resolve));
         await new Promise((resolve) => server.close(resolve));
       `], {
