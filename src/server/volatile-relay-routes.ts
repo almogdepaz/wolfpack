@@ -3,7 +3,8 @@ import { RELAY_LIMITS, isRelayEndpoint, isLocalRelay } from "../task-relay/domai
 import { getRelayPeerTransport, trustedRelayClient } from "./relay-peer-transport.ts";
 import { RelayPeerPolicyError } from "../task-relay/peer-transport.ts";
 import { getTaskRelayProfile } from "../task-relay/gateway.ts";
-import { VOLATILE_RELAY_PATH, VOLATILE_PEER_PATH } from "../task-relay/volatile-protocol.ts";
+import { RelayOwnerFailure } from "../task-relay/owner-failure.ts";
+import { relayOwnerFailureResult, VOLATILE_RELAY_PATH, VOLATILE_PEER_PATH } from "../task-relay/volatile-protocol.ts";
 import { json } from "./http.ts";
 import { defaultServerContext, type ServerContext } from "./context.js";
 
@@ -58,7 +59,12 @@ const handlers: Record<string, Handler> = {
       if (res.destroyed) return;
       res.setHeader("Cache-Control", "no-store");
       json(res, { ok: true, profile: getTaskRelayProfile(), ...(epoch && { epoch }), endpointPath: VOLATILE_RELAY_PATH, federation: "trusted-tailnet-v1" });
-    } catch { reject(res, "RELAY_UNAVAILABLE", 503); }
+    } catch (error) {
+      if (error instanceof RelayOwnerFailure) {
+        res.setHeader("Cache-Control", "no-store");
+        json(res, relayOwnerFailureResult(error.failure, getTaskRelayProfile()), 503);
+      } else reject(res, "RELAY_UNAVAILABLE", 503);
+    }
     finally { active--; }
   },
   [`POST ${VOLATILE_PEER_PATH}`]: async (req, res) => {
@@ -72,7 +78,7 @@ const handlers: Record<string, Handler> = {
       const raw = await read(req);
       await getRelayPeerTransport(gateway).verify(raw);
       const result = await gateway.volatilePeer(JSON.parse(raw));
-      if (!res.destroyed) { res.setHeader("Cache-Control", "no-store"); json(res, result, result.ok ? 200 : result.error.retryable ? 503 : 409); }
+      if (!res.destroyed) { res.setHeader("Cache-Control", "no-store"); json(res, result, result.ok ? 200 : result.error.retryable || result.error.ownerFatal ? 503 : 409); }
     } catch (error) {
       if (error instanceof BodyError) { discard(req, res); reject(res, "INVALID_REQUEST", error.status); }
       else reject(res, error instanceof RelayPeerPolicyError ? error.code : "RELAY_UNAVAILABLE", error instanceof RelayPeerPolicyError && error.code === "PEER_POLICY_REQUIRED" ? 403 : 503);
@@ -90,10 +96,10 @@ const handlers: Record<string, Handler> = {
       if (!object(body) || Object.keys(body).some(key => !["profile", "epoch", "callerSession", "endpoint", "origin", "target"].includes(key))
         || typeof body.origin !== "string" || !isRelayEndpoint(body.target) || !isLocalRelay(body.target)) throw new BodyError(400);
       const owner = await gateway.volatile({ operation: "health", profile: body.profile, epoch: body.epoch, callerSession: body.callerSession, endpoint: body.endpoint });
-      if (!owner.ok) return json(res, owner, owner.error.retryable ? 503 : 409);
+      if (!owner.ok) return json(res, owner, owner.error.retryable || owner.error.ownerFatal ? 503 : 409);
       const peer = await getRelayPeerTransport(gateway).peer(body.origin);
       const result = await gateway.volatileTopology({ ...body, operation: "resolvePeer", peerEpoch: peer.epoch });
-      if (!res.destroyed) { res.setHeader("Cache-Control", "no-store"); json(res, result, result.ok ? 200 : result.error.retryable ? 503 : 409); }
+      if (!res.destroyed) { res.setHeader("Cache-Control", "no-store"); json(res, result, result.ok ? 200 : result.error.retryable || result.error.ownerFatal ? 503 : 409); }
     } catch (error) {
       if (error instanceof BodyError || error instanceof SyntaxError) { discard(req, res); reject(res, "INVALID_REQUEST", error instanceof BodyError ? error.status : 400); }
       else reject(res, error instanceof RelayPeerPolicyError ? error.code : "RELAY_UNAVAILABLE", error instanceof RelayPeerPolicyError && error.code === "PEER_POLICY_REQUIRED" ? 403 : 503);
@@ -118,7 +124,7 @@ const handlers: Record<string, Handler> = {
       epoch = result.epoch;
       if (res.destroyed) return;
       res.setHeader("Cache-Control", "no-store");
-      const status = result.ok ? 200 : result.error.code === "RELAY_CAPACITY" || result.error.code === "RELAY_UNAVAILABLE" || result.error.code === "PEER_UNREACHABLE" ? 503
+      const status = result.ok ? 200 : result.error.ownerFatal || result.error.code === "RELAY_STORAGE_RECOVERING" || result.error.code === "RELAY_CAPACITY" || result.error.code === "RELAY_UNAVAILABLE" || result.error.code === "PEER_UNREACHABLE" ? 503
         : result.error.code === "TARGET_NOT_REGISTERED" || result.error.code === "CALLER_NOT_FOUND" ? 404
           : result.error.code === "CALLER_DEAD" || result.error.code === "REGISTRATION_EXPIRED" ? 410
             : ["RELAY_RESET", "SOURCE_MISMATCH", "ENVELOPE_CONFLICT", "DELIVERY_UNCONFIRMED", "RELAY_PROFILE_REQUIRED"].includes(result.error.code) ? 409 : 400;

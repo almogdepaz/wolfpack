@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from
 // push otherwise healthy 2–5 second cases beyond Bun's 5 second default.
 setDefaultTimeout(15_000);
 import { execFileSync, type ExecFileSyncOptions, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -151,6 +151,14 @@ case "$*" in
       cat "$DEPLOY_TEST_REPO/public/app.bundle.js"
     fi
     ;;
+  *"/api/health"*)
+    case "$DEPLOY_TEST_HEALTH" in
+      unavailable) printf '{"status":"ready","broker":{"state":"ready"},"relay":{"state":"unavailable","code":"RELAY_STORAGE_INVALID","retryable":false}}\n' ;;
+      core-down) printf '{"status":"degraded","broker":{"state":"unavailable"},"relay":{"state":"ready"}}\n' ;;
+      missing-relay) printf '{"status":"ready","broker":{"state":"ready"}}\n' ;;
+      *) printf '{"status":"ready","broker":{"state":"ready"},"relay":{"state":"ready"}}\n' ;;
+    esac
+    ;;
   *"/api/info"*)
     printf '{"name":"test-host","version":"1.2.3"}\n'
     ;;
@@ -183,6 +191,7 @@ function deployEnv(fixture: { readonly repo: string; readonly home: string; read
     DEPLOY_TEST_SERVER_NEW_PID: "222",
     DEPLOY_TEST_BROKER_OLD_PID: "333",
     DEPLOY_TEST_BROKER_NEW_PID: "444",
+    DEPLOY_TEST_HEALTH: "ready",
     DEPLOY_TEST_DROP_SESSION: "0",
     DEPLOY_TEST_STALE_ASSET: "0",
     DEPLOY_TEST_BROKER_PID_STAYS: "0",
@@ -292,6 +301,31 @@ describe("scripts/deploy-local.sh", () => {
     expect(output).toContain("\"brokerDeployed\":false");
   });
 
+  for (const health of ["unavailable", "core-down", "missing-relay"]) test(`rejects ${health} health while preserving failure evidence and broker`, () => {
+    const fixture = prepareFixture();
+    let failure: unknown;
+    try { runDeploy(fixture, "no", { DEPLOY_TEST_HEALTH: health }); } catch (error) { failure = error; }
+    expect(failure).toBeDefined();
+    const lock = join(fixture.home, ".wolfpack", "deploy.lock");
+    expect(existsSync(join(lock, "failed_at"))).toBe(true);
+    expect(statSync(lock).mode & 0o077).toBe(0);
+    expect(JSON.parse(readFileSync(join(lock, "sessions.before.json"), "utf8")).sessions).toHaveLength(2);
+    expect(JSON.parse(readFileSync(join(lock, "sessions.after.json"), "utf8")).sessions).toHaveLength(2);
+    expect(JSON.parse(readFileSync(join(lock, "health.json"), "utf8"))).toHaveProperty("broker");
+    expect(JSON.parse(readFileSync(join(lock, "deployment.json"), "utf8"))).toMatchObject({ brokerDeployed: false, oldBrokerPid: "333" });
+    expect(JSON.parse(readFileSync(join(lock, "verification.json"), "utf8"))).toMatchObject({
+      brokerPid: "333", serverVersion: "1.2.3", preservedSessions: 2,
+      serverHash: expect.stringMatching(/^[0-9a-f]{64}$/), bundleHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    const commands = readFileSync(fixture.log, "utf8");
+    expect(commands).not.toContain("com.wolfpack.broker");
+    expect(commands).not.toContain("task-relay");
+    // A healthy service does not authorize another deploy to clear a failed lock.
+    expect(() => runDeploy(fixture, "no")).toThrow();
+    expect(readFileSync(fixture.log, "utf8")).toBe(commands);
+    expect(existsSync(join(lock, "health.json"))).toBe(true);
+  });
+
   test("fails before service restart when the installed artifact hash changes", () => {
     const fixture = prepareFixture();
 
@@ -319,6 +353,7 @@ describe("scripts/deploy-local.sh", () => {
     const output = runDeploy(fixture, "no");
     const commands = readFileSync(fixture.log, "utf-8");
 
+    expect(commands).toContain("/api/health");
     expect(commands).toContain("/api/info");
     expect(commands).toContain("/api/sessions");
     expect(commands).toContain("wolfpack session open --help");

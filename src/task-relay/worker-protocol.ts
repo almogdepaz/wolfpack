@@ -1,11 +1,16 @@
-import type { RelayOwnerFailureData } from "./owner-failure.ts";
+import type { RelayOwnerFailureCode, RelayOwnerFailureData } from "./owner-failure.ts";
 import { types as utilTypes } from "node:util";
 import type { TaskRelayRegistration } from "./registration.ts";
 import type { RelayEndpoint } from "./domain.ts";
 import type { SessionInspectionResult } from "../session-status-contract.ts";
 import type { VolatileHostEnvelopeRequest, VolatileHostEnvelopeResult, VolatileResult } from "./volatile-protocol.ts";
 
+export type RelayHealth = { readonly state: "starting" | "ready" }
+  | { readonly state: "unavailable"; readonly code: RelayOwnerFailureCode | "RELAY_UNAVAILABLE"; readonly retryable: boolean };
+
 export interface RelayGateway {
+  /** Side-effect-free snapshot: never starts a worker or retries a request. */
+  health(): RelayHealth;
   readonly root: string;
   readonly profile: "volatile-v1";
   initialize(): Promise<void>;

@@ -1,6 +1,8 @@
 import type { GatewayOptions } from "./gateway.ts";
-import type { RelayGateway } from "./worker-protocol.ts";
-import { WorkerRelayGateway, captureOptions } from "./worker-client.ts";
+import type { RelayGateway, RelayHealth } from "./worker-protocol.ts";
+import { join, resolve } from "node:path";
+import { resolveWolfpackDir } from "../wolfpack-dir.ts";
+import { WorkerRelayGateway, WorkerUnavailable, captureOptions } from "./worker-client.ts";
 import { RelayOwnerFailure, RelayRecoveryCooldown } from "./owner-failure.ts";
 import {
   HOST_ENVELOPE_ACCEPTANCE,
@@ -16,7 +18,8 @@ import {
 export class RecoveryRelayGateway implements RelayGateway {
   readonly root: string;
   readonly profile = "volatile-v1" as const;
-  #worker: WorkerRelayGateway;
+  #worker: WorkerRelayGateway | undefined;
+  #constructionFailure: WorkerUnavailable | undefined;
   #replacing: Promise<WorkerRelayGateway> | undefined;
   #closed = false;
   readonly #failedOwners = new WeakSet<WorkerRelayGateway>();
@@ -26,8 +29,17 @@ export class RecoveryRelayGateway implements RelayGateway {
   readonly #options: GatewayOptions;
   constructor(options: GatewayOptions) {
     this.#options = captureOptions(options);
-    this.#worker = new WorkerRelayGateway({ ...this.#options, storage: "sqlite" });
-    this.root = this.#worker.root;
+    this.root = resolve(this.#options.root ?? join(resolveWolfpackDir(), "task-relay"));
+    try { this.#worker = new WorkerRelayGateway({ ...this.#options, root: this.root, storage: "sqlite" }); }
+    catch (error) {
+      if (!(error instanceof WorkerUnavailable)) throw error;
+      this.#constructionFailure = error; this.#backoff();
+    }
+  }
+  health(): RelayHealth {
+    if (this.#blocked) return { state: "unavailable", code: this.#blocked.code, retryable: false };
+    if (this.#closed) return { state: "unavailable", code: "RELAY_UNAVAILABLE", retryable: false };
+    return this.#worker?.health() ?? { state: "unavailable", code: "RELAY_UNAVAILABLE", retryable: true };
   }
   #remaining(): number { return Math.max(0, Math.ceil(this.#retryAt - performance.now())); }
   #backoff(): void {
@@ -44,14 +56,14 @@ export class RecoveryRelayGateway implements RelayGateway {
     if (this.#closed) throw new Error("relay gateway is closed");
     if (this.#blocked) throw this.#blocked;
     if (this.#replacing) return this.#replacing;
-    if (!this.#worker.isClosed) return this.#worker;
-    this.#observe(this.#worker);
+    if (this.#worker && !this.#worker.isClosed) return this.#worker;
+    if (this.#worker) this.#observe(this.#worker);
     if (this.#blocked) throw this.#blocked;
     if (this.#remaining()) throw new RelayRecoveryCooldown(this.#remaining());
     const prior = this.#worker;
     this.#replacing = (async () => {
-      await prior.close();
-      if (!prior.terminationConfirmed) {
+      await prior?.close();
+      if ((prior && !prior.terminationConfirmed) || (this.#constructionFailure && !await this.#constructionFailure.termination)) {
         this.#blocked = new RelayOwnerFailure("RELAY_STORAGE_RECOVERY_BLOCKED");
         throw this.#blocked; // The reservation stays held. No takeover, even if termination rejects.
       }
@@ -60,9 +72,11 @@ export class RecoveryRelayGateway implements RelayGateway {
       try {
         replacement = new WorkerRelayGateway({ ...this.#options, root: this.root, storage: "sqlite" });
         this.#worker = replacement;
+        this.#constructionFailure = undefined;
         await replacement.initialize();
         return replacement;
       } catch (error) {
+        if (error instanceof WorkerUnavailable && !replacement) this.#constructionFailure = error;
         if (replacement?.isClosed) this.#observe(replacement);
         else this.#backoff();
         throw error;
@@ -89,6 +103,7 @@ export class RecoveryRelayGateway implements RelayGateway {
     } catch (error) {
       if (error instanceof RelayOwnerFailure) return relayOwnerFailureResult(error.failure, this.profile, error.failure.retryable ? this.#remaining() || undefined : undefined);
       if (error instanceof RelayRecoveryCooldown) return volatileFailure(error.code, undefined, error.retryAfterMs, this.profile);
+      if (error instanceof WorkerUnavailable) return volatileFailure("RELAY_UNAVAILABLE", undefined, this.#remaining() || undefined, this.profile);
       throw error;
     }
   }
@@ -111,6 +126,7 @@ export class RecoveryRelayGateway implements RelayGateway {
   async close() {
     this.#closed = true;
     await this.#replacing?.catch(() => undefined);
-    await this.#worker.close();
+    await this.#worker?.close();
+    await this.#constructionFailure?.termination;
   }
 }

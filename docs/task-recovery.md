@@ -36,6 +36,41 @@ failed owners stop and release their reservation only after confirmed terminatio
 
 `RELAY_STORAGE_UNCERTAIN` is owner-fatal and potentially committed. `RELAY_STORAGE_BUSY` and `RELAY_STORAGE_UNAVAILABLE` report transient lock/open failures without takeover. `RELAY_STORAGE_INVALID` permanently blocks corrupt/unsupported/unverifiable storage for that facade lifetime. `RELAY_STORAGE_RECOVERY_BLOCKED` keeps the reservation when termination is unconfirmed. `RELAY_STORAGE_RECOVERING` rejects before admission with `retryAfterMs`. none authorizes a fresh task execution, new assignment, empty fallback or cursor resurrection.
 
+## startup containment and capability health
+
+recognized relay owner/startup failures do not prevent HTTP or WebSocket startup. authentication, broker setup, and durable-task initialization retain their existing checks. the default SQLite gateway also contains native worker construction failures. it confirms termination before replacement and applies the existing bounded cooldown; invalid storage remains blocked for that gateway lifetime. startup never repairs rows, renames state, selects empty memory storage, or restarts the broker.
+
+`GET /api/health` keeps its broker-owned `status` and adds a side-effect-free `relay` snapshot:
+
+- `{ "state": "starting" }`: the worker has not reported ready (or the context has not constructed it).
+- `{ "state": "ready" }`: the current worker opened its store. this is not endpoint registration, delivery, or task execution proof.
+- `{ "state": "unavailable", "code": "RELAY_STORAGE_INVALID", "retryable": false }`: a bounded safe diagnostic. other owner failure codes preserve their retry classification; generic worker failures use `RELAY_UNAVAILABLE`.
+
+core `status: ready` does **not** imply relay readiness. reading health does not create a worker, retry a request, reset state, or replay mail. profile/epoch lookup and relay operations return HTTP 503 on owner failure; registration lookup rejects rather than returning a fabricated endpoint. task-worker readiness still fails closed and performs its existing exact-UUID cleanup. session listing and terminal input remain broker-owned.
+
+`RELAY_STORAGE_INVALID` can mean invalid relationships in otherwise valid SQLite. an `integrity_check` result of `ok` does not establish semantic validity. preserve the original diagnosis; do not infer the writer or state-creation history from receipt timestamps.
+
+## explicit operator loss/reset procedure
+
+this procedure requires separate authorization accepting undelivered-message loss and uncertainty about already accepted deliveries. it is not an automatic startup repair. do not perform it merely because a deployment failed.
+
+1. record the authorization, reason, timestamp, host, configured relay root/storage mode, served build identity, broker PID, and existing session UUIDs. collect `/api/health`, `/api/info`, `/api/sessions`, and bounded server diagnostics in a unique owner-private directory (0700; files 0600). record the old epoch only if safely available; otherwise record `unknown`. retain the failed deployment directory separately. do not expose payloads or credentials in shared logs.
+2. stop **only** the server/relay owner. on macOS, use the verified `gui/<uid>/com.wolfpack.server` launchd service and its installed plist. verify the exact server process and its owned workers/children have exited and no other process owns the configured relay files. stopping a restart loop, observing a healthy port, or seeing a stale PID is not sufficient ownership evidence. if ownership cannot be confirmed, stop here. never stop/restart `com.wolfpack.broker` for relay recovery.
+3. create a unique private archive on the same filesystem. before moving anything, write the explicit loss-acceptance record and intended source/destination paths into it. verify the destination does not exist. move the **whole relay directory**, including SQLite rollback journals, initialization slots, and any other sidecars, intact beneath that archive. preserve diagnostics alongside it. do not delete rows, copy only the main database, overwrite an earlier archive, or weaken validation.
+4. if archival fails or ownership is ambiguous, leave the server/relay stopped and the original state untouched. do not create a fresh root over existing evidence. if interrupted after the move, inspect the recorded paths and archive before resuming; do not repeat the move or import the archive. the operator record must remain discoverable even before fresh startup.
+5. after successful archival, bootstrap only the verified server service with the original configuration. an absent relay root creates a fresh epoch. independently verify core health, `relay.state: ready`, the served build/asset identity, unchanged broker PID, preserved session UUIDs, and actual terminal attach/input. verify fresh endpoint registration separately; profile metadata alone is insufficient.
+6. leave the archive immutable to normal operation. never replay its mail, import its cursors, reissue historical assignments, or treat old endpoint IDs as new authority. a fresh task requires a new explicit assignment.
+
+current Pi and Claude adapters replace an epoch-lost RAM lifetime with a fresh endpoint. active tasks receive explicit local `RELAY_STATE_LOST` records with unknown remote outcome; these are not canonical remote completion or ACK events. old task IDs are unavailable in the fresh lifetime. Claude's buffered loss note appears through its inbox path, not an extra parent wake. adapter-process crashes still lose RAM, and origin-owned deadlines require the owner runtime to survive. unchanged older clients may require their explicit rebind workflow; inspect the installed client rather than assuming all running agents match source.
+
+## failed deployment closeout
+
+`scripts/deploy-local.sh --broker=no` checks core health and relay health separately from served assets, installed artifact identity, broker PID, and preserved sessions. unavailable or missing relay health makes deployment non-success even if terminal access works. no health failure triggers a relay reset or another service restart.
+
+post-mutation failures retain `~/.wolfpack/deploy.lock` and private evidence: owner PID/start/failure times, `deployment.json` with expected build hashes and prior process IDs, available session snapshots, CLI diagnostics, `verification.json` with observed build hashes/process IDs, and `health.json`/`health.stderr` when those checks ran. earlier failures may lack later-stage artifacts; missing evidence is not success. a failed lock is not automatically stale, and another deployment refuses to reuse it.
+
+after separately authorized recovery, verify the current service, served build, both health components, broker continuity, and session identities **without rerunning deployment**. establish that the recorded deployment owner and all its children have exited; account for PID reuse using process identity/start information and saved diagnostics. if owner identity or recovery remains ambiguous, retain the lock. closing it out requires separate explicit authority: write the recovery outcome beside the failure evidence and archive the entire lock directory to a unique private destination without overwriting prior evidence. a later deployment is a separate action, not a way to clear the lock. successful emergency recovery does not retroactively make the original deployment successful.
+
 ## trust and verification limits
 
 existing optional global JWT authentication, loopback/trusted Tailnet admission, canonical TLS origins, current topology and both relay epochs still apply. peers are assumed honest canonical machines, not signed task principals. do not expose these APIs through Funnel or an untrusted proxy.

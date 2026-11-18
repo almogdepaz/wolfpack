@@ -55,15 +55,12 @@ DEPLOY_SUCCEEDED=0
 
 cleanup() {
   [ -z "$ACTIVE_STAGE" ] || rm -f "$ACTIVE_STAGE"
-  [ -z "$SESSION_BEFORE" ] || rm -f "$SESSION_BEFORE"
-  [ -z "$SESSION_AFTER" ] || rm -f "$SESSION_AFTER"
-  [ -z "$HELP_OUTPUT" ] || rm -f "$HELP_OUTPUT"
-  [ -z "$HELP_ERROR" ] || rm -f "$HELP_ERROR"
   if [ "$DEPLOY_LOCK_HELD" = "1" ]; then
     if [ "$DEPLOY_SUCCEEDED" = "1" ] || [ "$DEPLOY_MUTATION_STARTED" = "0" ]; then
       rm -rf "$DEPLOY_LOCK_DIR"
     else
-      date -u '+%Y-%m-%dT%H:%M:%SZ' > "$DEPLOY_LOCK_DIR/failed_at" 2>/dev/null || true
+      date -u '+%Y-%m-%dT%H:%M:%SZ' > "$DEPLOY_LOCK_DIR/failed_at"
+      echo "ERROR: deployment incomplete; evidence retained at $DEPLOY_LOCK_DIR. See docs/task-recovery.md; do not reset relay state or remove the lock automatically." >&2
     fi
   fi
 }
@@ -71,7 +68,7 @@ trap cleanup EXIT
 
 acquire_deploy_lock() {
   mkdir -p "$HOME/.wolfpack"
-  if mkdir "$DEPLOY_LOCK_DIR" 2>/dev/null; then
+  if mkdir -m 700 "$DEPLOY_LOCK_DIR" 2>/dev/null; then
     DEPLOY_LOCK_HELD=1
     printf '%s\n' "$$" > "$DEPLOY_LOCK_DIR/pid"
     date -u '+%Y-%m-%dT%H:%M:%SZ' > "$DEPLOY_LOCK_DIR/started_at"
@@ -89,6 +86,8 @@ acquire_deploy_lock() {
 }
 
 acquire_deploy_lock
+# Keep failure diagnostics private, including session snapshots and native errors.
+umask 077
 
 service_pid() {
   # Consume the complete launchctl stream. Exiting awk after the first match
@@ -249,9 +248,29 @@ verify_api_info() {
   return 1
 }
 
+verify_operational_health() {
+  local port="$1" i=0
+  local attempts=$((VERIFY_TIMEOUT_SECS * 5))
+  while [ "$i" -le "$attempts" ]; do
+    if curl --connect-timeout 1 --max-time 2 --silent --show-error \
+      "http://127.0.0.1:$port/api/health" > "$DEPLOY_LOCK_DIR/health.json" 2>> "$DEPLOY_LOCK_DIR/health.stderr"; then
+      if jq -e '.status == "ready" and .broker.state == "ready" and .relay.state == "ready"' "$DEPLOY_LOCK_DIR/health.json" >/dev/null 2>> "$DEPLOY_LOCK_DIR/health.stderr"; then
+        return 0
+      fi
+      if jq -e '.relay.state == "unavailable" and .relay.retryable == false' "$DEPLOY_LOCK_DIR/health.json" >/dev/null 2>> "$DEPLOY_LOCK_DIR/health.stderr"; then
+        break
+      fi
+    fi
+    sleep 0.2
+    i=$((i + 1))
+  done
+  echo "ERROR: core or relay unavailable; inspect $DEPLOY_LOCK_DIR/health.json. Web/terminal access may still be usable. No relay reset or broker restart was attempted for this health failure." >&2
+  return 1
+}
+
 verify_cli_help() {
-  HELP_OUTPUT="$(mktemp)"
-  HELP_ERROR="$(mktemp)"
+  HELP_OUTPUT="$DEPLOY_LOCK_DIR/cli-help.stdout"
+  HELP_ERROR="$DEPLOY_LOCK_DIR/cli-help.stderr"
   if ! env -u WOLFPACK_SESSION_NAME -u WOLFPACK_AGENT_KIND NO_COLOR=1 WOLFPACK_SERVICE=1 \
     "$SERVER_INSTALL" session open --help > "$HELP_OUTPUT" 2> "$HELP_ERROR"; then
     echo "ERROR: installed CLI help command failed" >&2
@@ -337,13 +356,17 @@ if [ "$DEPLOY_BROKER" = "0" ]; then
     echo "ERROR: --broker=no requires running server and broker services" >&2
     exit 1
   fi
-  SESSION_BEFORE="$(mktemp)"
-  SESSION_AFTER="$(mktemp)"
+  SESSION_BEFORE="$DEPLOY_LOCK_DIR/sessions.before.json"
+  SESSION_AFTER="$DEPLOY_LOCK_DIR/sessions.after.json"
   capture_sessions "$PORT" "$SESSION_BEFORE"
 fi
 
 SERVER_HASH=""
 BROKER_HASH=""
+jq -cn --arg oldServerPid "$OLD_SERVER_PID" --arg oldBrokerPid "$OLD_BROKER_PID" \
+  --argjson brokerDeployed "$([ "$DEPLOY_BROKER" = "1" ] && echo true || echo false)" \
+  --arg serverSourceHash "$(sha256 "$SERVER_SOURCE")" --arg bundleHash "$(sha256 public/app.bundle.js)" \
+  '{oldServerPid:$oldServerPid,oldBrokerPid:$oldBrokerPid,brokerDeployed:$brokerDeployed,serverSourceHash:$serverSourceHash,bundleHash:$bundleHash}' > "$DEPLOY_LOCK_DIR/deployment.json"
 DEPLOY_MUTATION_STARTED=1
 install_signed "$SERVER_SOURCE" "$SERVER_INSTALL" SERVER_HASH
 
@@ -382,7 +405,7 @@ if [ "$DEPLOY_BROKER" = "0" ]; then
   PRESERVED_SESSIONS="$(jq '.sessions | length' "$SESSION_BEFORE")"
 fi
 
-DEPLOY_SUCCEEDED=1
+# Preserve observed build/process identity even if the subsequent health check fails.
 jq -cn \
   --arg mode "$([ "$DEPLOY_BROKER" = "1" ] && echo yes || echo no)" \
   --argjson brokerDeployed "$([ "$DEPLOY_BROKER" = "1" ] && echo true || echo false)" \
@@ -407,4 +430,8 @@ jq -cn \
     bundleHash:$bundleHash,
     serverVersion:$serverVersion,
     preservedSessions:$preservedSessions
-  }'
+  }' > "$DEPLOY_LOCK_DIR/verification.json"
+# A failed relay must not trigger another service restart or destroy the evidence.
+verify_operational_health "$PORT"
+DEPLOY_SUCCEEDED=1
+cat "$DEPLOY_LOCK_DIR/verification.json"

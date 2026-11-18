@@ -24,7 +24,8 @@ test("production HTTP preserves permanent storage-owner failures without blanket
       body: JSON.stringify({ operation: "connect", profile: "volatile-v1", callerSession: "caller", generation: "baseline-generation", protocolVersions: [2] }),
     });
     expect(await response.json()).toMatchObject({ ok: false, profile: "volatile-v1", error: { code: "RELAY_STORAGE_INVALID", retryable: false, ownerFatal: true } });
-    expect(response.status).not.toBe(503);
+    // Capability unavailability is HTTP 503; the typed body, not HTTP status, owns retry policy.
+    expect(response.status).toBe(503);
   } finally {
     await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });
     await gateway.close(); rmSync(root, { recursive: true, force: true });

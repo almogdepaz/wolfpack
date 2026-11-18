@@ -1,5 +1,5 @@
 import { getCachedJwtAuthConfig } from "../auth.js";
-import { defaultServerContext, type ServerContext } from "./context.js";
+import { defaultServerContext, getServerContextServiceCache, type ServerContext } from "./context.js";
 import { isLoopbackAddress } from "./client-address.js";
 export { isLoopbackAddress } from "./client-address.js";
 
@@ -50,6 +50,7 @@ const brokerHealth = new BrokerHealthMonitor();
 export function operationalHealth(ctx: ServerContext = defaultServerContext): Record<string, unknown> {
   const broker = brokerHealth.observe(ctx.supervisor?.isBrokerReady() ?? true);
   const version = ctx.supervisor?.getBrokerVersion() ?? null;
+  const services = ctx === defaultServerContext ? getServerContextServiceCache() : getServerContextServiceCache(ctx);
   return {
     status: broker === "ready" ? "ready" : "degraded",
     broker: {
@@ -57,6 +58,8 @@ export function operationalHealth(ctx: ServerContext = defaultServerContext): Re
       version: version?.brokerVersion ?? null,
       protocolVersion: version?.protocolVersion ?? null,
     },
+    // Core readiness remains broker-owned. Merely reading health must not construct a relay worker.
+    relay: services?.taskRelayGateway?.health() ?? { state: "starting" },
     // Mode only, never the secret. An invalid secret refuses server start.
     auth: { mode: getCachedJwtAuthConfig().enabled ? "jwt" : "none" },
     uptimeSeconds: Math.floor(process.uptime()),
