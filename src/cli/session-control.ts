@@ -114,6 +114,8 @@ Global selector: wolfpack --machine <short-name-or-fqdn> session open ...
 Deprecated alias for: wolfpack agent spawn`;
 }
 
+const AGENT_SPAWN_USAGE = "Usage: wolfpack agent spawn <project>|--project-dir <path> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--outlive-parent] [--task-worker [--task-worker-policy-file <path>] [--task-worker-dry-run] [--readiness-timeout-ms <1..60000>]] [--json]";
+
 export function agentUsage(): string {
   return `Usage: wolfpack agent <command> [options]
 
@@ -403,7 +405,8 @@ function isSessionAction(action: string): action is SessionAction {
   return action === "create" || action === "open" || action === "current-context" || isTargetSessionAction(action);
 }
 
-function parseLaunchSessionCommand(action: LaunchSessionAction, args: string[]): ParsedSessionCommand {
+/** `usageLine` replaces the session usage line for callers with their own command name. */
+function parseLaunchSessionCommand(action: LaunchSessionAction, args: string[], usageLine?: string): ParsedSessionCommand {
   const promptValue = consumeLaunchValue(args, "--prompt");
   const promptFileValue = consumeLaunchValue(args, "--prompt-file");
   const planValue = consumeLaunchValue(args, "--plan");
@@ -456,8 +459,8 @@ function parseLaunchSessionCommand(action: LaunchSessionAction, args: string[]):
     && (action !== "create" || harnessValue === null || harness === AGENT_KIND.PI.id || harness === AGENT_KIND.CLAUDE.id)
   );
   // An inherited child harness is resolved by the server, which applies the same rule.
-  if (taskWorker && harness === AGENT_KIND.CLAUDE.id && (modelValue !== null || taskWorkerPolicyFileValue !== null || taskWorkerDryRun)) {
-    return { ok: false, message: "--model, --task-worker-policy-file and --task-worker-dry-run apply only to Pi task workers" };
+  if (taskWorker && harness === AGENT_KIND.CLAUDE.id && taskWorkerPolicyFileValue !== null) {
+    return { ok: false, message: "--task-worker-policy-file applies only to Pi task workers" };
   }
   const validTaskWorkerPolicyFile = taskWorkerPolicyFileValue === null
     || (taskWorker && Boolean(taskWorkerPolicyFileValue.trim()));
@@ -472,7 +475,7 @@ function parseLaunchSessionCommand(action: LaunchSessionAction, args: string[]):
   if (selector === null || args.length > 0 || !validPrompt || !validPromptSources || !validSessionName || !validModel || !validHarness || !validNotify || !validTaskWorker || !validTaskWorkerPolicyFile || !validTaskWorkerDryRun || !validReadinessTimeout) {
     return {
       ok: false,
-      message: action === "create" ? sessionCreateUsage().split("\n")[0] : sessionOpenUsage().split("\n")[0],
+      message: usageLine ?? (action === "create" ? sessionCreateUsage().split("\n")[0] : sessionOpenUsage().split("\n")[0]),
     };
   }
   if (action === "create") {
@@ -696,10 +699,9 @@ export function parseAgentCommand(argv: readonly string[]): ParsedAgentCommand {
   if (action !== "spawn") {
     return { ok: false, message: action ? `Unknown agent command: ${action}` : "Usage: wolfpack agent spawn <project> ..." };
   }
-  const parsed = parseSessionCommand(["open", ...args]);
-  const usage = "Usage: wolfpack agent spawn <project> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--outlive-parent] [--task-worker [--readiness-timeout-ms <1..60000>]] [--json]";
-  if (!parsed.ok) return { ok: false, message: usage };
-  if (parsed.action !== "open") return { ok: false, message: "Usage: wolfpack agent spawn <project> ..." };
+  const parsed = parseLaunchSessionCommand("open", [...args], AGENT_SPAWN_USAGE);
+  if (!parsed.ok) return parsed;
+  if (parsed.action !== "open") return { ok: false, message: AGENT_SPAWN_USAGE };
   return {
     ok: true,
     action: "spawn",
@@ -1170,6 +1172,14 @@ interface SessionOpenLaunchArgs extends LaunchPromptSource {
 type TaskWorkerDryRunResponse = {
   readonly ok: true;
   readonly taskWorkerPolicy: TaskWorkerPolicyDiagnostics;
+} | {
+  readonly ok: true;
+  readonly taskWorkerLaunch: {
+    readonly harness: "claude";
+    readonly executable: string;
+    readonly channel: string;
+    readonly model?: string;
+  };
 };
 
 function launchRequestTimeoutMs(taskWorker: boolean, readinessTimeoutMs: number | undefined): number | undefined {

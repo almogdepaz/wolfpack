@@ -2934,19 +2934,22 @@ describe("agent-native top-level session control", () => {
 
   test("gates Claude task workers on the integration opt-in and rejects Pi-only options", async () => {
     const projectDir = createExplicitProjectDir("claude-task-worker-gate");
-    for (const body of [
-      { projectDir, harness: "claude", taskWorker: true, taskWorkerDryRun: true },
-      { projectDir, harness: "claude", taskWorker: true, taskWorkerPolicy: { extensionPolicy: "inherit" } },
-    ]) {
-      mockBackend.lastCreateArgs = null;
-      const res = await post("/api/session-create", body);
-      expect(res.status, JSON.stringify(body)).toBe(400);
-      expect(await res.json()).toEqual({
-        error: "model, taskWorkerPolicy and taskWorkerDryRun apply only to Pi task workers",
-        code: SESSION_CREATE_ERROR.INVALID_REQUEST,
-      });
-      expect(mockBackend.lastCreateArgs).toBeNull();
-    }
+    mockBackend.lastCreateArgs = null;
+    const policy = await post("/api/session-create", {
+      projectDir, harness: "claude", taskWorker: true, taskWorkerPolicy: { extensionPolicy: "inherit" },
+    });
+    expect(policy.status).toBe(400);
+    expect(await policy.json()).toEqual({
+      error: "taskWorkerPolicy applies only to Pi task workers",
+      code: SESSION_CREATE_ERROR.INVALID_REQUEST,
+    });
+    expect(mockBackend.lastCreateArgs).toBeNull();
+
+    // A dry run reports the integration gate like a real launch.
+    const dryRun = await post("/api/session-create", { projectDir, harness: "claude", taskWorker: true, taskWorkerDryRun: true });
+    expect(dryRun.status).toBe(400);
+    expect(await dryRun.json()).toEqual({ error: CLAUDE_TASK_INTEGRATION_OFF, code: SESSION_CREATE_ERROR.INVALID_REQUEST });
+    expect(mockBackend.lastCreateArgs).toBeNull();
 
     // The integration is off: a non-retryable precondition, so 400 with the fix in the message.
     await mockBackend.createSession("claude-gate-parent", projectDir, "pi", () => ({ agentCmd: "pi" }), { agentKind: "pi" });
@@ -3038,6 +3041,30 @@ describe("agent-native top-level session control", () => {
           agentKind: "claude",
           taskWorker: { harness: "claude", executable },
         });
+      }
+
+      mockBackend.lastCreateArgs = null;
+      const modeled = await post("/api/session-open", {
+        projectDir: root, parentSession: "claude-parent", harness: "claude", taskWorker: true, model: "claude-opus-5-5", readinessTimeoutMs: 500,
+      });
+      expect(modeled.ok, JSON.stringify(await modeled.clone().json())).toBeTruthy();
+      expect(mockBackend.lastCreateArgs).toMatchObject({
+        cmd: "claude", agentKind: "claude", model: "claude-opus-5-5", taskWorker: { harness: "claude", executable },
+      });
+
+      for (const [path, body, operation, expected] of [
+        ["/api/session-create", { projectDir: root, harness: "claude", taskWorker: true, taskWorkerDryRun: true }, "createTopLevelSession",
+          { ok: true, taskWorkerLaunch: { harness: "claude", executable, channel: "plugin:wolfpack-tasks@wolfpack-tasks" } }],
+        ["/api/session-open", { projectDir: root, parentSession: "claude-parent", harness: "claude", taskWorker: true, taskWorkerDryRun: true, model: "claude-opus-5-5" }, "openSession",
+          { ok: true, taskWorkerLaunch: { harness: "claude", executable, channel: "plugin:wolfpack-tasks@wolfpack-tasks", model: "claude-opus-5-5" } }],
+      ] as const) {
+        mockBackend.lastCreateArgs = null;
+        const response = await post(path, body);
+        const responseBody = await response.json();
+        expect(response.status, JSON.stringify(responseBody)).toBe(200);
+        expect(responseBody).toEqual(expected);
+        expect(validateSchema(responseSchema(operation), responseBody, controlApiSchema)).toEqual([]);
+        expect(mockBackend.lastCreateArgs, path).toBeNull();
       }
     } finally {
       await restartServer();
@@ -3596,11 +3623,11 @@ describe("POST /api/session-open", () => {
 
   test("gates model and task-worker options on the child harness before creation or preflight", async () => {
     const projectDir = createExplicitProjectDir("non-pi child");
-    const piOnly = "model, taskWorkerPolicy and taskWorkerDryRun apply only to Pi task workers";
+    const piOnly = "taskWorkerPolicy applies only to Pi task workers";
     for (const [harness, option, error] of [
-      ["claude", { model: "anthropic/claude-opus-4-1" }, "invalid session-open request"],
-      ["claude", { taskWorker: true, model: "anthropic/claude-opus-4-1" }, piOnly],
-      ["claude", { taskWorker: true, taskWorkerDryRun: true }, piOnly],
+      ["codex", { model: "gpt-5" }, "invalid session-open request"],
+      ["claude", { taskWorker: true, model: "claude-opus-5-5" }, CLAUDE_TASK_INTEGRATION_OFF],
+      ["claude", { taskWorker: true, taskWorkerDryRun: true }, CLAUDE_TASK_INTEGRATION_OFF],
       ["claude", { taskWorker: true, taskWorkerPolicy: { extensionPolicy: "inherit" } }, piOnly],
       ["codex", { taskWorker: true }, "invalid session-open request"],
     ] as const) {
@@ -3647,10 +3674,10 @@ describe("POST /api/session-open", () => {
         projectDir, parentSession: "wolf-1", taskWorker: true,
         ...(dryRun && { taskWorkerDryRun: true }),
       });
-      // Dry runs report Pi spawn policy only; a real Claude launch is rejected while the opt-in is off.
+      // Dry runs and real Claude launches both report the integration gate while the opt-in is off.
       expect(res.status).toBe(400);
       expect(await res.json()).toEqual({
-        error: dryRun ? "model, taskWorkerPolicy and taskWorkerDryRun apply only to Pi task workers" : CLAUDE_TASK_INTEGRATION_OFF,
+        error: CLAUDE_TASK_INTEGRATION_OFF,
         code: SESSION_OPEN_ERROR.INVALID_REQUEST,
       });
       expect(mockBackend.lastCreateArgs).toBeNull();
@@ -3662,6 +3689,16 @@ describe("POST /api/session-open", () => {
       if (priorPolicyPath === undefined) delete process.env.WOLFPACK_TASK_WORKER_POLICY_PATH;
       else process.env.WOLFPACK_TASK_WORKER_POLICY_PATH = priorPolicyPath;
     }
+  });
+
+  test("accepts model selection for a claude child", async () => {
+    const model = "claude-opus-5-5";
+    const res = await post("/api/session-open", {
+      project: "my-app", parentSession: "wolf-1", harness: "claude", model,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, harness: "claude" });
+    expect(mockBackend.lastCreateArgs).toMatchObject({ cmd: "claude", agentKind: "claude", model });
   });
 
   test("accepts model selection for a pi child of a non-pi parent", async () => {
@@ -4017,12 +4054,12 @@ describe("POST /api/session-open", () => {
     }
   });
 
-  test("rejects model selection for non-pi parents without changing omitted behavior", async () => {
-    useParentHarness("claude");
+  test("rejects model selection for parents without model support without changing omitted behavior", async () => {
+    useParentHarness("codex");
     const rejected = await post("/api/session-open", {
       project: "my-app",
       parentSession: "wolf-1",
-      model: "anthropic/claude-opus-4-1",
+      model: "gpt-5",
     });
     expect(rejected.status).toBe(SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.INVALID_REQUEST]);
     expect(await rejected.json()).toEqual({
@@ -4036,8 +4073,19 @@ describe("POST /api/session-open", () => {
       parentSession: "wolf-1",
     });
     expect(omitted.status).toBe(200);
-    expect(mockBackend.lastCreateArgs?.agentKind).toBe("claude");
+    expect(mockBackend.lastCreateArgs?.agentKind).toBe("codex");
     expect(mockBackend.lastCreateArgs).not.toHaveProperty("model");
+  });
+
+  test("accepts model selection inherited by a claude parent's child", async () => {
+    useParentHarness("claude");
+    const res = await post("/api/session-open", {
+      project: "my-app",
+      parentSession: "wolf-1",
+      model: "claude-opus-5-5",
+    });
+    expect(res.status).toBe(200);
+    expect(mockBackend.lastCreateArgs).toMatchObject({ agentKind: "claude", model: "claude-opus-5-5" });
   });
 
   test("rejects blank and oversized prompts", async () => {

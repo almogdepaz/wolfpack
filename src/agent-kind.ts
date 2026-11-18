@@ -60,6 +60,11 @@ export function isCreatableHarness(value: string): value is CreatableHarness {
   return CREATABLE_HARNESS_SET.has(value);
 }
 
+/** Harnesses that take a native `--model <id>` launch argument. */
+export function supportsModelSelection(harness: string): boolean {
+  return harness === AGENT_KIND.PI.id || harness === AGENT_KIND.CLAUDE.id;
+}
+
 /** Resolves exact canonical harness ids without rewriting arbitrary commands. */
 export function resolveAgentCommand(command: string): string {
   return Object.values(AGENT_KIND).find((definition) => definition.id === command)?.cmd ?? command;

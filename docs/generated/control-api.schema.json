@@ -2019,7 +2019,7 @@
                   "pi",
                   "claude"
                 ],
-                "description": "Task-worker harness. taskWorkerPolicy and taskWorkerDryRun apply only to pi."
+                "description": "Task-worker harness. taskWorkerPolicy applies only to pi; taskWorkerDryRun reports the pi spawn policy or the claude launch."
               },
               "taskWorker": {
                 "const": true
@@ -2082,6 +2082,9 @@
           },
           {
             "$ref": "#/$defs/TaskWorkerPolicyDryRunResponse"
+          },
+          {
+            "$ref": "#/$defs/ClaudeTaskWorkerDryRunResponse"
           }
         ]
       },
@@ -2110,7 +2113,7 @@
           },
           "harness": {
             "$ref": "#/$defs/OpenableHarness",
-            "description": "Child harness; defaults to the parent harness. model requires a pi child; taskWorker requires a pi or claude child, and taskWorkerPolicy and taskWorkerDryRun require pi."
+            "description": "Child harness; defaults to the parent harness. model and taskWorker require a pi or claude child; taskWorkerPolicy requires pi."
           },
           "parentSession": {
             "$ref": "#/$defs/SessionName"
@@ -2122,7 +2125,7 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 512,
-            "description": "Opaque pi model pattern or ID passed to the child harness"
+            "description": "Opaque model pattern or ID passed to the pi or claude child as --model"
           },
           "initialPrompt": {
             "type": "string",
@@ -2171,7 +2174,7 @@
               },
               "harness": {
                 "$ref": "#/$defs/OpenableHarness",
-                "description": "Child harness; defaults to the parent harness. model requires a pi child; taskWorker requires a pi or claude child, and taskWorkerPolicy and taskWorkerDryRun require pi."
+                "description": "Child harness; defaults to the parent harness. model and taskWorker require a pi or claude child; taskWorkerPolicy requires pi."
               },
               "parentSession": {
                 "$ref": "#/$defs/SessionName"
@@ -2183,7 +2186,7 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 512,
-                "description": "Opaque pi model pattern or ID passed to the child harness"
+                "description": "Opaque model pattern or ID passed to the pi or claude child as --model"
               },
               "initialPrompt": {
                 "type": "string",
@@ -2230,7 +2233,7 @@
             "properties": {
               "harness": {
                 "$ref": "#/$defs/OpenableHarness",
-                "description": "Child harness; defaults to the parent harness. model requires a pi child; taskWorker requires a pi or claude child, and taskWorkerPolicy and taskWorkerDryRun require pi."
+                "description": "Child harness; defaults to the parent harness. model and taskWorker require a pi or claude child; taskWorkerPolicy requires pi."
               },
               "parentSession": {
                 "$ref": "#/$defs/SessionName"
@@ -2245,7 +2248,7 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 512,
-                "description": "Opaque pi model pattern or ID passed to the child harness"
+                "description": "Opaque model pattern or ID passed to the pi or claude child as --model"
               },
               "taskWorker": {
                 "const": true
@@ -2313,6 +2316,9 @@
           },
           {
             "$ref": "#/$defs/TaskWorkerPolicyDryRunResponse"
+          },
+          {
+            "$ref": "#/$defs/ClaudeTaskWorkerDryRunResponse"
           }
         ]
       },
@@ -6513,6 +6519,45 @@
       "required": [
         "ok",
         "taskWorkerPolicy"
+      ],
+      "additionalProperties": false
+    },
+    "ClaudeTaskWorkerDryRunResponse": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "const": true
+        },
+        "taskWorkerLaunch": {
+          "type": "object",
+          "properties": {
+            "harness": {
+              "const": "claude"
+            },
+            "executable": {
+              "type": "string",
+              "description": "Resolved Claude executable the worker would launch"
+            },
+            "channel": {
+              "type": "string",
+              "description": "Wolfpack task channel passed as --channels"
+            },
+            "model": {
+              "type": "string",
+              "description": "Model passed as --model, when selected"
+            }
+          },
+          "required": [
+            "harness",
+            "executable",
+            "channel"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "ok",
+        "taskWorkerLaunch"
       ],
       "additionalProperties": false
     },

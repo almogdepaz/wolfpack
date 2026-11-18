@@ -206,15 +206,13 @@ describe("session control cli parsing", () => {
     expect(parseSessionCommand(["open", "--project-dir", "/worktree", "--harness", "claude", "--task-worker"]))
       .toMatchObject({ ok: true, action: "open", harness: "claude", taskWorker: true });
     for (const action of ["create", "open"] as const) {
-      for (const extra of [
-        ["--task-worker-policy-file", "/tmp/worker-policy.json"],
-        ["--task-worker-dry-run", "--json"],
-        ...(action === "open" ? [["--model", "anthropic/claude-opus-4-1"]] : []),
-      ]) {
-        expect(parseSessionCommand([action, "--project-dir", "/worktree", "--harness", "claude", "--task-worker", ...extra]))
-          .toEqual({ ok: false, message: "--model, --task-worker-policy-file and --task-worker-dry-run apply only to Pi task workers" });
-      }
+      expect(parseSessionCommand([action, "--project-dir", "/worktree", "--harness", "claude", "--task-worker", "--task-worker-policy-file", "/tmp/worker-policy.json"]))
+        .toEqual({ ok: false, message: "--task-worker-policy-file applies only to Pi task workers" });
+      expect(parseSessionCommand([action, "--project-dir", "/worktree", "--harness", "claude", "--task-worker", "--task-worker-dry-run", "--json"]))
+        .toMatchObject({ ok: true, action, harness: "claude", taskWorker: true, taskWorkerDryRun: true });
     }
+    expect(parseSessionCommand(["open", "--project-dir", "/worktree", "--harness", "claude", "--task-worker", "--model", "claude-opus-5-5"]))
+      .toMatchObject({ ok: true, action: "open", harness: "claude", taskWorker: true, model: "claude-opus-5-5" });
     expect(parseSessionCommand(["create", "--project-dir", "/worktree", "--harness", "codex", "--task-worker"]).ok).toBe(false);
   });
 

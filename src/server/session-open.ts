@@ -1,4 +1,4 @@
-import { AGENT_KIND } from "../agent-kind.js";
+import { supportsModelSelection } from "../agent-kind.js";
 import {
   isOpenableHarness,
   SESSION_OPEN_ERROR,
@@ -172,7 +172,7 @@ export async function openSubSession(input: OpenSubSessionInput): Promise<Sessio
   for (let attempt = 0; attempt < SESSION_OPEN_MAX_CREATE_ATTEMPTS; attempt++) {
     const childHarness = input.harness ?? parentState.harness;
     if (
-      (input.model !== undefined && childHarness !== AGENT_KIND.PI.id)
+      (input.model !== undefined && !supportsModelSelection(childHarness))
       || (input.taskWorker !== undefined && childHarness !== taskWorkerHarness(input.taskWorker))
     ) {
       throw new SessionOpenError(SESSION_OPEN_ERROR.INVALID_REQUEST);

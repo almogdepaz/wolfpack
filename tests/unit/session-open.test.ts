@@ -184,16 +184,28 @@ describe("openSubSession", () => {
     expect(backend.createCalls[0]?.options).toMatchObject({ agentKind: "pi", model });
   });
 
-  for (const option of [{ model: "anthropic/claude-opus-4-1" }, {
-    taskWorker: { executable: "/bin/true", extension: "/tmp/extension.ts" },
-  }]) {
-    test(`rejects ${"model" in option ? "model" : "taskWorker"} for a non-pi child before creation`, async () => {
+  test("accepts model selection for a claude child", async () => {
+    const backend = new FakeSessionOpenBackend("pi-main", "pi");
+    const model = "claude-opus-5-5";
+    const result = await openSubSession({
+      backend, parentSession: "pi-main", project: "wolfpack", projectDir: "/dev/wolfpack",
+      harness: "claude", model,
+    });
+    expect(result.harness).toBe("claude");
+    expect(backend.createCalls[0]?.options).toMatchObject({ agentKind: "claude", model });
+  });
+
+  for (const [harness, option] of [
+    ["codex", { model: "gpt-5" }],
+    ["claude", { taskWorker: { executable: "/bin/true", extension: "/tmp/extension.ts" } }],
+  ] as const) {
+    test(`rejects ${"model" in option ? "model" : "taskWorker"} for a mismatched ${harness} child before creation`, async () => {
       const backend = new FakeSessionOpenBackend("pi-main", "pi");
       let failure: unknown;
       try {
         await openSubSession({
           backend, parentSession: "pi-main", project: "wolfpack", projectDir: "/dev/wolfpack",
-          harness: "claude", ...option,
+          harness, ...option,
         });
       } catch (error: unknown) {
         failure = error;
@@ -290,14 +302,14 @@ describe("openSubSession", () => {
     });
   });
 
-  test("rejects model selection for a non-pi parent before creation", async () => {
-    const backend = new FakeSessionOpenBackend("claude-main", "claude");
+  test("rejects model selection for a parent harness without model support before creation", async () => {
+    const backend = new FakeSessionOpenBackend("codex-main", "codex");
 
     let failure: unknown;
     try {
       await openSubSession({
         backend,
-        parentSession: "claude-main",
+        parentSession: "codex-main",
         project: "wolfpack",
         projectDir: "/dev/wolfpack",
         model: "anthropic/claude-opus-4-1",

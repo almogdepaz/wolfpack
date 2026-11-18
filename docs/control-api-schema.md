@@ -28,7 +28,7 @@ Compatibility rules:
 
 `POST /api/session-open` (`openSession`) accepts optional `harness: "pi" | "claude" | "codex" | "gemini" | "cursor"`. Omission inherits the parent's harness; `shell` is not accepted for children. The parent must still use a supported agent harness. Child selection preserves parent ID/name lineage, naming, and notification behavior; success `harness` reports the child's harness.
 
-`model` and `taskWorker` require a Pi child, not a Pi parent. A non-Pi parent can select `harness: "pi"` with `model`; an explicit non-Pi child with either option is rejected before creation. Invalid child harnesses return HTTP 400 `INVALID_REQUEST`. Runtime routes enforce these child-option requirements, including when the harness is inherited from parent identity.
+`model` and `taskWorker` require a Pi or Claude child; the parent harness does not matter. `taskWorkerPolicy` requires a Pi child. An explicit child of another harness with one of these options is rejected before creation. A task-worker `taskWorkerDryRun` returns `TaskWorkerPolicyDryRunResponse` for Pi and `ClaudeTaskWorkerDryRunResponse` (executable, channel, optional model) for Claude, and creates nothing. Invalid child harnesses return HTTP 400 `INVALID_REQUEST`. Runtime routes enforce these child-option requirements, including when the harness is inherited from parent identity.
 
 ## tailnet discovery compatibility
 

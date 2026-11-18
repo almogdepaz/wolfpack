@@ -952,6 +952,37 @@ describe("BrokerBackend.createSession", () => {
       expect(params.env).toContainEqual(["WOLFPACK_PORT", "18790"]);
     });
 
+    test("on: claude model selection is native argv before --channels", async () => {
+      const model = "claude-opus-5-5; echo $HOME";
+      await backendWithIntegration(true).createSession("claude-one", "/tmp/proj", "claude", loadSettings, {
+        agentKind: "claude", model, initialPrompt: "review the diff",
+      });
+      const params = createParams();
+      expect(params.command[2]).toContain('; clear; claude --model "$1" --channels "$2" -- "$3"; exec');
+      expect(params.command.slice(3)).toEqual(["wolfpack-agent", model, channelSpec, "review the diff"]);
+      expect(params.command[2]).not.toContain(model);
+    });
+
+    test("claude task workers pass the selected model as argv", async () => {
+      const executable = "/opt/homebrew/bin/claude";
+      await backendWithIntegration(true).createSession("claude-one", "/tmp/worktree", "claude", loadSettings, {
+        agentKind: "claude",
+        model: "claude-opus-5-5",
+        taskWorker: { harness: "claude", executable },
+      });
+      const params = createParams();
+      expect(params.command).toEqual([
+        SHELL, "-lic", params.command[2], "wolfpack-agent", executable, "--model", "claude-opus-5-5", "--channels", channelSpec,
+      ]);
+    });
+
+    test("model selection still rejects harnesses without model support", async () => {
+      await expect(backendWithIntegration(true).createSession("codex-one", "/tmp/proj", "codex", loadSettings, {
+        agentKind: "codex", model: "gpt-5",
+      })).rejects.toThrow("model selection requires the pi or claude harness");
+      expect(client.requests.filter((request) => request.method === "create_session")).toEqual([]);
+    });
+
     test("claude task workers require the integration and the claude harness", async () => {
       const claudeWorker = { harness: "claude" as const, executable: "/opt/homebrew/bin/claude" };
       await expect(backendWithIntegration(false).createSession("claude-one", "/tmp/worktree", "claude", loadSettings, {
