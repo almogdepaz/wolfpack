@@ -9,7 +9,8 @@ test("rejects unvalidated older/prerelease runtimes before relay worker startup"
 
 test("CI/release pins and build/server/worker startup enforce the tested runtime floor", () => {
   for (const path of [".github/workflows/test.yml", ".github/workflows/release.yml"]) {
-    const pins = [...readFileSync(path, "utf8").matchAll(/bun-version:\s*(\S+)/g)].map(match => match[1]);
+    // setup-bun pins and npm `bun@<version>` installs (the Playwright container job).
+    const pins = [...readFileSync(path, "utf8").matchAll(/bun-version:\s*(\S+)|(?<![\w-])bun@(\d\S*)/g)].map(match => match[1] ?? match[2]);
     expect(pins.length).toBeGreaterThan(0); expect(pins.every(pin => pin === MINIMUM_BUN_VERSION)).toBe(true);
   }
   for (const path of ["src/server/index.ts", "src/task-relay/worker-client.ts", "scripts/build.ts"]) expect(readFileSync(path, "utf8")).toContain("assertSupportedBunRuntime();");
