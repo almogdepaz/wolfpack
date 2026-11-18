@@ -247,7 +247,7 @@ function sessionCreateRequestSchema(): JsonSchema {
     projectDir: ref("ProjectDirectory"),
     harness: {
       enum: [AGENT_KIND.PI.id, AGENT_KIND.CLAUDE.id],
-      description: "Task-worker harness. taskWorkerPolicy and taskWorkerDryRun apply only to pi.",
+      description: "Task-worker harness. taskWorkerPolicy applies only to pi; taskWorkerDryRun reports the pi spawn policy or the claude launch.",
     },
     taskWorker: { const: true },
     readinessTimeoutMs: {
@@ -282,7 +282,7 @@ function sessionOpenRequestSchema(): JsonSchema {
   const ordinaryProperties = {
     harness: {
       ...ref("OpenableHarness"),
-      description: "Child harness; defaults to the parent harness. model requires a pi child; taskWorker requires a pi or claude child, and taskWorkerPolicy and taskWorkerDryRun require pi.",
+      description: "Child harness; defaults to the parent harness. model and taskWorker require a pi or claude child; taskWorkerPolicy requires pi.",
     },
     parentSession: ref("SessionName"),
     sessionName: ref("SessionName"),
@@ -290,7 +290,7 @@ function sessionOpenRequestSchema(): JsonSchema {
       type: "string",
       minLength: 1,
       maxLength: SESSION_OPEN_MAX_MODEL_LENGTH,
-      description: "Opaque pi model pattern or ID passed to the child harness",
+      description: "Opaque model pattern or ID passed to the pi or claude child as --model",
     },
     initialPrompt: {
       type: "string",
@@ -652,6 +652,15 @@ export const controlApiSource: ControlApiSource = {
       ok: { const: true },
       taskWorkerPolicy: ref("TaskWorkerPolicyDiagnostics"),
     }, ["ok", "taskWorkerPolicy"]),
+    ClaudeTaskWorkerDryRunResponse: object({
+      ok: { const: true },
+      taskWorkerLaunch: object({
+        harness: { const: AGENT_KIND.CLAUDE.id },
+        executable: string("Resolved Claude executable the worker would launch"),
+        channel: string("Wolfpack task channel passed as --channels"),
+        model: string("Model passed as --model, when selected"),
+      }, ["harness", "executable", "channel"]),
+    }, ["ok", "taskWorkerLaunch"]),
     DirectoryBrowseErrorEnvelope: object({
       error: {
         enum: [
@@ -1532,6 +1541,7 @@ export const controlApiSource: ControlApiSource = {
             taskEndpoint: ref("RelayEndpoint"),
           }, ["ok", "session", "sessionId", "project", "harness"]),
           ref("TaskWorkerPolicyDryRunResponse"),
+          ref("ClaudeTaskWorkerDryRunResponse"),
         ],
       },
       errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope|TaskWorkerLaunchErrorEnvelope"],
@@ -1552,6 +1562,7 @@ export const controlApiSource: ControlApiSource = {
             taskEndpoint: ref("RelayEndpoint"),
           }, ["ok", "session", "sessionId", "project", "harness"]),
           ref("TaskWorkerPolicyDryRunResponse"),
+          ref("ClaudeTaskWorkerDryRunResponse"),
         ],
       },
       errors: [...sessionOpenErrorLines(), "503 TaskWorkerLaunchErrorEnvelope"],

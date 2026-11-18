@@ -67,6 +67,7 @@ import {
   AGENT_KIND,
   detectAgentKindFromCommandArgs,
   resolveAgentCommand,
+  supportsModelSelection,
 } from "../agent-kind.js";
 import { SHELL } from "./shell.js";
 import { CLAUDE_INTEGRATION } from "../claude-integration.js";
@@ -754,8 +755,8 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     const launchCmd = resolveAgentCommand(agentCmd);
     let shellCmd: string;
     let commandArgs: string[] = [];
-    if (options?.model !== undefined && agentCmd !== AGENT_KIND.PI.id) {
-      throw new Error("model selection requires the pi harness");
+    if (options?.model !== undefined && !supportsModelSelection(agentCmd)) {
+      throw new Error("model selection requires the pi or claude harness");
     }
     const workerHarness = taskWorker === undefined ? undefined : taskWorkerHarness(taskWorker);
     if (taskWorker !== undefined && (agentCmd !== workerHarness || options?.initialPrompt !== undefined)) {
@@ -773,7 +774,12 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       shellCmd = SHELL;
     } else if (taskWorker !== undefined && taskWorker.harness === AGENT_KIND.CLAUDE.id) {
       shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; exec "$@"`;
-      commandArgs = [taskWorker.executable, "--channels", CLAUDE_INTEGRATION.channelSpec];
+      commandArgs = [
+        taskWorker.executable,
+        ...(options?.model !== undefined ? ["--model", options.model] : []),
+        "--channels",
+        CLAUDE_INTEGRATION.channelSpec,
+      ];
     } else if (taskWorker !== undefined) {
       // Test and compatibility callers can provide the pre-policy launch shape;
       // route-owned launches always provide the resolved fields.
@@ -795,12 +801,12 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
         commandArgs.push(value);
         return `"$${commandArgs.length}"`;
       };
-      const channelsArg = claudeChannels ? ` --channels ${positional(CLAUDE_INTEGRATION.channelSpec)}` : "";
       const modelArg = options?.model !== undefined ? ` --model ${positional(options.model)}` : "";
+      const channelsArg = claudeChannels ? ` --channels ${positional(CLAUDE_INTEGRATION.channelSpec)}` : "";
       // claude's --channels takes several values; `--` keeps it from consuming the prompt.
       const endOfOptions = claudeChannels ? " --" : "";
       const promptArg = options?.initialPrompt !== undefined ? `${endOfOptions} ${positional(options.initialPrompt)}` : "";
-      shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; ${launchCmd}${channelsArg}${modelArg}${promptArg}; exec ${SHELL}`;
+      shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; ${launchCmd}${modelArg}${channelsArg}${promptArg}; exec ${SHELL}`;
     }
 
     const agentKind = options?.agentKind ?? inferAgentKind(agentCmd);

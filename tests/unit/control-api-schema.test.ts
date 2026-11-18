@@ -728,7 +728,7 @@ describe("control api schema compatibility samples", () => {
       type: "string",
       minLength: 1,
       maxLength: SESSION_OPEN_MAX_MODEL_LENGTH,
-      description: "Opaque pi model pattern or ID passed to the child harness",
+      description: "Opaque model pattern or ID passed to the pi or claude child as --model",
     });
     expect(validate(request, {
       project: "wolfpack",

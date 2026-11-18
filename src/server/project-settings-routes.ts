@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { AGENT_KIND, isCreatableHarness, isOpenableHarness } from "../agent-kind.js";
+import { AGENT_KIND, isCreatableHarness, isOpenableHarness, supportsModelSelection } from "../agent-kind.js";
 import { createLogger, errMsg } from "../log.js";
 import { detectProviderReadiness } from "../provider-readiness.js";
 import {
@@ -72,6 +72,7 @@ import {
 } from "./task-worker-readiness.js";
 import type { PreparedTaskWorkerLaunch, TaskWorkerLaunch } from "./task-worker-readiness.js";
 import { claudeTaskIntegrationState } from "../config.js";
+import { CLAUDE_INTEGRATION } from "../claude-integration.js";
 import {
   readTaskWorkerHostPolicy,
   taskWorkerPolicyPath,
@@ -125,20 +126,17 @@ function validTaskWorkerReadinessTimeout(value: number | undefined): boolean {
 }
 
 interface TaskWorkerPiOptions {
-  readonly model?: unknown;
   readonly taskWorkerPolicy?: unknown;
-  readonly taskWorkerDryRun?: unknown;
 }
 
-const CLAUDE_TASK_WORKER_PI_OPTIONS_ERROR = "model, taskWorkerPolicy and taskWorkerDryRun apply only to Pi task workers";
+const CLAUDE_TASK_WORKER_PI_OPTIONS_ERROR = "taskWorkerPolicy applies only to Pi task workers";
 
 /**
- * Model selection, spawn policy and its dry run are Pi-only: Claude workers get their task tools from the
- * wolfpack-tasks plugin and take no Pi model, extensions, env or options.
+ * The spawn policy is Pi-only: it selects Pi extensions, env and options. Claude workers get their task
+ * tools from the wolfpack-tasks plugin; they accept model selection and a dry run.
  */
 function claudeTaskWorkerWithPiOptions(harness: string, body: TaskWorkerPiOptions): boolean {
-  return harness === AGENT_KIND.CLAUDE.id
-    && (body.model !== undefined || body.taskWorkerPolicy !== undefined || body.taskWorkerDryRun !== undefined);
+  return harness === AGENT_KIND.CLAUDE.id && body.taskWorkerPolicy !== undefined;
 }
 
 /** Pi and Claude can run task workers. */
@@ -165,6 +163,23 @@ function prepareHarnessTaskWorkerLaunch(
   return harness === AGENT_KIND.CLAUDE.id
     ? prepareClaudeTaskWorkerLaunch(process.env, claudeTaskIntegrationState())
     : prepareTaskWorkerLaunch(process.env, projectDir, taskWorkerPolicy);
+}
+
+/** The dry-run body: Pi reports its resolved spawn policy, Claude its resolved launch. */
+function taskWorkerDryRunBody(
+  launch: TaskWorkerLaunch | PreparedTaskWorkerLaunch,
+  model: string | undefined,
+): Record<string, unknown> {
+  if ("diagnostics" in launch) return { ok: true, taskWorkerPolicy: launch.diagnostics };
+  return {
+    ok: true,
+    taskWorkerLaunch: {
+      harness: AGENT_KIND.CLAUDE.id,
+      executable: launch.executable,
+      channel: CLAUDE_INTEGRATION.channelSpec,
+      ...(model !== undefined && { model }),
+    },
+  };
 }
 
 function taskWorkerFailureBody(error: TaskWorkerReadinessError): Record<string, unknown> {
@@ -742,8 +757,8 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
       throw error;
     }
 
-    if (body.taskWorkerDryRun === true && taskWorker !== undefined && "diagnostics" in taskWorker) {
-      return json(res, { ok: true, taskWorkerPolicy: taskWorker.diagnostics });
+    if (body.taskWorkerDryRun === true && taskWorker !== undefined) {
+      return json(res, taskWorkerDryRunBody(taskWorker, undefined));
     }
 
     try {
@@ -802,7 +817,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
       || !isValidSessionName(body.parentSession)
       || (body.sessionName !== undefined && !isValidSessionName(body.sessionName))
       || (body.harness !== undefined && !isOpenableHarness(body.harness))
-      || (body.harness !== undefined && body.harness !== AGENT_KIND.PI.id && body.model !== undefined)
+      || (body.harness !== undefined && !supportsModelSelection(body.harness) && body.model !== undefined)
       || (body.harness !== undefined && body.taskWorker === true && !validTaskWorkerHarness(body.harness, body))
       || (
         body.model !== undefined
@@ -902,8 +917,8 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
         }
         taskWorker = prepareHarnessTaskWorkerLaunch(childHarness, projectDir, body.taskWorkerPolicy);
       }
-      if (body.taskWorkerDryRun === true && taskWorker !== undefined && "diagnostics" in taskWorker) {
-        return json(res, { ok: true, taskWorkerPolicy: taskWorker.diagnostics });
+      if (body.taskWorkerDryRun === true && taskWorker !== undefined) {
+        return json(res, taskWorkerDryRunBody(taskWorker, body.model));
       }
 
       const result = await openSubSession({

@@ -96,8 +96,15 @@ describe("session control fast-path parsing", () => {
   test("reports agent-native usage for invalid child-agent spawn", () => {
     expect(parseAgentCommand(["spawn"])).toEqual({
       ok: false,
-      message: "Usage: wolfpack agent spawn <project> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--outlive-parent] [--task-worker [--readiness-timeout-ms <1..60000>]] [--json]",
+      message: "Usage: wolfpack agent spawn <project>|--project-dir <path> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--outlive-parent] [--task-worker [--task-worker-policy-file <path>] [--task-worker-dry-run] [--readiness-timeout-ms <1..60000>]] [--json]",
     });
+  });
+
+  test("keeps the specific child-agent spawn error instead of generic usage", () => {
+    expect(parseAgentCommand([
+      "spawn", "--project-dir", "/worktree", "--harness", "claude", "--task-worker",
+      "--task-worker-policy-file", "/tmp/worker-policy.json",
+    ])).toEqual({ ok: false, message: "--task-worker-policy-file applies only to Pi task workers" });
   });
 
   test("parses unambiguous child-agent spawn", () => {

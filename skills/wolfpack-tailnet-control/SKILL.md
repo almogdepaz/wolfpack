@@ -23,13 +23,13 @@ A manual or interactive **child** of the current agent (same harness by default;
 IMPLEMENTER_MODEL="${WOLFPACK_IMPLEMENTER_MODEL:-openai-codex/gpt-6.1-sol:high}"
 REVIEWER_MODEL="${WOLFPACK_REVIEWER_MODEL:-openai-codex/gpt-6.1-sol:high}"
 wolfpack agent spawn <project> --harness pi --name 200-implementation --model "$IMPLEMENTER_MODEL" --plan .plans/000-task.md --notify-parent --json
-# --model requires a pi child, not a pi parent. Omit it for other child harnesses.
+# --model requires a pi or claude child (native per-session --model); omit it for other child harnesses.
 wolfpack agent spawn <project> --harness claude --name 200-review --plan .plans/000-task.md --notify-parent --json
 ```
 
 `wolfpack session open` is only a deprecated child-spawn alias. Never use it for a top-level request.
 Replace `<project>` with `--project-dir <path>` when the user selects an existing directory outside the configured projects root; never pass both selectors. The CLI resolves relative paths and the server validates/canonicalizes the directory.
-Both creation commands perform one server-owned request and pass startup instructions without inheriting parent transcript/context. `--harness <pi|claude|codex|gemini|cursor>` overrides the inherited child harness while preserving parent lineage; `shell` is not a child harness. `--model` is child-only and requires a Pi child; an explicit user/project model overrides the role environment/default.
+Both creation commands perform one server-owned request and pass startup instructions without inheriting parent transcript/context. `--harness <pi|claude|codex|gemini|cursor>` overrides the inherited child harness while preserving parent lineage; `shell` is not a child harness. `--model` is child-only and requires a Pi or Claude child; an explicit user/project model overrides the role environment/default. Never change a Claude child's model with `/model`, because that saves a global default.
 
 Use `--name <session>` for child agents and choose a short meaningful issue/role slug, for example `200-implementation`, `200-delivery-review`, or `auth-boundary-audit`. Avoid generic `*-sub-agent` names when the task purpose is known; Wolfpack will allocate a numbered suffix if the requested name is already taken. Prefer `--plan <file>` for plan work: Wolfpack generates the compact handoff prompt and verifies the file exists without copying plan contents into the parent transcript. Use `--prompt-file <file>` for long bespoke instructions. Use raw `--prompt` only for one short prompt sentence. Do NOT paste repository policy, architecture context, or full plans into the launch command.
 
@@ -37,14 +37,15 @@ Delegated agent work always uses a task ID. Spawn a task worker with explicit-ro
 
 ```bash
 wolfpack agent spawn --project-dir /absolute/worktree --harness pi --name task-implementation --model "$IMPLEMENTER_MODEL" --task-worker --readiness-timeout-ms 30000 --json
-# Claude task worker: needs the Claude task integration (`wolfpack setup`); no --model or Pi policy flags.
-wolfpack agent spawn --project-dir /absolute/worktree --harness claude --name task-review --task-worker --readiness-timeout-ms 30000 --json
+# Claude task worker: needs the Claude task integration (`wolfpack setup`); --model is optional; no Pi policy file.
+wolfpack agent spawn --project-dir /absolute/worktree --harness claude --name task-review --model claude-opus-5-5 --task-worker --readiness-timeout-ms 30000 --json
 
-# inspect a target host's effective policy without creating a worker
+# inspect a target host's effective policy (pi) or resolved launch (claude) without creating a worker
 wolfpack agent spawn --project-dir /absolute/worktree --harness pi --task-worker --task-worker-dry-run --json
+wolfpack agent spawn --project-dir /absolute/worktree --harness claude --task-worker --task-worker-dry-run --json
 ```
 
-`--task-worker` requires the launched session to use Pi or Claude and explicit `--project-dir`; it rejects prompts/plans and `--notify-parent`. A Claude worker fails before creation while the Claude task integration is off. Pi workers inherit Pi extension discovery by default; the target host may switch to isolated discovery or configure local allowlisted files through its private task-worker policy. Isolated disables discovery but still loads mandatory Pi Tasks and explicitly configured optional files. Use `--task-worker-policy-file <local-json-file>` only for an explicit per-spawn override; it is parsed locally and sent as typed data, never as shell argv. `--task-worker-dry-run --json` returns only redacted effective policy (env key names, never values) and creates no session. Inherit mode leaves Pi project trust intact; do not add `--approve` or assume a trusted project extension has executed. Success returns opaque `taskEndpoint` only after exact live session identity, canonical root, and relay v2 registration are verified. This is not model/task execution evidence. `TASK_WORKER_PREFLIGHT_FAILED` is before creation; `TASK_WORKER_NOT_READY` retains `createdSession` and cleanup disposition. `cleanup: "unconfirmed"` is not deletion evidence: inspect the returned stable ID before retrying, never resolve a reusable name. Do not silently downgrade to ordinary spawn when readiness is unsupported.
+`--task-worker` requires the launched session to use Pi or Claude and explicit `--project-dir`; it rejects prompts/plans and `--notify-parent`. A Claude worker fails before creation while the Claude task integration is off; `--task-worker-policy-file` is Pi-only, and a Claude `--task-worker-dry-run` reports the integration gate and the resolved executable, channel and model. Pi workers inherit Pi extension discovery by default; the target host may switch to isolated discovery or configure local allowlisted files through its private task-worker policy. Isolated disables discovery but still loads mandatory Pi Tasks and explicitly configured optional files. Use `--task-worker-policy-file <local-json-file>` only for an explicit per-spawn override; it is parsed locally and sent as typed data, never as shell argv. `--task-worker-dry-run --json` returns only redacted effective policy (env key names, never values) and creates no session. Inherit mode leaves Pi project trust intact; do not add `--approve` or assume a trusted project extension has executed. Success returns opaque `taskEndpoint` only after exact live session identity, canonical root, and relay v2 registration are verified. This is not model/task execution evidence. `TASK_WORKER_PREFLIGHT_FAILED` is before creation; `TASK_WORKER_NOT_READY` retains `createdSession` and cleanup disposition. `cleanup: "unconfirmed"` is not deletion evidence: inspect the returned stable ID before retrying, never resolve a reusable name. Do not silently downgrade to ordinary spawn when readiness is unsupported.
 
 Prefer one cohesive implementation handoff per approved PR or phase, not one per issue, commit, or checkpoint.
 
