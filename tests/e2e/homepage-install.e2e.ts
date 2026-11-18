@@ -453,7 +453,8 @@ test("Watch the demo opens the tour player, loads nothing until play, and closes
   await dialog.getByRole("button", { name: "Close" }).click();
   await expect(dialog).toBeHidden();
   await expect(link).toBeFocused();
-  expect(await video.evaluate((element) => (element as HTMLVideoElement).paused)).toBe(true);
+  // The dialog closes before its queued close event pauses playback.
+  await expect.poll(() => video.evaluate((element) => (element as HTMLVideoElement).paused)).toBe(true);
   expect(browserErrors.get(page)).toEqual([]);
 });
 

@@ -9,17 +9,16 @@ const scratch = mkdtempSync(join(tmpdir(), "wp-runtime-review-"));
 const hostId = "11111111-1111-4111-8111-111111111111";
 const scope = "22222222-2222-4222-8222-222222222222";
 process.env.HOME = scratch;
-process.env.WOLFPACK_TEST = "1";
 process.env.WOLFPACK_MACHINE_ID_PATH = join(scratch, "machine-id");
 process.env.WOLFPACK_BROKER_SOCKET = join(scratch, "unused.sock");
 process.env.WOLFPACK_TASK_ROOT = join(scratch, "tasks");
 process.env.WOLFPACK_TASK_RELAY_ROOT = join(scratch, "relay");
 process.env.WOLFPACK_JWT_SECRET = "isolated-runtime-review-secret-not-a-credential";
 writeFileSync(process.env.WOLFPACK_MACHINE_ID_PATH, `${hostId}\n`, { mode: 0o600 });
-const persistence = await import("../../../src/server/persistence.ts");
+const persistence = await import("../../../src/persistence.ts");
 const realWrite = persistence.writePrivateJsonFile;
 let failRegistryWrite = false;
-mock.module("../../../src/server/persistence.ts", () => ({
+mock.module("../../../src/persistence.ts", () => ({
   ...persistence,
   writePrivateJsonFile(path: string, value: unknown) {
     if (failRegistryWrite && path.endsWith("/registry.json")) throw new Error("injected registry commit I/O failure");
@@ -28,9 +27,11 @@ mock.module("../../../src/server/persistence.ts", () => ({
 }));
 const { ExtensionRuntime } = await import("../../../src/extensions/runtime.ts");
 const { getInstallationId } = await import("../../../src/tailnet-machine-installation.ts");
-const { ExtensionRouteService, __setExtensionRouteServiceForTests } = await import("../../../src/server/extension-routes.ts");
-const { __resetJwtAuthConfig } = await import("../../../src/test-hooks.ts");
-__resetJwtAuthConfig();
+const { ExtensionRouteService } = await import("../../../src/server/extension-routes.ts");
+const { getJwtAuthConfig } = await import("../../../src/auth.ts");
+
+const { createServerContext } = await import("../../../src/server/context.ts");
+const { MockBackend } = await import("../../../src/server/mock-backend.ts");
 const { createServerInstance } = await import("../../../src/server/index.ts");
 const backend = { async listSessionFacts() { return [{ name: "review", alive: true, identity: { wolfpackSessionId: scope } }]; } } as any;
 
@@ -66,8 +67,8 @@ function token() {
 }
 const routeRuntime = runtime();
 await install(routeRuntime, fixture());
-__setExtensionRouteServiceForTests(new ExtensionRouteService({ runtime: routeRuntime, backend }));
-const { server } = createServerInstance();
+const context = createServerContext({ jwtAuthConfig: getJwtAuthConfig(), backend: new MockBackend({ sessions: [] }), extensionRouteService: new ExtensionRouteService({ runtime: routeRuntime, backend }) });
+const { server } = createServerInstance(context);
 let base: string;
 beforeAll(async () => {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -75,7 +76,7 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
-  __setExtensionRouteServiceForTests(undefined);
+  await context.close();
   rmSync(scratch, { recursive: true, force: true });
 });
 const intended = "/api/extensions/documents/review/context";

@@ -3,7 +3,7 @@
  * cleanup, and the observer-sourced session.state events. Drives the real
  * HTTP server against MockBackend.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { connect } from "node:net";
@@ -11,7 +11,6 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-process.env.WOLFPACK_TEST = "1";
 delete process.env.WOLFPACK_JWT_SECRET;
 
 const PRIOR_ENV = {
@@ -24,52 +23,57 @@ process.env.WOLFPACK_DEV_DIR = TEST_DIR;
 process.env.WOLFPACK_SESSION_IDENTITY_PATH = join(TEST_DIR, "session-identities.json");
 process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH = join(TEST_DIR, "agent-runtime-state.json");
 
-const { __resetJwtAuthConfig } = await import("../../src/test-hooks.ts");
-const { __setTestBackend } = await import("../../src/server/backend.ts");
+const { getJwtAuthConfig } = await import("../../src/auth.ts");
+const { createServerContext, setDefaultServerContext } = await import("../../src/server/context.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
-__resetJwtAuthConfig();
-const mockBackend = new MockBackend({ sessions: [] });
-__setTestBackend(mockBackend);
 
-const { createServerInstance, __globalRateLimiter } = await import("../../src/server/index.ts") as any;
-const { __resetEventBusForTests, eventSubscriberCount, publishEvent } = await import("../../src/server/event-bus.ts");
+const { EventBus, eventSubscriberCount, publishEvent, subscribeEvents } = await import("../../src/event-bus.ts");
+const mockBackend = new MockBackend({ sessions: [] });
+let context = createServerContext({ taskRoot: join(TEST_DIR, "owned-gateway"), events: new EventBus(), jwtAuthConfig: getJwtAuthConfig(), observationCacheTtlMs: 0, backend: mockBackend });
+// Retain the production event-publisher bridge until the D3a characterization.
+setDefaultServerContext(context);
+
+const { createServerInstance, } = await import("../../src/server/index.ts") as any;
 const { EVENTS_MAX_STREAMS } = await import("../../src/server/event-routes.ts");
 const { shouldAuthenticateApiPath } = await import("../../src/server/http.ts");
 const { parseSseEvents, WOLFPACK_EVENT_KIND } = await import("../../src/events-contract.ts");
-const { __resetAgentRuntimeStateStoreForTests } = await import("../../src/server/agent-status.ts");
-const {
-  __resetSessionObservationForTests,
-  __runSessionNotificationObservationForTests,
-  observeDashboardSessions,
-  startSessionNotificationObserver,
-  stopSessionNotificationObserver,
-} = await import("../../src/server/session-observation.ts");
 const { notifyProgramStatusChanged } = await import("../../src/server/program-status-signal.ts");
 type WolfpackEvent = import("../../src/events-contract.ts").WolfpackEvent;
 
-const { server } = createServerInstance();
+let { server, wss, globalRateLimiter } = createServerInstance(context, { allowLocalOrigins: true });
 let base = "";
 
-beforeAll(async () => {
+async function listenWithContext(): Promise<void> {
+  context = createServerContext({ taskRoot: join(TEST_DIR, "owned-gateway"), events: new EventBus(), jwtAuthConfig: getJwtAuthConfig(), observationCacheTtlMs: 0, backend: mockBackend });
+  setDefaultServerContext(context);
+  ({ server, wss, globalRateLimiter } = createServerInstance(context, { allowLocalOrigins: true }));
   await new Promise<void>((resolve) => {
     (server as Server).listen(0, "127.0.0.1", () => {
       base = `http://127.0.0.1:${((server as Server).address() as AddressInfo).port}`;
       resolve();
     });
   });
-});
+}
 
-beforeEach(() => {
-  __globalRateLimiter._map.clear();
-  __resetEventBusForTests();
-  __resetAgentRuntimeStateStoreForTests();
-  __resetSessionObservationForTests();
+async function closeServerContext(): Promise<void> {
+  await context.sessionObservation.stopSessionNotificationObserver();
+  if (server.listening) await new Promise<void>((resolve, reject) => {
+    server.close((error?: Error) => error ? reject(error) : resolve());
+    server.closeAllConnections();
+  });
+  wss.close();
+  await context.close();
+}
+
+beforeEach(async () => {
+  await closeServerContext();
+  globalRateLimiter._map.clear();
   mockBackend.setSessions([]);
+  await listenWithContext();
 });
 
-afterAll(() => {
-  (server as Server).close();
-  __resetAgentRuntimeStateStoreForTests();
+afterAll(async () => {
+  await closeServerContext();
   rmSync(TEST_DIR, { recursive: true, force: true });
   for (const [key, value] of Object.entries(PRIOR_ENV)) {
     if (value === undefined) delete process.env[key];
@@ -140,6 +144,70 @@ describe("GET /api/events", () => {
       expect(events.map((event) => [event.id, event.kind])).toEqual([[1, "session.created"], [2, "session.exited"]]);
     } finally {
       stream.close();
+    }
+  });
+
+  test("committed task events reach SSE and global subscribers exactly once", async () => {
+    const { TaskStore, TASK_LEDGER_ROLE } = await import("../../src/tasks/store.ts");
+    const store = new TaskStore({ root: join(TEST_DIR, "task-publication") });
+    const parent = { machine: "machine-a", sessionId: "parent" };
+    const receiver = { machine: "machine-b", sessionId: "receiver" };
+    const taskId = "publication-contract";
+    const occurredAt = "2026-08-03T00:00:00.000Z";
+    const opened = await store.createLedger({
+      role: TASK_LEDGER_ROLE.SENDER,
+      assignment: {
+        taskId, source: parent, target: receiver, task: "verify event publication",
+        createdAt: occurredAt, expiresAt: "2026-08-03T01:00:00.000Z",
+        context: undefined, role: undefined, metadata: undefined, onCompletePrompt: undefined,
+      },
+      participants: { parent, receiver, sender: { machine: "machine-a", sessionId: "gateway" } },
+    });
+    if (opened.kind !== "created" && opened.kind !== "reused") throw new Error("expected sender ledger");
+    const seen: WolfpackEvent[] = [];
+    const unsubscribe = subscribeEvents({ kinds: new Set([WOLFPACK_EVENT_KIND.TASK_UPDATED]) }, event => seen.push(event));
+    const stream = await openStream("?kinds=task.updated");
+    try {
+      await waitFor(() => eventSubscriberCount() === 2);
+      const input = {
+        id: "created-publication-contract", taskId, type: "task.created", actor: "parent",
+        occurredAt, message: undefined, replyToMessageId: undefined, payload: { kind: "none" }, completion: undefined,
+      } as const;
+      expect((await store.acceptCanonicalEvent(opened.ledger.key, input, { actor: "parent", address: parent })).kind).toBe("accepted");
+      const events = await stream.next(1);
+      expect(events).toEqual(seen);
+      expect(events[0]).toMatchObject({
+        kind: "task.updated", taskId, eventId: input.id, eventType: "task.created", sequence: "1",
+      });
+      await store.acceptCanonicalEvent(opened.ledger.key, input, { actor: "parent", address: parent });
+      expect(seen).toHaveLength(1);
+    } finally {
+      stream.close();
+      unsubscribe();
+    }
+  });
+
+  test("the context-owned gateway preserves SSE and global task subscribers", async () => {
+    for (const name of ["parent", "receiver"]) {
+      await mockBackend.createSession(name, TEST_DIR, "pi", () => ({ agentCmd: "pi" }), { agentKind: "pi" });
+    }
+    const seen: WolfpackEvent[] = [];
+    const unsubscribe = subscribeEvents({ kinds: new Set([WOLFPACK_EVENT_KIND.TASK_UPDATED]) }, event => seen.push(event));
+    const stream = await openStream("?kinds=task.updated");
+    try {
+      await waitFor(() => eventSubscriberCount() === 2);
+      const sent = await context.taskGateway.send({
+        callerSession: "parent", to: { machine: "local", sessionId: "receiver" }, task: "verify owned publication",
+        context: undefined, role: undefined, preflight: undefined, metadata: undefined,
+        onCompletePrompt: undefined, timeoutMs: undefined, idempotencyKey: undefined, rawBody: undefined,
+      });
+      expect(sent.ok, JSON.stringify(sent)).toBe(true);
+      expect(seen.length).toBeGreaterThan(0);
+      expect(await stream.next(seen.length)).toEqual(seen);
+      expect(seen[0]).toMatchObject({ kind: "task.updated", eventType: "task.created" });
+    } finally {
+      stream.close();
+      unsubscribe();
     }
   });
 
@@ -214,17 +282,17 @@ describe("session.state events", () => {
     mockBackend.setOutputSequence("agent-1", "1");
 
     // No push subscriptions and no event subscribers: the observer is idle.
-    expect(await __runSessionNotificationObservationForTests()).toEqual([]);
+    expect(await context.sessionObservation.runSessionNotificationObservation()).toEqual([]);
 
     const stream = await openStream("?kinds=session.state");
     try {
       await waitFor(() => eventSubscriberCount() === 1);
-      const baseline = await __runSessionNotificationObservationForTests();
+      const baseline = await context.sessionObservation.runSessionNotificationObservation();
       expect(baseline).toHaveLength(1);
 
       mockBackend.setCapturePane(async () => "second screen\n");
       mockBackend.setOutputSequence("agent-1", "2");
-      const observed = await __runSessionNotificationObservationForTests();
+      const observed = await context.sessionObservation.runSessionNotificationObservation();
       const runtimeState = observed[0]!.runtimeState;
 
       const [event] = await stream.next(1);
@@ -242,8 +310,8 @@ describe("session.state events", () => {
 
       // Output stopping is itself a transition (back to idle). After that, an
       // unchanged screen must not republish: the stream is transitions, not a heartbeat.
-      await __runSessionNotificationObservationForTests();
-      await __runSessionNotificationObservationForTests();
+      await context.sessionObservation.runSessionNotificationObservation();
+      await context.sessionObservation.runSessionNotificationObservation();
       publishEvent({ kind: WOLFPACK_EVENT_KIND.SESSION_STATE, session: "sentinel", state: "idle", label: "sentinel", transitionSequence: 0 });
       const [settled, sentinel] = await stream.next(2);
       expect(settled).toMatchObject({ session: "agent-1", state: "idle", transitionSequence: runtimeState.transitionSequence + 1 });
@@ -262,20 +330,20 @@ describe("session.state events", () => {
     try {
       await waitFor(() => eventSubscriberCount() === 1);
       // Both observers baseline screen a.
-      await observeDashboardSessions();
-      await __runSessionNotificationObservationForTests();
+      await context.sessionObservation.observeDashboardSessions();
+      await context.sessionObservation.runSessionNotificationObservation();
 
       // One output change, consumed by two dashboard polls: output, then idle.
       mockBackend.setCapturePane(async () => "screen b\n");
       mockBackend.setOutputSequence("agent-2", "2");
-      await observeDashboardSessions();
-      await observeDashboardSessions();
+      await context.sessionObservation.observeDashboardSessions();
+      await context.sessionObservation.observeDashboardSessions();
       const [output, idle] = await stream.next(2);
       expect(output).toMatchObject({ session: "agent-2", state: "output" });
       expect(idle).toMatchObject({ session: "agent-2", state: "idle" });
 
       // The lagging notification observer sees the same screen b: no new output.
-      await __runSessionNotificationObservationForTests();
+      await context.sessionObservation.runSessionNotificationObservation();
       publishEvent({ kind: WOLFPACK_EVENT_KIND.SESSION_STATE, session: "sentinel", state: "idle", label: "sentinel", transitionSequence: 0 });
       const [next] = await stream.next(1);
       expect(next).toMatchObject({ session: "sentinel" });
@@ -292,7 +360,7 @@ describe("session.state events", () => {
     const stream = await openStream("?kinds=session.state");
     try {
       await waitFor(() => eventSubscriberCount() === 1);
-      await __runSessionNotificationObservationForTests();
+      await context.sessionObservation.runSessionNotificationObservation();
 
       mockBackend.setProgramStatus("agent-4", {
         id: "",
@@ -301,7 +369,7 @@ describe("session.state events", () => {
         message: "Which branch?",
         updatedAtMs: 1,
       });
-      await __runSessionNotificationObservationForTests();
+      await context.sessionObservation.runSessionNotificationObservation();
       const [blocked] = await stream.next(1);
       expect(blocked).toMatchObject({
         session: "agent-4",
@@ -318,7 +386,7 @@ describe("session.state events", () => {
         message: "Allow push?",
         updatedAtMs: 2,
       });
-      await __runSessionNotificationObservationForTests();
+      await context.sessionObservation.runSessionNotificationObservation();
       const [permission] = await stream.next(1);
       expect(permission).toMatchObject({
         session: "agent-4",
@@ -341,8 +409,8 @@ describe("session.state events", () => {
     const stream = await openStream("?kinds=session.state");
     try {
       await waitFor(() => eventSubscriberCount() === 1);
-      startSessionNotificationObserver();
-      await __runSessionNotificationObservationForTests();
+      context.sessionObservation.startSessionNotificationObserver();
+      await context.sessionObservation.runSessionNotificationObservation();
 
       mockBackend.setProgramStatus("agent-5", { id: "", state: "working", updatedAtMs: 1 });
       // Only the broker signal; no manual observation pass. stream.next waits
@@ -354,7 +422,7 @@ describe("session.state events", () => {
       expect(working).toMatchObject({ session: "agent-5", state: "working" });
       expect(Date.now() - started).toBeLessThan(2_000);
     } finally {
-      await stopSessionNotificationObserver();
+      await context.sessionObservation.stopSessionNotificationObserver();
       mockBackend.setProgramStatus("agent-5", undefined);
       stream.close();
     }
@@ -390,8 +458,8 @@ describe("session.state events", () => {
       const noisyStream = await openStream(`?kinds=session.state&session=${noisy}`);
       try {
         await waitFor(() => eventSubscriberCount() === 2);
-        startSessionNotificationObserver();
-        await __runSessionNotificationObservationForTests();
+        context.sessionObservation.startSessionNotificationObserver();
+        await context.sessionObservation.runSessionNotificationObservation();
         const burst = async () => {
           if (!withEvents) return;
           for (let i = 0; i < 3; i += 1) {
@@ -412,12 +480,12 @@ describe("session.state events", () => {
             mockBackend.setOutputSequence(watched, String(screen));
           }
           await burst();
-          await __runSessionNotificationObservationForTests();
+          await context.sessionObservation.runSessionNotificationObservation();
         }
         sentinel(watched);
         return await untilSentinel(watchedStream);
       } finally {
-        await stopSessionNotificationObserver();
+        await context.sessionObservation.stopSessionNotificationObserver();
         mockBackend.setProgramStatus(noisy, undefined);
         noisyStream.close();
         watchedStream.close();
@@ -439,9 +507,9 @@ describe("session.state events", () => {
     const stream = await openStream("?kinds=session.state");
     try {
       await waitFor(() => eventSubscriberCount() === 1);
-      startSessionNotificationObserver();
-      await __runSessionNotificationObservationForTests();
-      await stopSessionNotificationObserver();
+      context.sessionObservation.startSessionNotificationObserver();
+      await context.sessionObservation.runSessionNotificationObservation();
+      await context.sessionObservation.stopSessionNotificationObserver();
 
       mockBackend.setProgramStatus("agent-6", { id: "", state: "working", updatedAtMs: 1 });
       notifyProgramStatusChanged("agent-6-id");
@@ -464,22 +532,22 @@ describe("session.state events", () => {
     const stream = await openStream("?kinds=session.state");
     try {
       await waitFor(() => eventSubscriberCount() === 1);
-      startSessionNotificationObserver();
-      await __runSessionNotificationObservationForTests();
+      context.sessionObservation.startSessionNotificationObserver();
+      await context.sessionObservation.runSessionNotificationObservation();
 
       // The next pass samples a new screen and blocks in the capture; it has
       // listed the sessions by then, so the report below is not its to publish.
       let release: ((screen: string) => void) | undefined;
       mockBackend.setCapturePane(() => new Promise<string>((resolve) => { release = resolve; }));
       mockBackend.setOutputSequence("agent-7", "2");
-      const inflight = __runSessionNotificationObservationForTests();
+      const inflight = context.sessionObservation.runSessionNotificationObservation();
       await waitFor(() => release !== undefined);
       mockBackend.setProgramStatus("agent-7", { id: "", state: "working", updatedAtMs: 1 });
       notifyProgramStatusChanged("agent-7-id");
       // The refresh delay elapses while the pass is in flight: the refresh
       // is now queued behind it.
       await new Promise((resolve) => setTimeout(resolve, 100));
-      const stopping = stopSessionNotificationObserver();
+      const stopping = context.sessionObservation.stopSessionNotificationObserver();
       release!("steady\n");
       await inflight;
       await stopping;
@@ -503,17 +571,17 @@ describe("session.state events", () => {
     const listSessionFacts = mockBackend.listSessionFacts.bind(mockBackend);
     try {
       await waitFor(() => eventSubscriberCount() === 1);
-      const [baseline] = await __runSessionNotificationObservationForTests();
+      const [baseline] = await context.sessionObservation.runSessionNotificationObservation();
       const baselineSequence = baseline!.runtimeState.transitionSequence;
 
       mockBackend.listSessionFacts = async () => { throw new Error("broker down"); };
-      const [unavailable] = await __runSessionNotificationObservationForTests();
+      const [unavailable] = await context.sessionObservation.runSessionNotificationObservation();
       expect(unavailable!.runtimeState.state).toBe("unknown");
       const [outage] = await stream.next(1);
       expect(outage).toMatchObject({ session: "agent-3", state: "unknown", transitionSequence: baselineSequence + 1 });
 
       mockBackend.listSessionFacts = listSessionFacts;
-      const [recovered] = await __runSessionNotificationObservationForTests();
+      const [recovered] = await context.sessionObservation.runSessionNotificationObservation();
       const [recovery] = await stream.next(1);
       expect(recovery).toMatchObject({
         session: "agent-3",

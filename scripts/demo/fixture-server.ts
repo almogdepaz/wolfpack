@@ -3,7 +3,7 @@
  * Demo fixture server: the real Wolfpack server (HTTP routes, websocket relay,
  * session observation) on a random loopback port, backed by MockBackend with
  * the synthetic sessions from `fixtures/sessions.json`. Modelled on
- * `tests/e2e/test-server.ts`: isolated temporary HOME, WOLFPACK_TEST=1, no
+ * `tests/e2e/test-server.ts`: isolated temporary HOME, explicit local-origin/status options, no
  * Tailnet probing, and the machine display name replaced by the fixture's
  * label so the real hostname never reaches the page.
  *
@@ -79,14 +79,13 @@ if (!machine) throw new Error(`unknown --machine ${machineId}; known: ${Object.k
 const clockMs = Date.parse(fixtures.clock);
 
 process.env.HOME = isolatedHome;
-process.env.WOLFPACK_TEST = "1";
 const installationIdPath = join(isolatedHome!, "demo-installation-id");
 writeFileSync(installationIdPath, `${machine.installationId}\n`);
 process.env.WOLFPACK_MACHINE_ID_PATH = installationIdPath;
-process.env.WOLFPACK_TAILSCALE_STATUS_JSON = JSON.stringify({
+const tailscaleStatus = {
   Self: { ID: machine.tailnetNodeId, HostName: machine.host.split(".")[0], DNSName: `${machine.host}.` },
   Peer: {},
-});
+};
 
 let shuttingDown = false;
 const shutdown = (): void => {
@@ -109,7 +108,7 @@ await bunMock.module("../../src/machine-display-name.js", () => ({
   getMachineDisplayName: () => machine.label,
 }));
 
-const { __setTestBackend } = await import("../../src/server/backend.ts");
+const { createServerContext } = await import("../../src/server/context.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
 type PublicSessionIdentity = import("../../src/server/session-identity.ts").PublicSessionIdentity;
 type SessionPrefillOptions = import("../../src/server/backend.ts").SessionPrefillOptions;
@@ -236,9 +235,10 @@ async function createFixtureSession(name: string): Promise<void> {
 for (const session of sessions) {
   if (!session.deferred) await createFixtureSession(session.name);
 }
-__setTestBackend(backend);
+const context = createServerContext({ backend, readTailscaleStatus: async () => tailscaleStatus });
 
-const { server } = await import("../../src/server/index.ts");
+const { createServerInstance } = await import("../../src/server/index.ts");
+const { server } = createServerInstance(context, { allowLocalOrigins: true });
 
 function requireSession(name: unknown): string {
   if (typeof name !== "string" || !sessions.some((session) => session.name === name)) throw new Error(`unknown session ${String(name)}`);

@@ -6,7 +6,7 @@ import {
   stableMachineIdentity,
 } from "../../src/tailnet-peer-registry.ts";
 import { MACHINE_CAPABILITY } from "../../src/tailnet-machine-contract.ts";
-import { TAILSCALE_STATUS_TIMEOUT_MS } from "../../src/server/http.ts";
+import { TAILSCALE_STATUS_TIMEOUT_MS } from "../../src/server/tailscale-status.ts";
 import type { MachineHandshake, TailnetMachineCandidate } from "../../src/tailnet-machine-contract.ts";
 
 const installationId = "2af8af29-c4fe-44f9-9a99-9a0e35952d74";

@@ -12,7 +12,6 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DEFAULT_QUIET_ALERT_POLICY } from "../../src/quiet-alert-policy.ts";
 
-process.env.WOLFPACK_TEST = "1";
 
 const { effectiveAgentCmd, effectiveCmds, loadSettings } = await import(
   "../../src/server/project-settings-routes.ts"

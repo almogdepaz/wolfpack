@@ -10,7 +10,6 @@ import { isAbsolute, resolve } from "node:path";
 import { isUnderDevDir } from "./dev-dir.js";
 
 import { MAX_PROJECT_DIR_LENGTH } from "../directory-browse-contract.js";
-export { MAX_PROJECT_DIR_LENGTH } from "../directory-browse-contract.js";
 
 const NOT_FOUND_FILESYSTEM_CODES: ReadonlySet<string> = new Set(["ENOENT", "ENOTDIR"]);
 
@@ -28,10 +27,10 @@ export type ValidateProjectDirResult =
  * Returns a discriminated result rather than mutating an HTTP response.
  * Callers translate `code` to an HTTP or command-specific error.
  */
-export function validateProjectDir(projectDir: string): ValidateProjectDirResult {
+export function validateProjectDir(projectDir: string, devDir?: string): ValidateProjectDirResult {
   const result = validateDirectory(projectDir);
   if (!result.ok) return result;
-  if (!isUnderDevDir(result.projectDir)) {
+  if (!isUnderDevDir(result.projectDir, devDir)) {
     return { ok: false, code: "not_dir", error: "not a directory" };
   }
   return result;

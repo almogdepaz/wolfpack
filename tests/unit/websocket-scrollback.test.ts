@@ -1,15 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { __stripInitialPtyOverlap } from "../../src/server/websocket.ts";
+import { stripInitialPtyOverlap } from "../../src/server/pty-overlap.ts";
 
 describe("PTY scrollback overlap stripping", () => {
   test("passes through attach output when no prefill was sent", () => {
-    const result = __stripInitialPtyOverlap(Buffer.alloc(0), Buffer.from("live output"));
+    const result = stripInitialPtyOverlap(Buffer.alloc(0), Buffer.from("live output"));
     expect(result.awaitingMore).toBe(false);
     expect(result.data.toString()).toBe("live output");
   });
 
   test("waits for more data when attach bytes are fully duplicated so far", () => {
-    const result = __stripInitialPtyOverlap(
+    const result = stripInitialPtyOverlap(
       Buffer.from("history\nvisible pane"),
       Buffer.from("visible pane"),
     );
@@ -18,7 +18,7 @@ describe("PTY scrollback overlap stripping", () => {
   });
 
   test("drops duplicated visible pane bytes once live output diverges", () => {
-    const result = __stripInitialPtyOverlap(
+    const result = stripInitialPtyOverlap(
       Buffer.from("history\nvisible pane"),
       Buffer.from("visible pane\r\n$ "),
     );
@@ -27,7 +27,7 @@ describe("PTY scrollback overlap stripping", () => {
   });
 
   test("passes through attach output unchanged when there is no overlap", () => {
-    const result = __stripInitialPtyOverlap(
+    const result = stripInitialPtyOverlap(
       Buffer.from("history\nvisible pane"),
       Buffer.from("fresh output"),
     );

@@ -76,7 +76,10 @@ pub fn render_snapshot_ansi_budgeted(snapshot: &Snapshot, max_bytes: usize) -> B
         let bytes = render_from(snapshot, start, Some(&mut line_starts));
         if bytes.len() <= max_bytes {
             if start == 0 {
-                return BudgetedAnsi { bytes, trimmed_lines: 0 };
+                return BudgetedAnsi {
+                    bytes,
+                    trimmed_lines: 0,
+                };
             }
             window = window.saturating_mul(2).min(line_count);
             continue;
@@ -90,12 +93,16 @@ pub fn render_snapshot_ansi_budgeted(snapshot: &Snapshot, max_bytes: usize) -> B
     // could fit and step forward to the first that does.
     let estimated_len = |start: usize| CLEAR_AND_HOME.len() + window_bytes.len() - start;
     let mut trimmed = window_start
-        + line_starts
-            .partition_point(|&start| estimated_len(start) > max_bytes.saturating_add(MAX_SGR_BYTES));
+        + line_starts.partition_point(|&start| {
+            estimated_len(start) > max_bytes.saturating_add(MAX_SGR_BYTES)
+        });
     loop {
         let bytes = render_from(snapshot, trimmed, None);
         if bytes.len() <= max_bytes || trimmed == line_count {
-            return BudgetedAnsi { bytes, trimmed_lines: trimmed };
+            return BudgetedAnsi {
+                bytes,
+                trimmed_lines: trimmed,
+            };
         }
         trimmed += 1;
     }
@@ -140,7 +147,11 @@ fn render_from(
     out.push(b';');
     push_decimal(&mut out, u32::from(snapshot.cursor.col) + 1);
     out.push(b'H');
-    out.extend_from_slice(if snapshot.cursor.visible { b"\x1b[?25h" } else { b"\x1b[?25l" });
+    out.extend_from_slice(if snapshot.cursor.visible {
+        b"\x1b[?25h"
+    } else {
+        b"\x1b[?25l"
+    });
     out
 }
 
@@ -270,15 +281,27 @@ mod tests {
     use crate::protocol::{CursorState, ScrollRegion, StyledCell};
 
     fn cell(ch: &str, attrs: CellAttrs) -> StyledCell {
-        StyledCell { ch: Cow::Owned(ch.to_string()), attrs }
+        StyledCell {
+            ch: Cow::Owned(ch.to_string()),
+            attrs,
+        }
     }
 
     fn styled(text: &str, attrs: &CellAttrs) -> StyledLine {
-        StyledLine { cells: text.chars().map(|ch| cell(&ch.to_string(), attrs.clone())).collect(), wrapped: false }
+        StyledLine {
+            cells: text
+                .chars()
+                .map(|ch| cell(&ch.to_string(), attrs.clone()))
+                .collect(),
+            wrapped: false,
+        }
     }
 
     fn colored(fg: u32) -> CellAttrs {
-        CellAttrs { fg: Some(fg), ..CellAttrs::default() }
+        CellAttrs {
+            fg: Some(fg),
+            ..CellAttrs::default()
+        }
     }
 
     fn snapshot(scrollback: Vec<StyledLine>, visible_screen: Vec<StyledLine>) -> Snapshot {
@@ -289,8 +312,16 @@ mod tests {
             rows: visible_screen.len() as u16,
             visible_screen,
             scrollback,
-            cursor: CursorState { row: 0, col: 0, visible: true, ..CursorState::default() },
-            modes: TerminalModes { auto_wrap: true, ..TerminalModes::default() },
+            cursor: CursorState {
+                row: 0,
+                col: 0,
+                visible: true,
+                ..CursorState::default()
+            },
+            modes: TerminalModes {
+                auto_wrap: true,
+                ..TerminalModes::default()
+            },
             scroll_region: ScrollRegion::default(),
             title: None,
             captured_at_ms: 0,
@@ -307,7 +338,15 @@ mod tests {
                 1 => styled(&format!("red {index}"), &colored(0xff_0000)),
                 2 => StyledLine::default(),
                 3 => styled(&format!("still red {index}"), &colored(0xff_0000)),
-                _ => styled("x", &CellAttrs { bold: true, underline: true, bg: Some(0x12_3456), ..colored(0xab_cdef) }),
+                _ => styled(
+                    "x",
+                    &CellAttrs {
+                        bold: true,
+                        underline: true,
+                        bg: Some(0x12_3456),
+                        ..colored(0xab_cdef)
+                    },
+                ),
             })
             .collect()
     }
@@ -318,7 +357,10 @@ mod tests {
             cut.scrollback.drain(..trimmed);
             let bytes = render_snapshot_ansi(&cut);
             if bytes.len() <= max_bytes || trimmed == snapshot.scrollback.len() {
-                return BudgetedAnsi { bytes, trimmed_lines: trimmed };
+                return BudgetedAnsi {
+                    bytes,
+                    trimmed_lines: trimmed,
+                };
             }
         }
         unreachable!("the final trim always returns")
@@ -328,7 +370,10 @@ mod tests {
     fn budget_matches_brute_force_smallest_fitting_trim_for_every_budget() {
         let snap = snapshot(
             mixed_history(40),
-            vec![styled("visible red", &colored(0xff_0000)), styled("prompt$ ", &CellAttrs::default())],
+            vec![
+                styled("visible red", &colored(0xff_0000)),
+                styled("prompt$ ", &CellAttrs::default()),
+            ],
         );
         let full_len = render_snapshot_ansi(&snap).len();
         for max_bytes in 0..=full_len + 1 {
@@ -342,7 +387,10 @@ mod tests {
 
     #[test]
     fn budget_matches_brute_force_when_history_exceeds_the_initial_window() {
-        let snap = snapshot(mixed_history(INITIAL_WINDOW_LINES * 5 + 3), vec![styled("screen", &colored(0x00_00ff))]);
+        let snap = snapshot(
+            mixed_history(INITIAL_WINDOW_LINES * 5 + 3),
+            vec![styled("screen", &colored(0x00_00ff))],
+        );
         let full_len = render_snapshot_ansi(&snap).len();
         for max_bytes in (0..=full_len + 1).step_by(full_len / 150) {
             assert_eq!(
@@ -355,36 +403,58 @@ mod tests {
 
     #[test]
     fn budget_trims_whole_lines_oldest_first_and_keeps_the_visible_screen() {
-        let history: Vec<StyledLine> =
-            (0..10).map(|index| styled(&format!("history-{index:02}"), &CellAttrs::default())).collect();
-        let visible = vec![styled("visible-top", &CellAttrs::default()), styled("visible-bottom", &CellAttrs::default())];
+        let history: Vec<StyledLine> = (0..10)
+            .map(|index| styled(&format!("history-{index:02}"), &CellAttrs::default()))
+            .collect();
+        let visible = vec![
+            styled("visible-top", &CellAttrs::default()),
+            styled("visible-bottom", &CellAttrs::default()),
+        ];
         let snap = snapshot(history, visible);
-        let without_history = render_snapshot_ansi(&snapshot(Vec::new(), snap.visible_screen.clone())).len();
+        let without_history =
+            render_snapshot_ansi(&snapshot(Vec::new(), snap.visible_screen.clone())).len();
         // Room for exactly three 12-byte history lines ("history-NN\r\n").
         let rendered = render_snapshot_ansi_budgeted(&snap, without_history + 3 * 12);
         let text = String::from_utf8(rendered.bytes).expect("utf8");
         assert_eq!(rendered.trimmed_lines, 7);
-        assert!(text.starts_with("\x1b[2J\x1b[3J\x1b[H\x1b[0mhistory-07\r\nhistory-08\r\nhistory-09\r\nvisible-top"));
+        assert!(text.starts_with(
+            "\x1b[2J\x1b[3J\x1b[H\x1b[0mhistory-07\r\nhistory-08\r\nhistory-09\r\nvisible-top"
+        ));
         assert!(!text.contains("history-06"));
         assert!(text.contains("visible-top\r\nvisible-bottom"));
     }
 
     #[test]
     fn budget_smaller_than_visible_screen_drops_all_history_and_keeps_screen_complete() {
-        let visible = vec![styled("a visible row that alone exceeds the budget", &colored(0x00_ff00))];
+        let visible = vec![styled(
+            "a visible row that alone exceeds the budget",
+            &colored(0x00_ff00),
+        )];
         let snap = snapshot(mixed_history(12), visible.clone());
         let rendered = render_snapshot_ansi_budgeted(&snap, 8);
         assert_eq!(rendered.trimmed_lines, 12);
-        assert_eq!(rendered.bytes, render_snapshot_ansi(&snapshot(Vec::new(), visible)));
+        assert_eq!(
+            rendered.bytes,
+            render_snapshot_ansi(&snapshot(Vec::new(), visible))
+        );
         assert!(rendered.bytes.len() > 8);
     }
 
     #[test]
     fn budget_that_fits_returns_the_full_render_untrimmed() {
-        let snap = snapshot(mixed_history(8), vec![styled("screen", &CellAttrs::default())]);
+        let snap = snapshot(
+            mixed_history(8),
+            vec![styled("screen", &CellAttrs::default())],
+        );
         let full = render_snapshot_ansi(&snap);
         let rendered = render_snapshot_ansi_budgeted(&snap, full.len());
-        assert_eq!(rendered, BudgetedAnsi { bytes: full, trimmed_lines: 0 });
+        assert_eq!(
+            rendered,
+            BudgetedAnsi {
+                bytes: full,
+                trimmed_lines: 0
+            }
+        );
     }
 
     #[test]
@@ -426,7 +496,11 @@ mod tests {
                 .map(|col| {
                     cell(
                         &((b'a' + (col % 26) as u8) as char).to_string(),
-                        CellAttrs { fg: Some((index * 7919 + col * 104_729) as u32 & 0xff_ffff), bg: Some((col * 31) as u32), ..CellAttrs::default() },
+                        CellAttrs {
+                            fg: Some((index * 7919 + col * 104_729) as u32 & 0xff_ffff),
+                            bg: Some((col * 31) as u32),
+                            ..CellAttrs::default()
+                        },
                     )
                 })
                 .collect(),

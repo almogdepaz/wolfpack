@@ -26,212 +26,21 @@ import type { TriageStatus } from "../triage.js";
 import {
   agentStatusSources,
   readLocalStatusManifest,
-  flushAgentRuntimeStateForShutdown,
-  getAgentRuntimeStateStore,
   programStatusSource,
 } from "./agent-status.js";
 import type { AgentRuntimeState, AgentRuntimeStateStore } from "./agent-status.js";
-import { defaultServerContext, type ServerContext } from "./context.js";
+import type { ServerContext } from "./context.js";
 import type { SessionBackend, SessionListFact } from "./backend.js";
-import {
-  checkSessionTransitions,
-  clearQuietAlertRecipientSnapshots,
-  forgetQuietAlertRecipientSnapshots,
-  getSubscriptionCount,
-  pruneQuietAlertRecipientSnapshots,
-  recordQuietAlertEmission,
-} from "./push.js";
+
 import { loadSettings } from "./project-settings-routes.js";
 import type { PublicSessionIdentity } from "./session-identity.js";
 import { WOLFPACK_EVENT_KIND } from "../events-contract.js";
 import type { EventBus } from "../event-bus.js";
-let notificationContext: ServerContext = defaultServerContext;
 import { onProgramStatusChanged } from "./program-status-signal.js";
 import { CHILD_EVENT } from "../child-event-contract.js";
-import { observeChildSession } from "./child-events.js";
-import { hasPendingChildEventNotes, observeChildEventParent } from "./child-event-delivery.js";
 
 const log = createLogger("session-observation");
 const SESSION_NOTIFICATION_OBSERVATION_INTERVAL_MS = 5_000;
-const DASHBOARD_OBSERVATION_CACHE_TTL_MS = process.env.WOLFPACK_TEST ? 0 : 500;
-
-interface ActivityFingerprint {
-  readonly outputSequence?: string;
-  readonly rendered?: string;
-}
-
-type RenderedCapture =
-  | { readonly available: true; readonly rendered: string }
-  | { readonly available: false };
-
-interface RenderedFingerprintFlight {
-  readonly token: object;
-  readonly policyEpoch: number;
-  readonly outputSequence?: string;
-  readonly observedAtMs: number;
-  readonly observedAt: string;
-  readonly promise: Promise<RenderedCapture>;
-  reduction?: SessionActivityReduction;
-}
-
-interface RenderedActivitySample {
-  readonly token: object;
-  readonly flight: RenderedFingerprintFlight;
-  readonly capture: RenderedCapture;
-  readonly rendered: string | undefined;
-}
-
-interface ObservationAuthority {
-  readonly policyEpoch: number;
-  readonly id: number;
-}
-
-const activityHistory = new Map<string, SessionActivityHistory>();
-const quietAlertHistory = new Map<string, QuietAlertPolicyState>();
-/**
- * A child's block, from its `blocked` child event until a fresh observation
- * shows it left needs-input (review A3-2). Kept apart from
- * `quietAlertHistory`: a capture gap drops that episode, and the block must
- * still alert once, without a new screen change.
- */
-interface ChildBlockedEpisode {
-  /** The quiet episode that alerts for this block, once one is open. */
-  episodeId?: string;
-  /**
-   * That episode once policy emitted it: this block has alerted and never
-   * opens another episode. Emission is not delivery: push delivery owns the
-   * attempts and pending endpoints of this episode. A screen change (review
-   * A3-3) or a capture gap (review A5-1) while the child stays blocked
-   * replaces or drops the session's episode; this state is restored at the
-   * next fresh observation, so the same episode repeats its fact and its
-   * delivery retries resume.
-   */
-  emitted?: QuietAlertPolicyState;
-  /**
-   * This block opened `episodeId` itself (the blocked-event bridge), not
-   * adopted a screen-change episode. When the child leaves blocked before
-   * that episode emits, it is retired: no quiet alert without a screen
-   * change (review A5-2).
-   */
-  opened?: ChildBlockedBridge;
-}
-
-/** What the blocked-event bridge replaced when it opened its episode. */
-interface ChildBlockedBridge {
-  readonly sessionId: string;
-  readonly policyEpoch: number;
-  /**
-   * The emitted rendered episode the bridge replaced. Retiring the bridge
-   * restores it, so push delivery resumes its attempts, pending endpoints
-   * and debounce (review A7-3).
-   */
-  readonly replaced?: QuietAlertPolicyState;
-}
-const childBlockedEpisodes = new Map<string, ChildBlockedEpisode>();
-const activityContinuityTokens = new Map<string, object>();
-const dashboardFingerprints = new Map<string, ActivityFingerprint>();
-const notificationFingerprints = new Map<string, ActivityFingerprint>();
-const renderedFingerprintFlights = new Map<string, RenderedFingerprintFlight>();
-/**
- * Last rendered screen folded into the shared runtime-state store, per
- * session. Observer fingerprints are consumer-local (each observer's triage),
- * but the store is shared: comparing against this canonical screen keeps a
- * lagging observer from re-reporting output another observer already consumed.
- * Consumers of the capture flight that reported a change agree with it until
- * an unchanged observation is folded in.
- */
-interface RuntimeRenderedFingerprint {
-  readonly rendered: string;
-  readonly flight?: RenderedFingerprintFlight;
-  readonly changed: boolean;
-}
-const runtimeRenderedFingerprints = new Map<string, RuntimeRenderedFingerprint>();
-/**
- * A full pass samples rendered output: the fallback output/idle state is
- * "changed since the previous full pass", so only the regular cadence may run
- * one. A program-status pass re-reads lifecycle and OSC 7501 state and reuses
- * every rendered/activity fingerprint untouched.
- */
-type ObservationPass = "full" | "program-status";
-let sessionNotificationObservationTimer: ReturnType<typeof setInterval> | null = null;
-let sessionNotificationObservationPromise: Promise<readonly ObservedSessionSummary[]> | null = null;
-let peerNotificationObservationPromise: Promise<void> | null = null;
-let sessionNotificationObservationPass: ObservationPass = "full";
-let dashboardObservationPromise: Promise<readonly ObservedSessionSummary[]> | null = null;
-let dashboardObservationCache: {
-  readonly expiresAt: number;
-  readonly sessions: readonly ObservedSessionSummary[];
-} | null = null;
-
-onQuietAlertPolicyInvalidation((kind) => {
-  // Unemitted episodes can still become needs-input without new rendered output.
-  for (const [key, state] of quietAlertHistory) {
-    if (kind === undefined || state.alert?.kind === kind) quietAlertHistory.delete(key);
-  }
-  // A block retires with its episode: it alerts again only after the child
-  // leaves needs-input and blocks again.
-  for (const [key, blocked] of childBlockedEpisodes) {
-    if (kind === undefined || blocked.emitted?.alert?.kind === kind) childBlockedEpisodes.delete(key);
-  }
-  dashboardObservationCache = null;
-});
-
-interface KnownSessionSummary {
-  readonly name: string;
-  readonly lastLine: string;
-  readonly identity?: PublicSessionIdentity;
-}
-
-/** Descendant generations searched for a busy child; bounds cycles and fan-out. */
-const QUIET_SUPPRESSION_MAX_DEPTH = 8;
-/** Descendant runtime states that count as still working on the parent's behalf. */
-const BUSY_DESCENDANT_STATES: ReadonlySet<AgentStatusState> = new Set([
-  AGENT_STATUS_STATE.WORKING,
-  AGENT_STATUS_STATE.RUNNING,
-  AGENT_STATUS_STATE.OUTPUT,
-]);
-
-interface ObservedSessionSummary {
-  readonly name: string;
-  readonly lastLine: string;
-  readonly meta?: SessionMeta;
-  readonly footer?: string;
-  readonly triage: TriageStatus;
-  readonly runtimeState: AgentRuntimeState;
-  readonly activity: SessionActivityObservation;
-  readonly quietAlert?: QuietAlertFact;
-  readonly quietSuppressedBy?: QuietSuppression;
-  readonly outputSequence?: string;
-  readonly identity?: PublicSessionIdentity;
-}
-
-/**
- * A session observed in this collection, before its quiet episode is reduced.
- * Quiet eligibility runs in one synchronous pass over the whole collection.
- */
-interface PendingSessionObservation {
-  readonly sessionKey: string;
-  readonly observedAtMs: number;
-  /** Absent when this observation says nothing about quiet continuity. */
-  readonly quietContinuity?: "fresh" | "lost";
-  readonly alive: boolean;
-  readonly summary: Omit<ObservedSessionSummary, "quietAlert" | "quietSuppressedBy">;
-}
-
-interface SessionObservation {
-  readonly sessions: readonly ObservedSessionSummary[];
-  readonly unreliableSessionKeys: ReadonlySet<string>;
-  readonly authoritative: boolean;
-}
-
-function withoutQuietAlerts(sessions: readonly ObservedSessionSummary[]): readonly ObservedSessionSummary[] {
-  return sessions.map(({ quietAlert: _quietAlert, quietSuppressedBy: _quietSuppressedBy, ...session }) => session);
-}
-
-const knownSessionSummaries = new Map<string, KnownSessionSummary>();
-let nextObservationOwnership = 0;
-let latestAuthoritativeObservation = 0;
-
 const SESSION_PREVIEW_MAX_CHARS = 240;
 
 function cleanPreviewLine(line: string): string {
@@ -318,930 +127,1111 @@ export function lastTerminalPreviewLine(rendered: string | undefined): string {
   return terminalDisplayProjection(rendered).lastLine;
 }
 
-function renderedActivityFingerprint(pane: string): string {
-  const normalized = pane
-    .split("\n")
-    .map((line) => line.trimEnd())
-    .join("\n")
-    .trimEnd();
-  return normalized;
+
+interface ObservedSessionSummary {
+  readonly name: string;
+  readonly lastLine: string;
+  readonly meta?: SessionMeta;
+  readonly footer?: string;
+  readonly triage: TriageStatus;
+  readonly runtimeState: AgentRuntimeState;
+  readonly activity: SessionActivityObservation;
+  readonly quietAlert?: QuietAlertFact;
+  readonly quietSuppressedBy?: QuietSuppression;
+  readonly outputSequence?: string;
+  readonly identity?: PublicSessionIdentity;
 }
 
-function activityContinuityToken(sessionKey: string): object {
-  let token = activityContinuityTokens.get(sessionKey);
-  if (token === undefined) {
-    token = {};
-    activityContinuityTokens.set(sessionKey, token);
+export interface SessionObservationService {
+  observeDashboardSessions(): Promise<readonly ObservedSessionSummary[]>;
+  runSessionNotificationObservation(): Promise<readonly ObservedSessionSummary[]>;
+  startSessionNotificationObserver(): void;
+  stopSessionNotificationObserver(): Promise<void>;
+  forgetSessionObservation(sessionId: string, sessionName: string): void;
+  resetNotificationObservation(): void;
+  dispose(): Promise<void>;
+}
+
+
+interface ActivityFingerprint {
+  readonly outputSequence?: string;
+  readonly rendered?: string;
+}
+
+type RenderedCapture =
+  | { readonly available: true; readonly rendered: string }
+  | { readonly available: false };
+
+interface RenderedFingerprintFlight {
+  readonly token: object;
+  readonly policyEpoch: number;
+  readonly outputSequence?: string;
+  readonly observedAtMs: number;
+  readonly observedAt: string;
+  readonly promise: Promise<RenderedCapture>;
+  reduction?: SessionActivityReduction;
+}
+
+interface RenderedActivitySample {
+  readonly token: object;
+  readonly flight: RenderedFingerprintFlight;
+  readonly capture: RenderedCapture;
+  readonly rendered: string | undefined;
+}
+
+interface ObservationAuthority {
+  readonly policyEpoch: number;
+  readonly id: number;
+}
+
+export function createSessionObservation(context: ServerContext, cacheTtlMs = 500): SessionObservationService {
+  const activityHistory = new Map<string, SessionActivityHistory>();
+  const quietAlertHistory = new Map<string, QuietAlertPolicyState>();
+  /**
+   * A child's block, from its `blocked` child event until a fresh observation
+   * shows it left needs-input (review A3-2). Kept apart from
+   * `quietAlertHistory`: a capture gap drops that episode, and the block must
+   * still alert once, without a new screen change.
+   */
+  interface ChildBlockedEpisode {
+    /** The quiet episode that alerts for this block, once one is open. */
+    episodeId?: string;
+    /**
+     * That episode once policy emitted it: this block has alerted and never
+     * opens another episode. Emission is not delivery: push delivery owns the
+     * attempts and pending endpoints of this episode. A screen change (review
+     * A3-3) or a capture gap (review A5-1) while the child stays blocked
+     * replaces or drops the session's episode; this state is restored at the
+     * next fresh observation, so the same episode repeats its fact and its
+     * delivery retries resume.
+     */
+    emitted?: QuietAlertPolicyState;
+    /**
+     * This block opened `episodeId` itself (the blocked-event bridge), not
+     * adopted a screen-change episode. When the child leaves blocked before
+     * that episode emits, it is retired: no quiet alert without a screen
+     * change (review A5-2).
+     */
+    opened?: ChildBlockedBridge;
   }
-  return token;
-}
 
-function reduceSessionActivity(
-  sessionKey: string,
-  input: SessionActivityObservationInput,
-): SessionActivityReduction {
-  const reduction = reduceActivityObservation(activityHistory.get(sessionKey), input);
-  if (reduction.history) activityHistory.set(sessionKey, reduction.history);
-  else activityHistory.delete(sessionKey);
-  return reduction;
-}
-
-interface QuietAlertEligibility {
-  readonly alert?: QuietAlertKindFields;
-  readonly suppressed?: boolean;
-}
-
-function reduceSessionQuietAlert(
-  sessionKey: string,
-  sessionId: string | undefined,
-  observedAtMs: number,
-  continuity: "fresh" | "lost",
-  renderedActivityAtMs?: number,
-  episodeId?: string,
-  eligibility: QuietAlertEligibility = {},
-): QuietAlertFact | undefined {
-  if (!sessionId) {
-    quietAlertHistory.delete(sessionKey);
-    return undefined;
+  /** What the blocked-event bridge replaced when it opened its episode. */
+  interface ChildBlockedBridge {
+    readonly sessionId: string;
+    readonly policyEpoch: number;
+    /**
+     * The emitted rendered episode the bridge replaced. Retiring the bridge
+     * restores it, so push delivery resumes its attempts, pending endpoints
+     * and debounce (review A7-3).
+     */
+    readonly replaced?: QuietAlertPolicyState;
   }
-  const reduction = reduceQuietAlertPolicy(quietAlertHistory.get(sessionKey), {
-    sessionId,
-    observedAtMs,
-    continuity,
-    renderedActivityAt: renderedActivityAtMs,
-    episodeId,
-    policy: loadSettings().quietAlerts,
-    ...eligibility,
+  const childBlockedEpisodes = new Map<string, ChildBlockedEpisode>();
+  const activityContinuityTokens = new Map<string, object>();
+  const dashboardFingerprints = new Map<string, ActivityFingerprint>();
+  const notificationFingerprints = new Map<string, ActivityFingerprint>();
+  const renderedFingerprintFlights = new Map<string, RenderedFingerprintFlight>();
+  /**
+   * Last rendered screen folded into the shared runtime-state store, per
+   * session. Observer fingerprints are consumer-local (each observer's triage),
+   * but the store is shared: comparing against this canonical screen keeps a
+   * lagging observer from re-reporting output another observer already consumed.
+   * Consumers of the capture flight that reported a change agree with it until
+   * an unchanged observation is folded in.
+   */
+  interface RuntimeRenderedFingerprint {
+    readonly rendered: string;
+    readonly flight?: RenderedFingerprintFlight;
+    readonly changed: boolean;
+  }
+  const runtimeRenderedFingerprints = new Map<string, RuntimeRenderedFingerprint>();
+  /**
+   * A full pass samples rendered output: the fallback output/idle state is
+   * "changed since the previous full pass", so only the regular cadence may run
+   * one. A program-status pass re-reads lifecycle and OSC 7501 state and reuses
+   * every rendered/activity fingerprint untouched.
+   */
+  type ObservationPass = "full" | "program-status";
+  let sessionNotificationObservationTimer: ReturnType<typeof setInterval> | null = null;
+  let sessionNotificationObservationPromise: Promise<readonly ObservedSessionSummary[]> | null = null;
+  let peerNotificationObservationPromise: Promise<void> | null = null;
+  let sessionNotificationObservationPass: ObservationPass = "full";
+  let dashboardObservationPromise: Promise<readonly ObservedSessionSummary[]> | null = null;
+  let dashboardObservationCache: {
+    readonly expiresAt: number;
+    readonly sessions: readonly ObservedSessionSummary[];
+  } | null = null;
+
+  const unsubscribePolicy = onQuietAlertPolicyInvalidation((kind) => {
+    // Unemitted episodes can still become needs-input without new rendered output.
+    for (const [key, state] of quietAlertHistory) {
+      if (kind === undefined || state.alert?.kind === kind) quietAlertHistory.delete(key);
+    }
+    // A block retires with its episode: it alerts again only after the child
+    // leaves needs-input and blocks again.
+    for (const [key, blocked] of childBlockedEpisodes) {
+      if (kind === undefined || blocked.emitted?.alert?.kind === kind) childBlockedEpisodes.delete(key);
+    }
+    dashboardObservationCache = null;
   });
-  if (reduction.state) quietAlertHistory.set(sessionKey, reduction.state);
-  else quietAlertHistory.delete(sessionKey);
-  if (reduction.event) {
-    recordQuietAlertEmission(sessionId, reduction.event.episodeId, reduction.event.kind);
-    const blocked = childBlockedEpisodes.get(sessionKey);
-    if (blocked?.episodeId === reduction.event.episodeId) {
-      blocked.emitted = reduction.state;
-    }
+
+  interface KnownSessionSummary {
+    readonly name: string;
+    readonly lastLine: string;
+    readonly identity?: PublicSessionIdentity;
   }
-  return reduction.fact;
-}
 
-function createRenderedFingerprintFlight(
-  backend: SessionBackend,
-  sessionKey: string,
-  name: string,
-  outputSequence: string | undefined,
-  token: object,
-): RenderedFingerprintFlight {
-  const observedAtMs = Date.now();
-  const policyEpoch = quietAlertPolicyEpoch();
-  const observedAt = new Date(observedAtMs).toISOString();
-  const promise = backend.capturePane(name, { scrollbackLines: 0 })
-    .then((pane) => ({ available: true as const, rendered: renderedActivityFingerprint(pane) }))
-    .catch(() => ({ available: false as const }));
-  return { token, policyEpoch, outputSequence, observedAtMs, observedAt, promise };
-}
+  /** Descendant generations searched for a busy child; bounds cycles and fan-out. */
+  const QUIET_SUPPRESSION_MAX_DEPTH = 8;
+  /** Descendant runtime states that count as still working on the parent's behalf. */
+  const BUSY_DESCENDANT_STATES: ReadonlySet<AgentStatusState> = new Set([
+    AGENT_STATUS_STATE.WORKING,
+    AGENT_STATUS_STATE.RUNNING,
+    AGENT_STATUS_STATE.OUTPUT,
+  ]);
 
-async function renderedActivitySample(
-  backend: SessionBackend,
-  sessionKey: string,
-  name: string,
-  outputSequence: string | undefined,
-): Promise<RenderedActivitySample> {
-  const token = activityContinuityToken(sessionKey);
-  let flight = outputSequence === undefined ? undefined : renderedFingerprintFlights.get(sessionKey);
-  if (flight?.outputSequence !== outputSequence || flight?.token !== token) flight = undefined;
-  if (flight === undefined) {
-    flight = createRenderedFingerprintFlight(backend, sessionKey, name, outputSequence, token);
-    if (outputSequence !== undefined) renderedFingerprintFlights.set(sessionKey, flight);
+
+  /**
+   * A session observed in this collection, before its quiet episode is reduced.
+   * Quiet eligibility runs in one synchronous pass over the whole collection.
+   */
+  interface PendingSessionObservation {
+    readonly sessionKey: string;
+    readonly observedAtMs: number;
+    /** Absent when this observation says nothing about quiet continuity. */
+    readonly quietContinuity?: "fresh" | "lost";
+    readonly alive: boolean;
+    readonly summary: Omit<ObservedSessionSummary, "quietAlert" | "quietSuppressedBy">;
   }
-  const capture = await flight.promise;
-  return {
-    token: flight.token,
-    flight,
-    capture,
-    rendered: activityContinuityTokens.get(sessionKey) === flight.token && capture.available
-      ? capture.rendered
-      : undefined,
-  };
-}
 
-function reduceRenderedActivitySample(
-  sessionKey: string,
-  sessionId: string | undefined,
-  sample: RenderedActivitySample,
-  authority: ObservationAuthority,
-): SessionActivityReduction | undefined {
-  if (!ownsObservationAuthority(authority)) return undefined;
-  if (sample.flight.reduction !== undefined) return sample.flight.reduction;
-  const ownsContinuity = activityContinuityTokens.get(sessionKey) === sample.token;
-  if (!ownsContinuity || !sample.capture.available) {
-    const currentFlight = renderedFingerprintFlights.get(sessionKey);
-    if (!sample.capture.available && currentFlight === sample.flight) {
-      renderedFingerprintFlights.delete(sessionKey);
+  interface SessionObservation {
+    readonly sessions: readonly ObservedSessionSummary[];
+    readonly unreliableSessionKeys: ReadonlySet<string>;
+    readonly authoritative: boolean;
+  }
+
+  function withoutQuietAlerts(sessions: readonly ObservedSessionSummary[]): readonly ObservedSessionSummary[] {
+    return sessions.map(({ quietAlert: _quietAlert, quietSuppressedBy: _quietSuppressedBy, ...session }) => session);
+  }
+
+  const knownSessionSummaries = new Map<string, KnownSessionSummary>();
+  let nextObservationOwnership = 0;
+  let latestAuthoritativeObservation = 0;
+
+  function renderedActivityFingerprint(pane: string): string {
+    const normalized = pane
+      .split("\n")
+      .map((line) => line.trimEnd())
+      .join("\n")
+      .trimEnd();
+    return normalized;
+  }
+
+  function activityContinuityToken(sessionKey: string): object {
+    let token = activityContinuityTokens.get(sessionKey);
+    if (token === undefined) {
+      token = {};
+      activityContinuityTokens.set(sessionKey, token);
     }
-    if (!sample.capture.available && ownsContinuity) {
-      activityContinuityTokens.delete(sessionKey);
-      reduceSessionQuietAlert(sessionKey, sessionId, sample.flight.observedAtMs, "lost");
+    return token;
+  }
+
+  function reduceSessionActivity(
+    sessionKey: string,
+    input: SessionActivityObservationInput,
+  ): SessionActivityReduction {
+    const reduction = reduceActivityObservation(activityHistory.get(sessionKey), input);
+    if (reduction.history) activityHistory.set(sessionKey, reduction.history);
+    else activityHistory.delete(sessionKey);
+    return reduction;
+  }
+
+  interface QuietAlertEligibility {
+    readonly alert?: QuietAlertKindFields;
+    readonly suppressed?: boolean;
+  }
+
+  function reduceSessionQuietAlert(
+    sessionKey: string,
+    sessionId: string | undefined,
+    observedAtMs: number,
+    continuity: "fresh" | "lost",
+    renderedActivityAtMs?: number,
+    episodeId?: string,
+    eligibility: QuietAlertEligibility = {},
+  ): QuietAlertFact | undefined {
+    if (!sessionId) {
+      quietAlertHistory.delete(sessionKey);
+      return undefined;
     }
-    const reduction = reduceActivityObservation(undefined, { alive: false, observedAt: sample.flight.observedAt });
+    const reduction = reduceQuietAlertPolicy(quietAlertHistory.get(sessionKey), {
+      sessionId,
+      observedAtMs,
+      continuity,
+      renderedActivityAt: renderedActivityAtMs,
+      episodeId,
+      policy: loadSettings().quietAlerts,
+      ...eligibility,
+    });
+    if (reduction.state) quietAlertHistory.set(sessionKey, reduction.state);
+    else quietAlertHistory.delete(sessionKey);
+    if (reduction.event) {
+      context.push.recordQuietAlertEmission(sessionId, reduction.event.episodeId, reduction.event.kind);
+      const blocked = childBlockedEpisodes.get(sessionKey);
+      if (blocked?.episodeId === reduction.event.episodeId) {
+        blocked.emitted = reduction.state;
+      }
+    }
+    return reduction.fact;
+  }
+
+  function createRenderedFingerprintFlight(
+    backend: SessionBackend,
+    sessionKey: string,
+    name: string,
+    outputSequence: string | undefined,
+    token: object,
+  ): RenderedFingerprintFlight {
+    const observedAtMs = Date.now();
+    const policyEpoch = quietAlertPolicyEpoch();
+    const observedAt = new Date(observedAtMs).toISOString();
+    const promise = backend.capturePane(name, { scrollbackLines: 0 })
+      .then((pane) => ({ available: true as const, rendered: renderedActivityFingerprint(pane) }))
+      .catch(() => ({ available: false as const }));
+    return { token, policyEpoch, outputSequence, observedAtMs, observedAt, promise };
+  }
+
+  async function renderedActivitySample(
+    backend: SessionBackend,
+    sessionKey: string,
+    name: string,
+    outputSequence: string | undefined,
+  ): Promise<RenderedActivitySample> {
+    const token = activityContinuityToken(sessionKey);
+    let flight = outputSequence === undefined ? undefined : renderedFingerprintFlights.get(sessionKey);
+    if (flight?.outputSequence !== outputSequence || flight?.token !== token) flight = undefined;
+    if (flight === undefined) {
+      flight = createRenderedFingerprintFlight(backend, sessionKey, name, outputSequence, token);
+      if (outputSequence !== undefined) renderedFingerprintFlights.set(sessionKey, flight);
+    }
+    const capture = await flight.promise;
+    return {
+      token: flight.token,
+      flight,
+      capture,
+      rendered: activityContinuityTokens.get(sessionKey) === flight.token && capture.available
+        ? capture.rendered
+        : undefined,
+    };
+  }
+
+  function reduceRenderedActivitySample(
+    sessionKey: string,
+    sessionId: string | undefined,
+    sample: RenderedActivitySample,
+    authority: ObservationAuthority,
+  ): SessionActivityReduction | undefined {
+    if (!ownsObservationAuthority(authority)) return undefined;
+    if (sample.flight.reduction !== undefined) return sample.flight.reduction;
+    const ownsContinuity = activityContinuityTokens.get(sessionKey) === sample.token;
+    if (!ownsContinuity || !sample.capture.available) {
+      const currentFlight = renderedFingerprintFlights.get(sessionKey);
+      if (!sample.capture.available && currentFlight === sample.flight) {
+        renderedFingerprintFlights.delete(sessionKey);
+      }
+      if (!sample.capture.available && ownsContinuity) {
+        activityContinuityTokens.delete(sessionKey);
+        reduceSessionQuietAlert(sessionKey, sessionId, sample.flight.observedAtMs, "lost");
+      }
+      const reduction = reduceActivityObservation(undefined, { alive: false, observedAt: sample.flight.observedAt });
+      sample.flight.reduction = reduction;
+      return reduction;
+    }
+    const reduction = reduceSessionActivity(sessionKey, {
+      alive: true,
+      observedAt: sample.flight.observedAt,
+      rendered: sample.capture.rendered,
+    });
+    if (
+      sample.flight.policyEpoch === authority.policyEpoch
+      && authority.policyEpoch === quietAlertPolicyEpoch()
+      && reduction.activity.lastRenderedActivityAt === sample.flight.observedAt
+    ) {
+      reduceSessionQuietAlert(sessionKey, sessionId, sample.flight.observedAtMs, "fresh", sample.flight.observedAtMs, randomUUID());
+    }
     sample.flight.reduction = reduction;
     return reduction;
   }
-  const reduction = reduceSessionActivity(sessionKey, {
-    alive: true,
-    observedAt: sample.flight.observedAt,
-    rendered: sample.capture.rendered,
-  });
-  if (
-    sample.flight.policyEpoch === authority.policyEpoch
-    && authority.policyEpoch === quietAlertPolicyEpoch()
-    && reduction.activity.lastRenderedActivityAt === sample.flight.observedAt
-  ) {
-    reduceSessionQuietAlert(sessionKey, sessionId, sample.flight.observedAtMs, "fresh", sample.flight.observedAtMs, randomUUID());
-  }
-  sample.flight.reduction = reduction;
-  return reduction;
-}
 
-function retireRenderedActivitySample(sessionKey: string, sample: RenderedActivitySample): void {
-  if (activityContinuityTokens.get(sessionKey) === sample.token) {
-    activityContinuityTokens.delete(sessionKey);
+  function retireRenderedActivitySample(sessionKey: string, sample: RenderedActivitySample): void {
+    if (activityContinuityTokens.get(sessionKey) === sample.token) {
+      activityContinuityTokens.delete(sessionKey);
+    }
+    if (renderedFingerprintFlights.get(sessionKey) === sample.flight) {
+      renderedFingerprintFlights.delete(sessionKey);
+    }
   }
-  if (renderedFingerprintFlights.get(sessionKey) === sample.flight) {
-    renderedFingerprintFlights.delete(sessionKey);
+
+  async function listAvailableSessionFacts(ctx: ServerContext): Promise<SessionListFact[] | undefined> {
+    const backend = ctx.backend;
+    if (ctx.supervisor && !ctx.supervisor.isBrokerAvailable()) return undefined;
+    try {
+      return await backend.listSessionFacts();
+    } catch {
+      return undefined;
+    }
   }
-}
 
-async function listAvailableSessionFacts(ctx: ServerContext): Promise<SessionListFact[] | undefined> {
-  const backend = ctx.backend;
-  if (ctx.supervisor && !ctx.supervisor.isBrokerAvailable()) return undefined;
-  try {
-    return await backend.listSessionFacts();
-  } catch {
-    return undefined;
+  function beginObservationOwnership(): number {
+    return ++nextObservationOwnership;
   }
-}
 
-function beginObservationOwnership(): number {
-  return ++nextObservationOwnership;
-}
-
-// A collection becomes authoritative when its list result completes. Its
-// authority lasts only until a newer completed list claims the same policy epoch.
-function claimObservationAuthority(observationOwnership: number, policyEpoch: number): ObservationAuthority | undefined {
-  if (policyEpoch !== quietAlertPolicyEpoch() || observationOwnership < latestAuthoritativeObservation) return undefined;
-  latestAuthoritativeObservation = observationOwnership;
-  return { policyEpoch, id: observationOwnership };
-}
-
-function ownsObservationAuthority(authority: ObservationAuthority): boolean {
-  return authority.policyEpoch === quietAlertPolicyEpoch()
-    && authority.id === latestAuthoritativeObservation;
-}
-
-/**
- * Publish a runtime-state transition to event subscribers. The store is shared
- * by every observer, so each transition advances the sequence once. The first
- * observation of a session is a baseline, not a transition.
- */
-function publishRuntimeTransition(
-  name: string,
-  sessionId: string | undefined,
-  previousTransitionSequence: number | undefined,
-  runtimeState: AgentRuntimeState,
-  events: EventBus,
-): void {
-  if (previousTransitionSequence === undefined || runtimeState.transitionSequence === previousTransitionSequence) return;
-  events.publishEvent({
-    kind: WOLFPACK_EVENT_KIND.SESSION_STATE,
-    session: name,
-    ...(sessionId !== undefined && { sessionId }),
-    state: runtimeState.state,
-    label: runtimeState.label,
-    transitionSequence: runtimeState.transitionSequence,
-    ...(runtimeState.inputKind && { inputKind: runtimeState.inputKind }),
-    // Only the program's own OSC 7501 text; other authorities' messages are
-    // status diagnostics, not something the program said.
-    ...(runtimeState.authority === AGENT_STATUS_AUTHORITY.PROGRAM && runtimeState.message
-      && { message: runtimeState.message }),
-  });
-}
-
-function observeUnavailableSessions(policyEpoch: number, observationOwnership: number, events: EventBus): SessionObservation {
-  const authority = claimObservationAuthority(observationOwnership, policyEpoch);
-  if (authority === undefined) {
-    return { sessions: [], unreliableSessionKeys: new Set(), authoritative: false };
+  // A collection becomes authoritative when its list result completes. Its
+  // authority lasts only until a newer completed list claims the same policy epoch.
+  function claimObservationAuthority(observationOwnership: number, policyEpoch: number): ObservationAuthority | undefined {
+    if (policyEpoch !== quietAlertPolicyEpoch() || observationOwnership < latestAuthoritativeObservation) return undefined;
+    latestAuthoritativeObservation = observationOwnership;
+    return { policyEpoch, id: observationOwnership };
   }
-  activityHistory.clear();
-  quietAlertHistory.clear();
-  childBlockedEpisodes.clear();
-  activityContinuityTokens.clear();
-  dashboardFingerprints.clear();
-  notificationFingerprints.clear();
-  renderedFingerprintFlights.clear();
-  runtimeRenderedFingerprints.clear();
-  clearQuietAlertRecipientSnapshots(policyEpoch);
-  const observedAt = new Date().toISOString();
-  const store = getAgentRuntimeStateStore();
-  const summariesBySessionKey = new Map<string, KnownSessionSummary>();
-  for (const summary of knownSessionSummaries.values()) {
-    summariesBySessionKey.set(summary.identity?.wolfpackSessionId ?? summary.name, summary);
+
+  function ownsObservationAuthority(authority: ObservationAuthority): boolean {
+    return authority.policyEpoch === quietAlertPolicyEpoch()
+      && authority.id === latestAuthoritativeObservation;
   }
-  for (const sessionKey of Object.keys(store.snapshot().sessions)) {
-    if (!summariesBySessionKey.has(sessionKey)) summariesBySessionKey.set(sessionKey, { name: sessionKey, lastLine: "" });
+
+  /**
+   * Publish a runtime-state transition to event subscribers. The store is shared
+   * by every observer, so each transition advances the sequence once. The first
+   * observation of a session is a baseline, not a transition.
+   */
+  function publishRuntimeTransition(
+    name: string,
+    sessionId: string | undefined,
+    previousTransitionSequence: number | undefined,
+    runtimeState: AgentRuntimeState,
+    events: EventBus,
+  ): void {
+    if (previousTransitionSequence === undefined || runtimeState.transitionSequence === previousTransitionSequence) return;
+    events.publishEvent({
+      kind: WOLFPACK_EVENT_KIND.SESSION_STATE,
+      session: name,
+      ...(sessionId !== undefined && { sessionId }),
+      state: runtimeState.state,
+      label: runtimeState.label,
+      transitionSequence: runtimeState.transitionSequence,
+      ...(runtimeState.inputKind && { inputKind: runtimeState.inputKind }),
+      // Only the program's own OSC 7501 text; other authorities' messages are
+      // status diagnostics, not something the program said.
+      ...(runtimeState.authority === AGENT_STATUS_AUTHORITY.PROGRAM && runtimeState.message
+        && { message: runtimeState.message }),
+    });
   }
-  const sessions = Array.from(summariesBySessionKey.entries()).map<ObservedSessionSummary>(([sessionKey, { name, lastLine, identity }]) => {
-    const previous = store.get(sessionKey);
+
+  function observeUnavailableSessions(policyEpoch: number, observationOwnership: number, ctx: ServerContext): SessionObservation {
+    const authority = claimObservationAuthority(observationOwnership, policyEpoch);
+    if (authority === undefined) {
+      return { sessions: [], unreliableSessionKeys: new Set(), authoritative: false };
+    }
+    activityHistory.clear();
+    quietAlertHistory.clear();
+    childBlockedEpisodes.clear();
+    activityContinuityTokens.clear();
+    dashboardFingerprints.clear();
+    notificationFingerprints.clear();
+    renderedFingerprintFlights.clear();
+    runtimeRenderedFingerprints.clear();
+    context.push.clearQuietAlertRecipientSnapshots(policyEpoch);
+    const observedAt = new Date().toISOString();
+    const store = ctx.agentRuntimeStateStore;
+    const summariesBySessionKey = new Map<string, KnownSessionSummary>();
+    for (const summary of knownSessionSummaries.values()) {
+      summariesBySessionKey.set(summary.identity?.wolfpackSessionId ?? summary.name, summary);
+    }
+    for (const sessionKey of Object.keys(store.snapshot().sessions)) {
+      if (!summariesBySessionKey.has(sessionKey)) summariesBySessionKey.set(sessionKey, { name: sessionKey, lastLine: "" });
+    }
+    const sessions = Array.from(summariesBySessionKey.entries()).map<ObservedSessionSummary>(([sessionKey, { name, lastLine, identity }]) => {
+      const previous = store.get(sessionKey);
+      const runtimeState = store.reduce({
+        sessionKey,
+        broker: { state: "unavailable", observedAt },
+        sources: [],
+        fallback: { rawOutputChanged: false, observedAt, preview: lastLine },
+        currentRun: {
+          runId: identity?.wolfpackSessionId ?? previous?.runId,
+          runOrder: identity?.createdAt ? Date.parse(identity.createdAt) : previous?.runOrder,
+        },
+      }, { persist: false });
+      publishRuntimeTransition(name, identity?.wolfpackSessionId, previous?.transitionSequence, runtimeState, ctx.events);
+      return {
+        name,
+        lastLine,
+        triage: "idle" as TriageStatus,
+        runtimeState,
+        activity: { freshness: "unknown", observedAt, display: "activity unavailable" },
+        ...(identity && { identity }),
+      };
+    }).sort((a, b) => a.name.localeCompare(b.name));
+    store.flush();
+    return { sessions, unreliableSessionKeys: new Set(summariesBySessionKey.keys()), authoritative: true };
+  }
+
+  function staleSessionProjection(
+    sessions: readonly Pick<ObservedSessionSummary, "name" | "identity">[],
+    ctx: ServerContext,
+  ): SessionObservation {
+    const observedAt = new Date().toISOString();
+    const store = ctx.agentRuntimeStateStore;
+    const unreliableSessionKeys = new Set<string>();
+    const projection = sessions.flatMap<ObservedSessionSummary>((session) => {
+      const known = knownSessionSummaries.get(session.name);
+      const identity = known?.identity ?? session.identity;
+      const sessionKey = identity?.wolfpackSessionId ?? session.name;
+      unreliableSessionKeys.add(sessionKey);
+      const runtimeState = store.get(sessionKey);
+      if (runtimeState === undefined) return [];
+      return [{
+        name: session.name,
+        lastLine: known?.lastLine ?? "",
+        triage: "idle" as TriageStatus,
+        runtimeState,
+        activity: reduceActivityObservation(undefined, { alive: false, observedAt }).activity,
+        ...(identity && { identity }),
+      }];
+    }).sort((a, b) => a.name.localeCompare(b.name));
+    return { sessions: projection, unreliableSessionKeys, authoritative: false };
+  }
+
+  async function observeSessionFact(
+    backend: SessionBackend,
+    fact: SessionListFact,
+    fingerprints: Map<string, ActivityFingerprint>,
+    store: AgentRuntimeStateStore,
+    activeNames: Set<string>,
+    activeSessionKeys: Set<string>,
+    unreliableSessionKeys: Set<string>,
+    authority: ObservationAuthority,
+    pass: ObservationPass,
+    events: EventBus,
+  ): Promise<PendingSessionObservation | undefined> {
+    if (!ownsObservationAuthority(authority)) return undefined;
+    const name = fact.name;
+    activeNames.add(name);
+    const brokerState = fact.alive ? "alive" : "dead";
+    const identity = fact.identity;
+    const sessionKey = identity?.wolfpackSessionId ?? name;
+    activeSessionKeys.add(sessionKey);
+
+    // The output watermark is a cheap invalidation signal. Only materialize a
+    // Ghostty snapshot when it advances; stable sessions do no terminal work.
+    // A shared per-sequence flight prevents duplicate snapshot requests.
+    const outputSequence = brokerOutputSequence(fact.outputSequence);
+    const observedAtMs = Date.now();
+    const observedAt = new Date(observedAtMs).toISOString();
+    const previousFingerprint = fingerprints.get(sessionKey);
+    const shouldSampleRenderedState = pass === "full" && brokerState === "alive" && (
+      previousFingerprint === undefined
+      || outputSequence === undefined
+      || previousFingerprint.outputSequence !== outputSequence
+    );
+    // The project status manifest is read alongside the rendered sample so the
+    // fs work adds no await point after the ownership check below.
+    const [sample, statusManifest] = await Promise.all([
+      shouldSampleRenderedState
+        ? renderedActivitySample(backend, sessionKey, name, outputSequence)
+        : undefined,
+      identity?.projectPath ? readLocalStatusManifest(identity.projectPath) : undefined,
+    ]);
+    if (!ownsObservationAuthority(authority)) return undefined;
+    const currentRendered = sample === undefined ? previousFingerprint?.rendered : sample.rendered;
+    const rawOutputChanged = shouldSampleRenderedState
+      && currentRendered !== undefined
+      && previousFingerprint?.rendered !== undefined
+      && currentRendered !== previousFingerprint.rendered;
+    const previousRuntime = runtimeRenderedFingerprints.get(sessionKey);
+    // A program-status pass carries the last full pass's output verdict: it is
+    // not a new measurement, so the session's state cannot move by it.
+    const runtimeOutputChanged = pass !== "full"
+      ? previousRuntime?.changed === true
+      : shouldSampleRenderedState
+        && currentRendered !== undefined
+        && previousRuntime !== undefined
+        && (sample?.flight === previousRuntime.flight
+          ? previousRuntime.changed
+          : currentRendered !== previousRuntime.rendered);
+    if (pass !== "full") {
+      // Fingerprints belong to the cadence; leave them to the next full pass.
+    } else if (brokerState !== "alive" || (shouldSampleRenderedState && currentRendered === undefined)) {
+      // A liveness or capture gap breaks the observed continuity. The next
+      // successful rendered sample is a baseline, not a fabricated transition.
+      fingerprints.delete(sessionKey);
+      runtimeRenderedFingerprints.delete(sessionKey);
+      if (brokerState !== "alive") {
+        activityContinuityTokens.delete(sessionKey);
+        renderedFingerprintFlights.delete(sessionKey);
+      } else if (sample?.capture.available) {
+        retireRenderedActivitySample(sessionKey, sample);
+      }
+      if (shouldSampleRenderedState && currentRendered === undefined) unreliableSessionKeys.add(sessionKey);
+    } else {
+      fingerprints.set(sessionKey, { ...(outputSequence !== undefined && { outputSequence }), rendered: currentRendered });
+      if (currentRendered !== undefined) {
+        runtimeRenderedFingerprints.set(sessionKey, {
+          rendered: currentRendered,
+          flight: sample?.flight ?? previousRuntime?.flight,
+          changed: runtimeOutputChanged,
+        });
+      }
+    }
+    const reduction = sample
+      ? reduceRenderedActivitySample(sessionKey, identity?.wolfpackSessionId, sample, authority)
+      : reduceSessionActivity(sessionKey, {
+        alive: brokerState === "alive",
+        observedAt,
+        rendered: currentRendered,
+      });
+    if (!ownsObservationAuthority(authority) || reduction === undefined) return undefined;
+    // Rendered activity is reduced once by its shared capture flight. Individual
+    // dashboard/observer consumers can adopt that reduction, but a collection
+    // retired while awaiting the capture cannot mutate its canonical state.
+    const quietContinuity = brokerState === "alive" && currentRendered !== undefined
+      ? "fresh" as const
+      : brokerState !== "alive"
+        ? "lost" as const
+        : undefined;
+
+    const triage: TriageStatus = rawOutputChanged ? "running" : "idle";
+    const displayProjection = terminalDisplayProjection(currentRendered);
+    const renderedPreview = displayProjection.lastLine;
+    const lastLine = renderedPreview || knownSessionSummaries.get(name)?.lastLine || "";
+    const previousTransitionSequence = store.get(sessionKey)?.transitionSequence;
+    // The broker reports the root OSC 7501 record for this exact session, so it
+    // is not gated on a project directory like the manifest/fallback sources.
+    const programStatus = programStatusSource(fact.programStatus, {
+      runId: identity?.wolfpackSessionId,
+      observedAt,
+    });
     const runtimeState = store.reduce({
       sessionKey,
-      broker: { state: "unavailable", observedAt },
-      sources: [],
-      fallback: { rawOutputChanged: false, observedAt, preview: lastLine },
+      broker: { state: brokerState, observedAt },
+      sources: [
+        ...(programStatus ? [programStatus] : []),
+        ...(statusManifest ? agentStatusSources(statusManifest, {
+          state: runtimeOutputChanged ? AGENT_STATUS_STATE.OUTPUT : AGENT_STATUS_STATE.IDLE,
+          stale: false,
+          observedAt,
+        }) : []),
+      ],
+      // Keep the unfiltered legacy preview on this existing runtime input;
+      // display-only footer skipping and metadata must not become status evidence.
+      fallback: { rawOutputChanged: runtimeOutputChanged, observedAt, preview: legacyTerminalPreviewLine(currentRendered) },
       currentRun: {
-        runId: identity?.wolfpackSessionId ?? previous?.runId,
-        runOrder: identity?.createdAt ? Date.parse(identity.createdAt) : previous?.runOrder,
+        runId: identity?.wolfpackSessionId,
+        runOrder: identity?.createdAt ? Date.parse(identity.createdAt) : undefined,
       },
     }, { persist: false });
-    publishRuntimeTransition(name, identity?.wolfpackSessionId, previous?.transitionSequence, runtimeState, events);
-    return {
-      name,
-      lastLine,
-      triage: "idle" as TriageStatus,
-      runtimeState,
-      activity: { freshness: "unknown", observedAt, display: "activity unavailable" },
-      ...(identity && { identity }),
-    };
-  }).sort((a, b) => a.name.localeCompare(b.name));
-  store.flush();
-  return { sessions, unreliableSessionKeys: new Set(summariesBySessionKey.keys()), authoritative: true };
-}
-
-function staleSessionProjection(
-  sessions: readonly Pick<ObservedSessionSummary, "name" | "identity">[],
-): SessionObservation {
-  const observedAt = new Date().toISOString();
-  const store = getAgentRuntimeStateStore();
-  const unreliableSessionKeys = new Set<string>();
-  const projection = sessions.flatMap<ObservedSessionSummary>((session) => {
-    const known = knownSessionSummaries.get(session.name);
-    const identity = known?.identity ?? session.identity;
-    const sessionKey = identity?.wolfpackSessionId ?? session.name;
-    unreliableSessionKeys.add(sessionKey);
-    const runtimeState = store.get(sessionKey);
-    if (runtimeState === undefined) return [];
-    return [{
-      name: session.name,
-      lastLine: known?.lastLine ?? "",
-      triage: "idle" as TriageStatus,
-      runtimeState,
-      activity: reduceActivityObservation(undefined, { alive: false, observedAt }).activity,
-      ...(identity && { identity }),
-    }];
-  }).sort((a, b) => a.name.localeCompare(b.name));
-  return { sessions: projection, unreliableSessionKeys, authoritative: false };
-}
-
-async function observeSessionFact(
-  backend: SessionBackend,
-  fact: SessionListFact,
-  fingerprints: Map<string, ActivityFingerprint>,
-  store: AgentRuntimeStateStore,
-  activeNames: Set<string>,
-  activeSessionKeys: Set<string>,
-  unreliableSessionKeys: Set<string>,
-  authority: ObservationAuthority,
-  pass: ObservationPass,
-  events: EventBus,
-): Promise<PendingSessionObservation | undefined> {
-  if (!ownsObservationAuthority(authority)) return undefined;
-  const name = fact.name;
-  activeNames.add(name);
-  const brokerState = fact.alive ? "alive" : "dead";
-  const identity = fact.identity;
-  const sessionKey = identity?.wolfpackSessionId ?? name;
-  activeSessionKeys.add(sessionKey);
-
-  // The output watermark is a cheap invalidation signal. Only materialize a
-  // Ghostty snapshot when it advances; stable sessions do no terminal work.
-  // A shared per-sequence flight prevents duplicate snapshot requests.
-  const outputSequence = brokerOutputSequence(fact.outputSequence);
-  const observedAtMs = Date.now();
-  const observedAt = new Date(observedAtMs).toISOString();
-  const previousFingerprint = fingerprints.get(sessionKey);
-  const shouldSampleRenderedState = pass === "full" && brokerState === "alive" && (
-    previousFingerprint === undefined
-    || outputSequence === undefined
-    || previousFingerprint.outputSequence !== outputSequence
-  );
-  // The project status manifest is read alongside the rendered sample so the
-  // fs work adds no await point after the ownership check below.
-  const [sample, statusManifest] = await Promise.all([
-    shouldSampleRenderedState
-      ? renderedActivitySample(backend, sessionKey, name, outputSequence)
-      : undefined,
-    identity?.projectPath ? readLocalStatusManifest(identity.projectPath) : undefined,
-  ]);
-  if (!ownsObservationAuthority(authority)) return undefined;
-  const currentRendered = sample === undefined ? previousFingerprint?.rendered : sample.rendered;
-  const rawOutputChanged = shouldSampleRenderedState
-    && currentRendered !== undefined
-    && previousFingerprint?.rendered !== undefined
-    && currentRendered !== previousFingerprint.rendered;
-  const previousRuntime = runtimeRenderedFingerprints.get(sessionKey);
-  // A program-status pass carries the last full pass's output verdict: it is
-  // not a new measurement, so the session's state cannot move by it.
-  const runtimeOutputChanged = pass !== "full"
-    ? previousRuntime?.changed === true
-    : shouldSampleRenderedState
-      && currentRendered !== undefined
-      && previousRuntime !== undefined
-      && (sample?.flight === previousRuntime.flight
-        ? previousRuntime.changed
-        : currentRendered !== previousRuntime.rendered);
-  if (pass !== "full") {
-    // Fingerprints belong to the cadence; leave them to the next full pass.
-  } else if (brokerState !== "alive" || (shouldSampleRenderedState && currentRendered === undefined)) {
-    // A liveness or capture gap breaks the observed continuity. The next
-    // successful rendered sample is a baseline, not a fabricated transition.
-    fingerprints.delete(sessionKey);
-    runtimeRenderedFingerprints.delete(sessionKey);
-    if (brokerState !== "alive") {
-      activityContinuityTokens.delete(sessionKey);
-      renderedFingerprintFlights.delete(sessionKey);
-    } else if (sample?.capture.available) {
-      retireRenderedActivitySample(sessionKey, sample);
-    }
-    if (shouldSampleRenderedState && currentRendered === undefined) unreliableSessionKeys.add(sessionKey);
-  } else {
-    fingerprints.set(sessionKey, { ...(outputSequence !== undefined && { outputSequence }), rendered: currentRendered });
-    if (currentRendered !== undefined) {
-      runtimeRenderedFingerprints.set(sessionKey, {
-        rendered: currentRendered,
-        flight: sample?.flight ?? previousRuntime?.flight,
-        changed: runtimeOutputChanged,
+    publishRuntimeTransition(name, identity?.wolfpackSessionId, previousTransitionSequence, runtimeState, events);
+    if (identity?.parentSession) {
+      const childEvent = context.childEvents.observeChildSession({
+        sessionId: identity.wolfpackSessionId,
+        name,
+        parentSession: identity.parentSession,
+        alive: brokerState === "alive",
+        runtimeState,
+        ...(currentRendered !== undefined && { rendered: currentRendered }),
+      }, body => events.publishEvent(body));
+      reduceChildBlockedEpisode(sessionKey, identity.wolfpackSessionId, observedAtMs, authority, {
+        blockedNow: childEvent?.event === CHILD_EVENT.BLOCKED,
+        alive: brokerState === "alive",
+        runtimeState,
+        quietContinuity,
       });
     }
-  }
-  const reduction = sample
-    ? reduceRenderedActivitySample(sessionKey, identity?.wolfpackSessionId, sample, authority)
-    : reduceSessionActivity(sessionKey, {
-      alive: brokerState === "alive",
-      observedAt,
-      rendered: currentRendered,
-    });
-  if (!ownsObservationAuthority(authority) || reduction === undefined) return undefined;
-  // Rendered activity is reduced once by its shared capture flight. Individual
-  // dashboard/observer consumers can adopt that reduction, but a collection
-  // retired while awaiting the capture cannot mutate its canonical state.
-  const quietContinuity = brokerState === "alive" && currentRendered !== undefined
-    ? "fresh" as const
-    : brokerState !== "alive"
-      ? "lost" as const
-      : undefined;
-
-  const triage: TriageStatus = rawOutputChanged ? "running" : "idle";
-  const displayProjection = terminalDisplayProjection(currentRendered);
-  const renderedPreview = displayProjection.lastLine;
-  const lastLine = renderedPreview || knownSessionSummaries.get(name)?.lastLine || "";
-  const previousTransitionSequence = store.get(sessionKey)?.transitionSequence;
-  // The broker reports the root OSC 7501 record for this exact session, so it
-  // is not gated on a project directory like the manifest/fallback sources.
-  const programStatus = programStatusSource(fact.programStatus, {
-    runId: identity?.wolfpackSessionId,
-    observedAt,
-  });
-  const runtimeState = store.reduce({
-    sessionKey,
-    broker: { state: brokerState, observedAt },
-    sources: [
-      ...(programStatus ? [programStatus] : []),
-      ...(statusManifest ? agentStatusSources(statusManifest, {
-        state: runtimeOutputChanged ? AGENT_STATUS_STATE.OUTPUT : AGENT_STATUS_STATE.IDLE,
-        stale: false,
-        observedAt,
-      }) : []),
-    ],
-    // Keep the unfiltered legacy preview on this existing runtime input;
-    // display-only footer skipping and metadata must not become status evidence.
-    fallback: { rawOutputChanged: runtimeOutputChanged, observedAt, preview: legacyTerminalPreviewLine(currentRendered) },
-    currentRun: {
-      runId: identity?.wolfpackSessionId,
-      runOrder: identity?.createdAt ? Date.parse(identity.createdAt) : undefined,
-    },
-  }, { persist: false });
-  publishRuntimeTransition(name, identity?.wolfpackSessionId, previousTransitionSequence, runtimeState, events);
-  if (identity?.parentSession) {
-    const childEvent = observeChildSession({
-      sessionId: identity.wolfpackSessionId,
+    if (identity) {
+      // Any session can be a parent; queued typed notes flush only when it is quiet.
+      context.childEventDelivery.observeChildEventParent({ sessionId: identity.wolfpackSessionId, name, alive: brokerState === "alive", runtimeState });
+    }
+    const summary = {
+      ...displayProjection,
       name,
-      parentSession: identity.parentSession,
-      alive: brokerState === "alive",
+      lastLine,
+      triage,
       runtimeState,
-      ...(currentRendered !== undefined && { rendered: currentRendered }),
-    }, body => events.publishEvent(body));
-    reduceChildBlockedEpisode(sessionKey, identity.wolfpackSessionId, observedAtMs, authority, {
-      blockedNow: childEvent?.event === CHILD_EVENT.BLOCKED,
+      activity: reduction.activity,
+      ...(outputSequence !== undefined && { outputSequence }),
+      ...(identity && { identity }),
+    };
+    knownSessionSummaries.set(name, { name, lastLine, ...(identity && { identity }) });
+    return {
+      sessionKey,
+      observedAtMs,
+      ...(quietContinuity && { quietContinuity }),
       alive: brokerState === "alive",
-      runtimeState,
-      quietContinuity,
-    });
+      summary,
+    };
   }
-  if (identity) {
-    // Any session can be a parent; queued typed notes flush only when it is quiet.
-    observeChildEventParent({ sessionId: identity.wolfpackSessionId, name, alive: brokerState === "alive", runtimeState });
-  }
-  const summary = {
-    ...displayProjection,
-    name,
-    lastLine,
-    triage,
-    runtimeState,
-    activity: reduction.activity,
-    ...(outputSequence !== undefined && { outputSequence }),
-    ...(identity && { identity }),
-  };
-  knownSessionSummaries.set(name, { name, lastLine, ...(identity && { identity }) });
-  return {
-    sessionKey,
-    observedAtMs,
-    ...(quietContinuity && { quietContinuity }),
-    alive: brokerState === "alive",
-    summary,
-  };
-}
 
-interface ChildBlockObservation {
-  /** This observation raised the child event `blocked`. */
-  readonly blockedNow: boolean;
-  readonly alive: boolean;
-  readonly runtimeState: AgentRuntimeState;
-  readonly quietContinuity: "fresh" | "lost" | undefined;
-}
+  interface ChildBlockObservation {
+    /** This observation raised the child event `blocked`. */
+    readonly blockedNow: boolean;
+    readonly alive: boolean;
+    readonly runtimeState: AgentRuntimeState;
+    readonly quietContinuity: "fresh" | "lost" | undefined;
+  }
 
-/**
- * A blocked child event starts a quiet episode, so the needs-input push needs
- * no rendered screen change. An open episode (for example one a screen change
- * started) already alerts as needs-input when due, so it is adopted: one push
- * per block. When the block has no fresh continuity (a capture gap), the
- * episode opens at the first fresh observation while the child stays blocked.
- * A block that alerted never opens another episode: its emitted episode stays
- * the session's episode until the child leaves needs-input, also across a
- * capture gap, so push delivery resumes that episode's bounded retries.
- */
-function reduceChildBlockedEpisode(
-  sessionKey: string,
-  sessionId: string,
-  observedAtMs: number,
-  authority: ObservationAuthority,
-  observation: ChildBlockObservation,
-): void {
-  if (authority.policyEpoch !== quietAlertPolicyEpoch()) return;
-  const { runtimeState } = observation;
-  if (observation.blockedNow) {
-    childBlockedEpisodes.set(sessionKey, {});
-  } else if (!observation.alive) {
-    retireChildBlockedEpisode(sessionKey);
-    return;
-  } else if (!runtimeState.stale && runtimeState.state !== AGENT_STATUS_STATE.NEEDS_INPUT) {
-    // Left needs-input; a stale state is no claim, as in `observeChildSession`.
-    retireChildBlockedEpisode(sessionKey, sessionId);
-    return;
+  /**
+   * A blocked child event starts a quiet episode, so the needs-input push needs
+   * no rendered screen change. An open episode (for example one a screen change
+   * started) already alerts as needs-input when due, so it is adopted: one push
+   * per block. When the block has no fresh continuity (a capture gap), the
+   * episode opens at the first fresh observation while the child stays blocked.
+   * A block that alerted never opens another episode: its emitted episode stays
+   * the session's episode until the child leaves needs-input, also across a
+   * capture gap, so push delivery resumes that episode's bounded retries.
+   */
+  function reduceChildBlockedEpisode(
+    sessionKey: string,
+    sessionId: string,
+    observedAtMs: number,
+    authority: ObservationAuthority,
+    observation: ChildBlockObservation,
+  ): void {
+    if (authority.policyEpoch !== quietAlertPolicyEpoch()) return;
+    const { runtimeState } = observation;
+    if (observation.blockedNow) {
+      childBlockedEpisodes.set(sessionKey, {});
+    } else if (!observation.alive) {
+      retireChildBlockedEpisode(sessionKey);
+      return;
+    } else if (!runtimeState.stale && runtimeState.state !== AGENT_STATUS_STATE.NEEDS_INPUT) {
+      // Left needs-input; a stale state is no claim, as in `observeChildSession`.
+      retireChildBlockedEpisode(sessionKey, sessionId);
+      return;
+    }
+    const blocked = childBlockedEpisodes.get(sessionKey);
+    if (blocked === undefined || observation.quietContinuity !== "fresh") return;
+    const episode = quietAlertHistory.get(sessionKey);
+    if (blocked.emitted !== undefined) {
+      if (episode?.episodeId !== blocked.emitted.episodeId) quietAlertHistory.set(sessionKey, blocked.emitted);
+      return;
+    }
+    if (episode && !episode.emitted) {
+      // A screen change opened this episode, not the bridge: it is never retired.
+      if (episode.episodeId !== blocked.episodeId) blocked.opened = undefined;
+      blocked.episodeId = episode.episodeId;
+      return;
+    }
+    const episodeId = randomUUID();
+    reduceSessionQuietAlert(sessionKey, sessionId, observedAtMs, "fresh", observedAtMs, episodeId);
+    if (quietAlertHistory.get(sessionKey)?.episodeId === episodeId) {
+      blocked.episodeId = episodeId;
+      blocked.opened = { sessionId, policyEpoch: quietAlertPolicyEpoch(), ...(episode?.emitted && { replaced: episode }) };
+    }
   }
-  const blocked = childBlockedEpisodes.get(sessionKey);
-  if (blocked === undefined || observation.quietContinuity !== "fresh") return;
-  const episode = quietAlertHistory.get(sessionKey);
-  if (blocked.emitted !== undefined) {
-    if (episode?.episodeId !== blocked.emitted.episodeId) quietAlertHistory.set(sessionKey, blocked.emitted);
-    return;
-  }
-  if (episode && !episode.emitted) {
-    // A screen change opened this episode, not the bridge: it is never retired.
-    if (episode.episodeId !== blocked.episodeId) blocked.opened = undefined;
-    blocked.episodeId = episode.episodeId;
-    return;
-  }
-  const episodeId = randomUUID();
-  reduceSessionQuietAlert(sessionKey, sessionId, observedAtMs, "fresh", observedAtMs, episodeId);
-  if (quietAlertHistory.get(sessionKey)?.episodeId === episodeId) {
-    blocked.episodeId = episodeId;
-    blocked.opened = { sessionId, policyEpoch: quietAlertPolicyEpoch(), ...(episode?.emitted && { replaced: episode }) };
-  }
-}
 
-/**
- * The child left blocked. An episode this block opened and that has not
- * emitted is retired. An adopted episode, or a newer one from a screen
- * change, stays (review A5-2). The emitted episode the bridge replaced comes
- * back while the session and policy epoch are the same (review A7-3);
- * `liveSessionId` is undefined when the child is gone.
- */
-function retireChildBlockedEpisode(sessionKey: string, liveSessionId?: string): void {
-  const blocked = childBlockedEpisodes.get(sessionKey);
-  childBlockedEpisodes.delete(sessionKey);
-  if (blocked?.opened === undefined) return;
-  const episode = quietAlertHistory.get(sessionKey);
-  if (episode === undefined || episode.episodeId !== blocked.episodeId || episode.emitted) return;
-  const bridge = blocked.opened;
-  const { replaced } = bridge;
-  if (replaced !== undefined && bridge.sessionId === liveSessionId && bridge.policyEpoch === quietAlertPolicyEpoch()) {
-    quietAlertHistory.set(sessionKey, replaced);
-  } else {
-    quietAlertHistory.delete(sessionKey);
+  /**
+   * The child left blocked. An episode this block opened and that has not
+   * emitted is retired. An adopted episode, or a newer one from a screen
+   * change, stays (review A5-2). The emitted episode the bridge replaced comes
+   * back while the session and policy epoch are the same (review A7-3);
+   * `liveSessionId` is undefined when the child is gone.
+   */
+  function retireChildBlockedEpisode(sessionKey: string, liveSessionId?: string): void {
+    const blocked = childBlockedEpisodes.get(sessionKey);
+    childBlockedEpisodes.delete(sessionKey);
+    if (blocked?.opened === undefined) return;
+    const episode = quietAlertHistory.get(sessionKey);
+    if (episode === undefined || episode.episodeId !== blocked.episodeId || episode.emitted) return;
+    const bridge = blocked.opened;
+    const { replaced } = bridge;
+    if (replaced !== undefined && bridge.sessionId === liveSessionId && bridge.policyEpoch === quietAlertPolicyEpoch()) {
+      quietAlertHistory.set(sessionKey, replaced);
+    } else {
+      quietAlertHistory.delete(sessionKey);
+    }
   }
-}
 
-/** Authorities whose needs-input state is the session's own claim. */
-const NEEDS_INPUT_AUTHORITIES: ReadonlySet<AgentRuntimeState["authority"]> = new Set([AGENT_STATUS_AUTHORITY.PROGRAM]);
-/** A child's manifest status also raises `blocked` child events, so it alerts the same way. */
-const CHILD_NEEDS_INPUT_AUTHORITIES: ReadonlySet<AgentRuntimeState["authority"]> = new Set([
-  AGENT_STATUS_AUTHORITY.PROGRAM,
-  AGENT_STATUS_AUTHORITY.MANIFEST,
-]);
+  /** Authorities whose needs-input state is the session's own claim. */
+  const NEEDS_INPUT_AUTHORITIES: ReadonlySet<AgentRuntimeState["authority"]> = new Set([AGENT_STATUS_AUTHORITY.PROGRAM]);
+  /** A child's manifest status also raises `blocked` child events, so it alerts the same way. */
+  const CHILD_NEEDS_INPUT_AUTHORITIES: ReadonlySet<AgentRuntimeState["authority"]> = new Set([
+    AGENT_STATUS_AUTHORITY.PROGRAM,
+    AGENT_STATUS_AUTHORITY.MANIFEST,
+  ]);
 
-/** The session itself says it waits on the user; that alert is never withheld. */
-function needsInputAlert(runtimeState: AgentRuntimeState, child: boolean): QuietAlertKindFields | undefined {
-  const authorities = child ? CHILD_NEEDS_INPUT_AUTHORITIES : NEEDS_INPUT_AUTHORITIES;
-  if (runtimeState.state !== AGENT_STATUS_STATE.NEEDS_INPUT || !authorities.has(runtimeState.authority)) {
+  /** The session itself says it waits on the user; that alert is never withheld. */
+  function needsInputAlert(runtimeState: AgentRuntimeState, child: boolean): QuietAlertKindFields | undefined {
+    const authorities = child ? CHILD_NEEDS_INPUT_AUTHORITIES : NEEDS_INPUT_AUTHORITIES;
+    if (runtimeState.state !== AGENT_STATUS_STATE.NEEDS_INPUT || !authorities.has(runtimeState.authority)) {
+      return undefined;
+    }
+    return {
+      kind: QUIET_ALERT_KIND.NEEDS_INPUT,
+      ...(runtimeState.inputKind && { inputKind: runtimeState.inputKind }),
+    };
+  }
+
+  /**
+   * A live descendant is busy while fresh status says it works or prints, or
+   * while its screen changed more recently than the parent's quiet window.
+   */
+  function busyDescendant(pending: PendingSessionObservation, quietSinceMs: number): boolean {
+    if (!pending.alive) return false;
+    const { runtimeState, activity } = pending.summary;
+    if (
+      BUSY_DESCENDANT_STATES.has(runtimeState.state)
+      && runtimeState.freshness === AGENT_STATUS_FRESHNESS.FRESH
+      && !runtimeState.stale
+    ) return true;
+    const renderedAtMs = activity.lastRenderedActivityAt === undefined ? NaN : Date.parse(activity.lastRenderedActivityAt);
+    return renderedAtMs > quietSinceMs;
+  }
+
+  interface ChildObservation {
+    readonly sessionId: string;
+    readonly pending: PendingSessionObservation;
+  }
+
+  /** Nearest busy descendant by `parentSession` links, breadth first and depth bounded. */
+  function findBusyDescendant(
+    parentId: string,
+    childrenByParentId: ReadonlyMap<string, readonly ChildObservation[]>,
+    quietSinceMs: number,
+  ): QuietSuppression | undefined {
+    const visited = new Set([parentId]);
+    let generation = [parentId];
+    for (let depth = 1; depth <= QUIET_SUPPRESSION_MAX_DEPTH && generation.length > 0; depth++) {
+      const next: string[] = [];
+      for (const id of generation) {
+        for (const { sessionId, pending } of childrenByParentId.get(id) ?? []) {
+          if (visited.has(sessionId)) continue;
+          visited.add(sessionId);
+          if (busyDescendant(pending, quietSinceMs)) {
+            return { reason: QUIET_SUPPRESSION_REASON.WAITING_ON_CHILD, sessionId, session: pending.summary.name };
+          }
+          next.push(sessionId);
+        }
+      }
+      generation = next;
+    }
     return undefined;
   }
-  return {
-    kind: QUIET_ALERT_KIND.NEEDS_INPUT,
-    ...(runtimeState.inputKind && { inputKind: runtimeState.inputKind }),
-  };
-}
 
-/**
- * A live descendant is busy while fresh status says it works or prints, or
- * while its screen changed more recently than the parent's quiet window.
- */
-function busyDescendant(pending: PendingSessionObservation, quietSinceMs: number): boolean {
-  if (!pending.alive) return false;
-  const { runtimeState, activity } = pending.summary;
-  if (
-    BUSY_DESCENDANT_STATES.has(runtimeState.state)
-    && runtimeState.freshness === AGENT_STATUS_FRESHNESS.FRESH
-    && !runtimeState.stale
-  ) return true;
-  const renderedAtMs = activity.lastRenderedActivityAt === undefined ? NaN : Date.parse(activity.lastRenderedActivityAt);
-  return renderedAtMs > quietSinceMs;
-}
-
-interface ChildObservation {
-  readonly sessionId: string;
-  readonly pending: PendingSessionObservation;
-}
-
-/** Nearest busy descendant by `parentSession` links, breadth first and depth bounded. */
-function findBusyDescendant(
-  parentId: string,
-  childrenByParentId: ReadonlyMap<string, readonly ChildObservation[]>,
-  quietSinceMs: number,
-): QuietSuppression | undefined {
-  const visited = new Set([parentId]);
-  let generation = [parentId];
-  for (let depth = 1; depth <= QUIET_SUPPRESSION_MAX_DEPTH && generation.length > 0; depth++) {
-    const next: string[] = [];
-    for (const id of generation) {
-      for (const { sessionId, pending } of childrenByParentId.get(id) ?? []) {
-        if (visited.has(sessionId)) continue;
-        visited.add(sessionId);
-        if (busyDescendant(pending, quietSinceMs)) {
-          return { reason: QUIET_SUPPRESSION_REASON.WAITING_ON_CHILD, sessionId, session: pending.summary.name };
-        }
-        next.push(sessionId);
-      }
+  /**
+   * Reduces each observed session's quiet episode. Synchronous, so it runs under
+   * one observation authority for the whole collection, which lets a parent's
+   * alert see its delegated children. A due `quiet` alert waits while a
+   * descendant is busy; `needs-input` from the program's own status wins over
+   * that, because the parent is waiting on the user, not the child.
+   */
+  function reduceCollectedQuietAlerts(
+    pending: readonly PendingSessionObservation[],
+  ): ObservedSessionSummary[] {
+    const childrenByParentId = new Map<string, ChildObservation[]>();
+    for (const entry of pending) {
+      const identity = entry.summary.identity;
+      const parentId = identity?.parentSession?.wolfpackSessionId;
+      if (identity === undefined || parentId === undefined) continue;
+      const child = { sessionId: identity.wolfpackSessionId, pending: entry };
+      const siblings = childrenByParentId.get(parentId);
+      if (siblings) siblings.push(child);
+      else childrenByParentId.set(parentId, [child]);
     }
-    generation = next;
-  }
-  return undefined;
-}
-
-/**
- * Reduces each observed session's quiet episode. Synchronous, so it runs under
- * one observation authority for the whole collection, which lets a parent's
- * alert see its delegated children. A due `quiet` alert waits while a
- * descendant is busy; `needs-input` from the program's own status wins over
- * that, because the parent is waiting on the user, not the child.
- */
-function reduceCollectedQuietAlerts(
-  pending: readonly PendingSessionObservation[],
-): ObservedSessionSummary[] {
-  const childrenByParentId = new Map<string, ChildObservation[]>();
-  for (const entry of pending) {
-    const identity = entry.summary.identity;
-    const parentId = identity?.parentSession?.wolfpackSessionId;
-    if (identity === undefined || parentId === undefined) continue;
-    const child = { sessionId: identity.wolfpackSessionId, pending: entry };
-    const siblings = childrenByParentId.get(parentId);
-    if (siblings) siblings.push(child);
-    else childrenByParentId.set(parentId, [child]);
-  }
-  const quietAfterMs = loadSettings().quietAlerts.quietAfterSeconds * 1_000;
-  return pending.map(({ sessionKey, observedAtMs, quietContinuity, summary }) => {
-    if (quietContinuity === undefined) return summary;
-    const sessionId = summary.identity?.wolfpackSessionId;
-    const alert = quietContinuity === "fresh"
-      ? needsInputAlert(summary.runtimeState, summary.identity?.parentSession !== undefined)
-      : undefined;
-    const busy = quietContinuity === "fresh" && alert === undefined && sessionId !== undefined
-      ? findBusyDescendant(sessionId, childrenByParentId, observedAtMs - quietAfterMs)
-      : undefined;
-    const quietAlert = reduceSessionQuietAlert(sessionKey, sessionId, observedAtMs, quietContinuity, undefined, undefined, {
-      ...(alert && { alert }),
-      ...(busy && { suppressed: true }),
-    });
-    // Only a due episode is withheld; one still inside its window is just pending.
-    const episode = quietAlertHistory.get(sessionKey);
-    const withheld = busy !== undefined && episode !== undefined && !episode.emitted && observedAtMs >= episode.eligibleAtMs;
-    return {
-      ...summary,
-      ...(quietAlert && { quietAlert }),
-      ...(withheld && { quietSuppressedBy: busy }),
-    };
-  });
-}
-
-function pruneSessionObservationState(
-  fingerprints: Map<string, ActivityFingerprint>,
-  activeSessionKeys: ReadonlySet<string>,
-  activeNames: ReadonlySet<string>,
-  store: AgentRuntimeStateStore,
-  authority: ObservationAuthority,
-): void {
-  if (!ownsObservationAuthority(authority)) return;
-  for (const key of fingerprints.keys()) {
-    if (!activeSessionKeys.has(key)) fingerprints.delete(key);
-  }
-  for (const key of activityHistory.keys()) {
-    if (!activeSessionKeys.has(key)) activityHistory.delete(key);
-  }
-  for (const key of quietAlertHistory.keys()) {
-    if (!activeSessionKeys.has(key)) quietAlertHistory.delete(key);
-  }
-  for (const key of childBlockedEpisodes.keys()) {
-    if (!activeSessionKeys.has(key)) childBlockedEpisodes.delete(key);
-  }
-  for (const key of activityContinuityTokens.keys()) {
-    if (!activeSessionKeys.has(key)) activityContinuityTokens.delete(key);
-  }
-  for (const key of renderedFingerprintFlights.keys()) {
-    if (!activeSessionKeys.has(key)) renderedFingerprintFlights.delete(key);
-  }
-  for (const key of runtimeRenderedFingerprints.keys()) {
-    if (!activeSessionKeys.has(key)) runtimeRenderedFingerprints.delete(key);
-  }
-  for (const key of knownSessionSummaries.keys()) {
-    if (!activeNames.has(key)) knownSessionSummaries.delete(key);
-  }
-  store.prune(activeSessionKeys, { persist: false });
-  store.flush();
-  pruneQuietAlertRecipientSnapshots(activeSessionKeys, authority.policyEpoch);
-}
-
-async function collectSessionObservation(
-  fingerprints: Map<string, ActivityFingerprint>,
-  policyEpoch = quietAlertPolicyEpoch(),
-  observationOwnership = beginObservationOwnership(),
-  pass: ObservationPass = "full",
-  ctx: ServerContext = notificationContext,
-): Promise<SessionObservation> {
-  const backend = ctx.backend;
-  const sessionFacts = await listAvailableSessionFacts(ctx);
-  if (!sessionFacts) return observeUnavailableSessions(policyEpoch, observationOwnership, ctx.events);
-  const store = getAgentRuntimeStateStore();
-  const authority = claimObservationAuthority(observationOwnership, policyEpoch);
-  if (authority === undefined) return staleSessionProjection(sessionFacts);
-
-  const activeNames = new Set<string>();
-  const activeSessionKeys = new Set<string>();
-  const unreliableSessionKeys = new Set<string>();
-  const observedSessions = await Promise.all(sessionFacts.map((fact) => observeSessionFact(
-    backend,
-    fact,
-    fingerprints,
-    store,
-    activeNames,
-    activeSessionKeys,
-    unreliableSessionKeys,
-    authority,
-    pass,
-    ctx.events,
-  )));
-  if (!ownsObservationAuthority(authority)) return staleSessionProjection(sessionFacts);
-
-  const sessions = reduceCollectedQuietAlerts(
-    observedSessions.filter((session): session is PendingSessionObservation => session !== undefined),
-  );
-  sessions.sort((a, b) => a.name.localeCompare(b.name));
-  if (pass === "full") pruneSessionObservationState(fingerprints, activeSessionKeys, activeNames, store, authority);
-  return { sessions, unreliableSessionKeys, authoritative: ownsObservationAuthority(authority) };
-}
-
-export async function observeDashboardSessions(ctx: ServerContext = defaultServerContext): Promise<readonly ObservedSessionSummary[]> {
-  const now = Date.now();
-  if (dashboardObservationCache && now < dashboardObservationCache.expiresAt) {
-    return dashboardObservationCache.sessions;
-  }
-  if (dashboardObservationPromise) return dashboardObservationPromise;
-  const policyEpoch = quietAlertPolicyEpoch();
-  const observationOwnership = beginObservationOwnership();
-  const authority = { policyEpoch, id: observationOwnership } as const;
-  dashboardObservationPromise = collectSessionObservation(dashboardFingerprints, policyEpoch, observationOwnership, "full", ctx)
-    .then((observation) => {
-      if (policyEpoch !== quietAlertPolicyEpoch()) return withoutQuietAlerts(observation.sessions);
-      if (!observation.authoritative || !ownsObservationAuthority(authority)) {
-        return staleSessionProjection(observation.sessions).sessions;
-      }
-      dashboardObservationCache = {
-        expiresAt: Date.now() + DASHBOARD_OBSERVATION_CACHE_TTL_MS,
-        sessions: observation.sessions,
+    const quietAfterMs = loadSettings().quietAlerts.quietAfterSeconds * 1_000;
+    return pending.map(({ sessionKey, observedAtMs, quietContinuity, summary }) => {
+      if (quietContinuity === undefined) return summary;
+      const sessionId = summary.identity?.wolfpackSessionId;
+      const alert = quietContinuity === "fresh"
+        ? needsInputAlert(summary.runtimeState, summary.identity?.parentSession !== undefined)
+        : undefined;
+      const busy = quietContinuity === "fresh" && alert === undefined && sessionId !== undefined
+        ? findBusyDescendant(sessionId, childrenByParentId, observedAtMs - quietAfterMs)
+        : undefined;
+      const quietAlert = reduceSessionQuietAlert(sessionKey, sessionId, observedAtMs, quietContinuity, undefined, undefined, {
+        ...(alert && { alert }),
+        ...(busy && { suppressed: true }),
+      });
+      // Only a due episode is withheld; one still inside its window is just pending.
+      const episode = quietAlertHistory.get(sessionKey);
+      const withheld = busy !== undefined && episode !== undefined && !episode.emitted && observedAtMs >= episode.eligibleAtMs;
+      return {
+        ...summary,
+        ...(quietAlert && { quietAlert }),
+        ...(withheld && { quietSuppressedBy: busy }),
       };
-      return observation.sessions;
-    })
-    .finally(() => {
-      dashboardObservationPromise = null;
     });
-  return dashboardObservationPromise;
-}
-
-function schedulePeerNotificationObservation(): void {
-  if (peerNotificationObservationPromise || getSubscriptionCount() === 0) return;
-  // Peer collection has its own flight, not its own delivery machinery. Even a
-  // stalled network map must not hold the next local observation behind it.
-  peerNotificationObservationPromise = (async () => {
-    const { observePeerNotifications } = await import("./peer-notifications.ts");
-    for (const peer of await observePeerNotifications()) {
-      await checkSessionTransitions(peer.sessions, quietAlertPolicyEpoch(), () => getSubscriptionCount() > 0, peer.machine);
-    }
-  })().catch((error: unknown) => {
-    log.warn("peer notification relay failed", { error: errMsg(error) });
-  }).finally(() => {
-    peerNotificationObservationPromise = null;
-  });
-}
-
-/**
- * Child events reach the parent inbox even when nobody subscribes to push or
- * the event stream, so a live child session keeps the observer running. This
- * costs one session list per tick only while there are no subscribers. Queued
- * typed notes also keep it running: only an observation flushes them.
- */
-async function hasLiveChildSession(): Promise<boolean> {
-  const facts = await listAvailableSessionFacts(notificationContext);
-  return facts?.some(fact => fact.alive && fact.identity?.parentSession !== undefined) ?? false;
-}
-
-async function runSessionNotificationObservation(pass: ObservationPass = "full"): Promise<readonly ObservedSessionSummary[]> {
-  if (getSubscriptionCount() === 0 && notificationContext.events.eventSubscriberCount() === 0
-    && !sessionNotificationObservationPromise && !hasPendingChildEventNotes() && !await hasLiveChildSession()) return [];
-  if (sessionNotificationObservationPromise) {
-    if (pass !== "full" || sessionNotificationObservationPass === "full") return sessionNotificationObservationPromise;
-    // A program-status pass does not measure output: a full pass asked for
-    // while one is in flight runs after it instead of adopting its result.
-    return sessionNotificationObservationPromise
-      .catch(() => undefined)
-      .then(() => runSessionNotificationObservation(pass));
   }
-  sessionNotificationObservationPass = pass;
-  sessionNotificationObservationPromise = (async () => {
+
+  function pruneSessionObservationState(
+    fingerprints: Map<string, ActivityFingerprint>,
+    activeSessionKeys: ReadonlySet<string>,
+    activeNames: ReadonlySet<string>,
+    store: AgentRuntimeStateStore,
+    authority: ObservationAuthority,
+  ): void {
+    if (!ownsObservationAuthority(authority)) return;
+    for (const key of fingerprints.keys()) {
+      if (!activeSessionKeys.has(key)) fingerprints.delete(key);
+    }
+    for (const key of activityHistory.keys()) {
+      if (!activeSessionKeys.has(key)) activityHistory.delete(key);
+    }
+    for (const key of quietAlertHistory.keys()) {
+      if (!activeSessionKeys.has(key)) quietAlertHistory.delete(key);
+    }
+    for (const key of childBlockedEpisodes.keys()) {
+      if (!activeSessionKeys.has(key)) childBlockedEpisodes.delete(key);
+    }
+    for (const key of activityContinuityTokens.keys()) {
+      if (!activeSessionKeys.has(key)) activityContinuityTokens.delete(key);
+    }
+    for (const key of renderedFingerprintFlights.keys()) {
+      if (!activeSessionKeys.has(key)) renderedFingerprintFlights.delete(key);
+    }
+    for (const key of runtimeRenderedFingerprints.keys()) {
+      if (!activeSessionKeys.has(key)) runtimeRenderedFingerprints.delete(key);
+    }
+    for (const key of knownSessionSummaries.keys()) {
+      if (!activeNames.has(key)) knownSessionSummaries.delete(key);
+    }
+    store.prune(activeSessionKeys, { persist: false });
+    store.flush();
+    context.push.pruneQuietAlertRecipientSnapshots(activeSessionKeys, authority.policyEpoch);
+  }
+
+  async function collectSessionObservation(
+    fingerprints: Map<string, ActivityFingerprint>,
+    policyEpoch = quietAlertPolicyEpoch(),
+    observationOwnership = beginObservationOwnership(),
+    pass: ObservationPass = "full",
+    ctx: ServerContext = context,
+  ): Promise<SessionObservation> {
+    const backend = ctx.backend;
+    const sessionFacts = await listAvailableSessionFacts(ctx);
+    if (!sessionFacts) return observeUnavailableSessions(policyEpoch, observationOwnership, ctx);
+    const store = ctx.agentRuntimeStateStore;
+    const authority = claimObservationAuthority(observationOwnership, policyEpoch);
+    if (authority === undefined) return staleSessionProjection(sessionFacts, ctx);
+
+    const activeNames = new Set<string>();
+    const activeSessionKeys = new Set<string>();
+    const unreliableSessionKeys = new Set<string>();
+    const observedSessions = await Promise.all(sessionFacts.map((fact) => observeSessionFact(
+      backend,
+      fact,
+      fingerprints,
+      store,
+      activeNames,
+      activeSessionKeys,
+      unreliableSessionKeys,
+      authority,
+      pass,
+      ctx.events,
+    )));
+    if (!ownsObservationAuthority(authority)) return staleSessionProjection(sessionFacts, ctx);
+
+    const sessions = reduceCollectedQuietAlerts(
+      observedSessions.filter((session): session is PendingSessionObservation => session !== undefined),
+    );
+    sessions.sort((a, b) => a.name.localeCompare(b.name));
+    if (pass === "full") pruneSessionObservationState(fingerprints, activeSessionKeys, activeNames, store, authority);
+    return { sessions, unreliableSessionKeys, authoritative: ownsObservationAuthority(authority) };
+  }
+
+  async function observeDashboardSessions(ctx: ServerContext = context): Promise<readonly ObservedSessionSummary[]> {
+    const now = Date.now();
+    if (dashboardObservationCache && now < dashboardObservationCache.expiresAt) {
+      return dashboardObservationCache.sessions;
+    }
+    if (dashboardObservationPromise) return dashboardObservationPromise;
     const policyEpoch = quietAlertPolicyEpoch();
     const observationOwnership = beginObservationOwnership();
     const authority = { policyEpoch, id: observationOwnership } as const;
-    const observation = await collectSessionObservation(notificationFingerprints, policyEpoch, observationOwnership, pass);
-    if (policyEpoch !== quietAlertPolicyEpoch()) return withoutQuietAlerts(observation.sessions);
-    if (!observation.authoritative || !ownsObservationAuthority(authority)) {
-      return staleSessionProjection(observation.sessions).sessions;
-    }
-    // Captures/reductions above require the global epoch. Once emitted, each
-    // kind has its own policy fence; newer observations still retire this batch.
-    await checkSessionTransitions(observation.sessions.map((session) => {
-      const sessionKey = session.identity?.wolfpackSessionId ?? session.name;
-      return {
-        ...session,
-        notificationEligible: !observation.unreliableSessionKeys.has(sessionKey),
-      };
-    }), policyEpoch, () => authority.id === latestAuthoritativeObservation);
-    if (pass === "full") schedulePeerNotificationObservation();
-    if (policyEpoch !== quietAlertPolicyEpoch()) return withoutQuietAlerts(observation.sessions);
-    return ownsObservationAuthority(authority)
-      ? observation.sessions
-      : staleSessionProjection(observation.sessions).sessions;
-  })().finally(() => {
-    sessionNotificationObservationPromise = null;
-  });
-  return sessionNotificationObservationPromise;
-}
-
-function scheduleSessionNotificationObservation(): void {
-  runSessionNotificationObservation().catch((error: unknown) => {
-    log.warn("session notification observation failed", { error: errMsg(error) });
-  });
-}
-
-/**
- * A broker program status change starts a program-status pass after this
- * delay instead of waiting up to the 5s poll. Signals inside the window (a
- * burst, or several sessions at once) share one pass; the broker already
- * rate-limits each session's events, so this window only batches across
- * sessions. The refresh lives with the observer: nothing is scheduled while it
- * is stopped, and a refresh queued behind an in-flight pass is dropped when
- * the observer stops before that pass ends.
- */
-const PROGRAM_STATUS_REFRESH_DELAY_MS = 50;
-let programStatusRefreshTimer: ReturnType<typeof setTimeout> | null = null;
-
-function requestProgramStatusRefresh(): void {
-  dashboardObservationCache = null;
-  if (sessionNotificationObservationTimer === null || programStatusRefreshTimer) return;
-  programStatusRefreshTimer = setTimeout(() => {
-    programStatusRefreshTimer = null;
-    // A pass already in flight may have listed sessions before the change;
-    // run a fresh one after it rather than joining it.
-    void Promise.resolve(sessionNotificationObservationPromise)
-      .catch(() => undefined)
-      .then(() => {
-        if (sessionNotificationObservationTimer === null) return;
-        runSessionNotificationObservation("program-status").catch((error: unknown) => {
-          log.warn("program status observation failed", { error: errMsg(error) });
-        });
+    dashboardObservationPromise = collectSessionObservation(dashboardFingerprints, policyEpoch, observationOwnership, "full", ctx)
+      .then((observation) => {
+        if (policyEpoch !== quietAlertPolicyEpoch()) return withoutQuietAlerts(observation.sessions);
+        if (!observation.authoritative || !ownsObservationAuthority(authority)) {
+          return staleSessionProjection(observation.sessions, ctx).sessions;
+        }
+        dashboardObservationCache = {
+          expiresAt: Date.now() + cacheTtlMs,
+          sessions: observation.sessions,
+        };
+        return observation.sessions;
+      })
+      .finally(() => {
+        dashboardObservationPromise = null;
       });
-  }, PROGRAM_STATUS_REFRESH_DELAY_MS);
-}
-
-onProgramStatusChanged(requestProgramStatusRefresh);
-
-function cancelProgramStatusRefresh(): void {
-  if (programStatusRefreshTimer) clearTimeout(programStatusRefreshTimer);
-  programStatusRefreshTimer = null;
-}
-
-export function startSessionNotificationObserver(ctx: ServerContext = defaultServerContext): void {
-  notificationContext = ctx;
-  if (sessionNotificationObservationTimer) return;
-  scheduleSessionNotificationObservation();
-  sessionNotificationObservationTimer = setInterval(
-    scheduleSessionNotificationObservation,
-    SESSION_NOTIFICATION_OBSERVATION_INTERVAL_MS,
-  );
-}
-
-export async function stopSessionNotificationObserver(): Promise<void> {
-  cancelProgramStatusRefresh();
-  if (sessionNotificationObservationTimer) {
-    clearInterval(sessionNotificationObservationTimer);
-    sessionNotificationObservationTimer = null;
+    return dashboardObservationPromise;
   }
-  // Let already-running collections finish their reductions before draining.
-  await Promise.allSettled([dashboardObservationPromise, sessionNotificationObservationPromise]);
-  // A finishing local pass can have started a peer flight while being drained.
-  await Promise.allSettled([peerNotificationObservationPromise]);
-  await flushAgentRuntimeStateForShutdown();
-}
 
-export function forgetSessionObservation(sessionId: string, sessionName: string): void {
-  dashboardObservationCache = null;
-  activityHistory.delete(sessionId);
-  activityHistory.delete(sessionName);
-  quietAlertHistory.delete(sessionId);
-  quietAlertHistory.delete(sessionName);
-  childBlockedEpisodes.delete(sessionId);
-  childBlockedEpisodes.delete(sessionName);
-  activityContinuityTokens.delete(sessionId);
-  activityContinuityTokens.delete(sessionName);
-  dashboardFingerprints.delete(sessionId);
-  dashboardFingerprints.delete(sessionName);
-  notificationFingerprints.delete(sessionId);
-  notificationFingerprints.delete(sessionName);
-  renderedFingerprintFlights.delete(sessionId);
-  renderedFingerprintFlights.delete(sessionName);
-  runtimeRenderedFingerprints.delete(sessionId);
-  runtimeRenderedFingerprints.delete(sessionName);
-  forgetQuietAlertRecipientSnapshots([sessionId, sessionName]);
-}
+  function schedulePeerNotificationObservation(): void {
+    if (peerNotificationObservationPromise || context.push.getSubscriptionCount() === 0) return;
+    // Peer collection has its own flight, not its own delivery machinery. Even a
+    // stalled network map must not hold the next local observation behind it.
+    peerNotificationObservationPromise = (async () => {
+      const { observePeerNotifications } = await import("./peer-notifications.ts");
+      for (const peer of await observePeerNotifications(undefined, context.readTailscaleStatus)) {
+        await context.push.checkSessionTransitions(peer.sessions, quietAlertPolicyEpoch(), () => context.push.getSubscriptionCount() > 0, peer.machine);
+      }
+    })().catch((error: unknown) => {
+      log.warn("peer notification relay failed", { error: errMsg(error) });
+    }).finally(() => {
+      peerNotificationObservationPromise = null;
+    });
+  }
 
-export function resetNotificationObservation(): void {
-  notificationFingerprints.clear();
-}
+  /**
+   * Child events reach the parent inbox even when nobody subscribes to push or
+   * the event stream, so a live child session keeps the observer running. This
+   * costs one session list per tick only while there are no subscribers. Queued
+   * typed notes also keep it running: only an observation flushes them.
+   */
+  async function hasLiveChildSession(): Promise<boolean> {
+    const facts = await listAvailableSessionFacts(context);
+    return facts?.some(fact => fact.alive && fact.identity?.parentSession !== undefined) ?? false;
+  }
 
-export function __resetSessionObservationForTests(): void {
-  if (!process.env.WOLFPACK_TEST) throw new Error("__resetSessionObservationForTests is test-only");
-  cancelProgramStatusRefresh();
-  activityHistory.clear();
-  quietAlertHistory.clear();
-  childBlockedEpisodes.clear();
-  activityContinuityTokens.clear();
-  dashboardFingerprints.clear();
-  notificationFingerprints.clear();
-  dashboardObservationPromise = null;
-  dashboardObservationCache = null;
-  renderedFingerprintFlights.clear();
-  runtimeRenderedFingerprints.clear();
-  knownSessionSummaries.clear();
-  nextObservationOwnership = 0;
-  latestAuthoritativeObservation = 0;
-}
+  async function runSessionNotificationObservation(pass: ObservationPass = "full"): Promise<readonly ObservedSessionSummary[]> {
+    const ctx = context;
+    if (context.push.getSubscriptionCount() === 0 && context.events.eventSubscriberCount() === 0
+      && !sessionNotificationObservationPromise && !context.childEventDelivery.hasPendingChildEventNotes() && !await hasLiveChildSession()) return [];
+    if (sessionNotificationObservationPromise) {
+      if (pass !== "full" || sessionNotificationObservationPass === "full") return sessionNotificationObservationPromise;
+      // A program-status pass does not measure output: a full pass asked for
+      // while one is in flight runs after it instead of adopting its result.
+      return sessionNotificationObservationPromise
+        .catch(() => undefined)
+        .then(() => runSessionNotificationObservation(pass));
+    }
+    sessionNotificationObservationPass = pass;
+    sessionNotificationObservationPromise = (async () => {
+      const policyEpoch = quietAlertPolicyEpoch();
+      const observationOwnership = beginObservationOwnership();
+      const authority = { policyEpoch, id: observationOwnership } as const;
+      const observation = await collectSessionObservation(notificationFingerprints, policyEpoch, observationOwnership, pass);
+      if (policyEpoch !== quietAlertPolicyEpoch()) return withoutQuietAlerts(observation.sessions);
+      if (!observation.authoritative || !ownsObservationAuthority(authority)) {
+        return staleSessionProjection(observation.sessions, ctx).sessions;
+      }
+      // Captures/reductions above require the global epoch. Once emitted, each
+      // kind has its own policy fence; newer observations still retire this batch.
+      await context.push.checkSessionTransitions(observation.sessions.map((session) => {
+        const sessionKey = session.identity?.wolfpackSessionId ?? session.name;
+        return {
+          ...session,
+          notificationEligible: !observation.unreliableSessionKeys.has(sessionKey),
+        };
+      }), policyEpoch, () => authority.id === latestAuthoritativeObservation);
+      if (pass === "full") schedulePeerNotificationObservation();
+      if (policyEpoch !== quietAlertPolicyEpoch()) return withoutQuietAlerts(observation.sessions);
+      return ownsObservationAuthority(authority)
+        ? observation.sessions
+        : staleSessionProjection(observation.sessions, ctx).sessions;
+    })().finally(() => {
+      sessionNotificationObservationPromise = null;
+    });
+    return sessionNotificationObservationPromise;
+  }
 
-export async function __runSessionNotificationObservationForTests(): Promise<readonly ObservedSessionSummary[]> {
-  if (!process.env.WOLFPACK_TEST) throw new Error("__runSessionNotificationObservationForTests is test-only");
-  return runSessionNotificationObservation();
+  function scheduleSessionNotificationObservation(): void {
+    runSessionNotificationObservation().catch((error: unknown) => {
+      log.warn("session notification observation failed", { error: errMsg(error) });
+    });
+  }
+
+  /**
+   * A broker program status change starts a program-status pass after this
+   * delay instead of waiting up to the 5s poll. Signals inside the window (a
+   * burst, or several sessions at once) share one pass; the broker already
+   * rate-limits each session's events, so this window only batches across
+   * sessions. The refresh lives with the observer: nothing is scheduled while it
+   * is stopped, and a refresh queued behind an in-flight pass is dropped when
+   * the observer stops before that pass ends.
+   */
+  const PROGRAM_STATUS_REFRESH_DELAY_MS = 50;
+  let programStatusRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function requestProgramStatusRefresh(): void {
+    dashboardObservationCache = null;
+    if (sessionNotificationObservationTimer === null || programStatusRefreshTimer) return;
+    programStatusRefreshTimer = setTimeout(() => {
+      programStatusRefreshTimer = null;
+      // A pass already in flight may have listed sessions before the change;
+      // run a fresh one after it rather than joining it.
+      void Promise.resolve(sessionNotificationObservationPromise)
+        .catch(() => undefined)
+        .then(() => {
+          if (sessionNotificationObservationTimer === null) return;
+          runSessionNotificationObservation("program-status").catch((error: unknown) => {
+            log.warn("program status observation failed", { error: errMsg(error) });
+          });
+        });
+    }, PROGRAM_STATUS_REFRESH_DELAY_MS);
+  }
+
+  const unsubscribeProgramStatus = onProgramStatusChanged(requestProgramStatusRefresh);
+
+  function cancelProgramStatusRefresh(): void {
+    if (programStatusRefreshTimer) clearTimeout(programStatusRefreshTimer);
+    programStatusRefreshTimer = null;
+  }
+
+  function startSessionNotificationObserver(): void {
+    if (sessionNotificationObservationTimer) return;
+    scheduleSessionNotificationObservation();
+    sessionNotificationObservationTimer = setInterval(
+      scheduleSessionNotificationObservation,
+      SESSION_NOTIFICATION_OBSERVATION_INTERVAL_MS,
+    );
+  }
+
+  async function stopSessionNotificationObserver(ctx: ServerContext = context): Promise<void> {
+    cancelProgramStatusRefresh();
+    if (sessionNotificationObservationTimer) {
+      clearInterval(sessionNotificationObservationTimer);
+      sessionNotificationObservationTimer = null;
+    }
+    // Let already-running collections finish their reductions before draining.
+    await Promise.allSettled([dashboardObservationPromise, sessionNotificationObservationPromise]);
+    // A finishing local pass can have started a peer flight while being drained.
+    await Promise.allSettled([peerNotificationObservationPromise]);
+    await ctx.flushRuntimeState();
+  }
+
+  function forgetSessionObservation(sessionId: string, sessionName: string): void {
+    dashboardObservationCache = null;
+    activityHistory.delete(sessionId);
+    activityHistory.delete(sessionName);
+    quietAlertHistory.delete(sessionId);
+    quietAlertHistory.delete(sessionName);
+    childBlockedEpisodes.delete(sessionId);
+    childBlockedEpisodes.delete(sessionName);
+    activityContinuityTokens.delete(sessionId);
+    activityContinuityTokens.delete(sessionName);
+    dashboardFingerprints.delete(sessionId);
+    dashboardFingerprints.delete(sessionName);
+    notificationFingerprints.delete(sessionId);
+    notificationFingerprints.delete(sessionName);
+    renderedFingerprintFlights.delete(sessionId);
+    renderedFingerprintFlights.delete(sessionName);
+    runtimeRenderedFingerprints.delete(sessionId);
+    runtimeRenderedFingerprints.delete(sessionName);
+    context.push.forgetQuietAlertRecipientSnapshots([sessionId, sessionName]);
+  }
+
+  function resetNotificationObservation(): void {
+    notificationFingerprints.clear();
+  }
+
+  return {
+    observeDashboardSessions, runSessionNotificationObservation,
+    startSessionNotificationObserver, stopSessionNotificationObserver,
+    forgetSessionObservation, resetNotificationObservation,
+    async dispose() {
+      await stopSessionNotificationObserver();
+      unsubscribePolicy();
+      unsubscribeProgramStatus();
+    },
+  };
 }

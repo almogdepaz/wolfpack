@@ -1,134 +1,580 @@
 import { EXTENSION_PEER_PREFIX } from "../extensions/selected-host-contract.ts";
-import { ExtensionPeerProxy, type ExtensionPeerProxyOptions } from "./extension-peer-proxy.ts";
+import {
+  ExtensionPeerProxy,
+  type ExtensionPeerProxyOptions,
+} from "./extension-peer-proxy.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { ExtensionBlobStore } from "../extensions/blob-store.ts";
-import { ExtensionDocumentError, ExtensionDocumentStore, type ExtensionDocumentKey } from "../extensions/document-contract.ts";
-import { ExtensionRuntime, ExtensionRuntimeError, getExtensionRuntime } from "../extensions/runtime.ts";
-import { EXTENSION_API_ERROR, type ExtensionApiErrorCode } from "../extensions/runtime-contract.ts";
+import {
+  ExtensionDocumentError,
+  ExtensionDocumentStore,
+  type ExtensionDocumentKey,
+} from "../extensions/document-contract.ts";
+import {
+  ExtensionRuntime,
+  ExtensionRuntimeError,
+  getExtensionRuntime,
+} from "../extensions/runtime.ts";
+import {
+  EXTENSION_API_ERROR,
+  type ExtensionApiErrorCode,
+} from "../extensions/runtime-contract.ts";
 import type { SessionBackend } from "./backend-contract.ts";
-import { getDefaultServerContext, getServerContextServiceCache } from "./context.ts";
-import { json, parseObjectBody, readBody, RequestBodyTooLargeError } from "./http.ts";
+import { getDefaultServerContext } from "./context.ts";
+import {
+  json,
+  parseObjectBody,
+  readBody,
+  RequestBodyTooLargeError,
+} from "./http.ts";
 import { readProjectGitDiff } from "./project-git-diff.ts";
 import { readProjectGitStatus } from "./project-git-status.ts";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-function noStore(res: ServerResponse) { res.setHeader("Cache-Control", "no-store"); }
-function error(res: ServerResponse, code: ExtensionApiErrorCode, message: string, status: number, currentRevision?: number) { noStore(res); json(res, { error: { code, message, ...(currentRevision === undefined ? {} : { currentRevision }) } }, status); }
-function documentError(res: ServerResponse, value: unknown) {
-  if (value instanceof ExtensionRuntimeError) return error(res, value.code === "DISABLED" ? EXTENSION_API_ERROR.DISABLED : value.code === "NOT_INSTALLED" ? EXTENSION_API_ERROR.NOT_INSTALLED : EXTENSION_API_ERROR.INVALID_REQUEST, value.message, value.code === "NOT_INSTALLED" ? 404 : 409);
-  if (!(value instanceof ExtensionDocumentError)) return error(res, EXTENSION_API_ERROR.STORE_UNAVAILABLE, "extension document service unavailable", 503);
-  const map: Record<string, [ExtensionApiErrorCode, number]> = { INVALID_KEY: [EXTENSION_API_ERROR.INVALID_REQUEST, 400], INVALID_DOCUMENT: [EXTENSION_API_ERROR.INVALID_REQUEST, 400], SCHEMA_INVALID: [EXTENSION_API_ERROR.SCHEMA_INVALID, 422], CONFLICT: [EXTENSION_API_ERROR.CONFLICT, 409], REQUEST_ID_REUSED: [EXTENSION_API_ERROR.CONFLICT, 409], QUOTA_EXCEEDED: [EXTENSION_API_ERROR.QUOTA_EXCEEDED, 413], STORE_CORRUPT: [EXTENSION_API_ERROR.STORE_CORRUPT, 503], STORE_UNAVAILABLE: [EXTENSION_API_ERROR.STORE_UNAVAILABLE, 503], SCOPE_NOT_WRITABLE: [EXTENSION_API_ERROR.SCOPE_NOT_WRITABLE, 409] };
-  const [code, status] = map[value.code] ?? [EXTENSION_API_ERROR.STORE_UNAVAILABLE, 503]; return error(res, code, value.message, status, value.currentRevision);
+const UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+function noStore(res: ServerResponse) {
+  res.setHeader("Cache-Control", "no-store");
 }
-function ids(pathname: string, prefix: string): { extensionId: string; documentId: string } | null { if (!pathname.startsWith(prefix)) return null; const parts = pathname.slice(prefix.length).split("/"); return parts.length === 2 && /^[a-z][a-z0-9-]{0,63}$/.test(parts[0]!) && /^[a-z][a-z0-9-]{0,63}$/.test(parts[1]!) ? { extensionId: parts[0]!, documentId: parts[1]! } : null; }
+function error(
+  res: ServerResponse,
+  code: ExtensionApiErrorCode,
+  message: string,
+  status: number,
+  currentRevision?: number,
+) {
+  noStore(res);
+  json(
+    res,
+    {
+      error: {
+        code,
+        message,
+        ...(currentRevision === undefined ? {} : { currentRevision }),
+      },
+    },
+    status,
+  );
+}
+function documentError(res: ServerResponse, value: unknown) {
+  if (value instanceof ExtensionRuntimeError)
+    return error(
+      res,
+      value.code === "DISABLED"
+        ? EXTENSION_API_ERROR.DISABLED
+        : value.code === "NOT_INSTALLED"
+          ? EXTENSION_API_ERROR.NOT_INSTALLED
+          : EXTENSION_API_ERROR.INVALID_REQUEST,
+      value.message,
+      value.code === "NOT_INSTALLED" ? 404 : 409,
+    );
+  if (!(value instanceof ExtensionDocumentError))
+    return error(
+      res,
+      EXTENSION_API_ERROR.STORE_UNAVAILABLE,
+      "extension document service unavailable",
+      503,
+    );
+  const map: Record<string, [ExtensionApiErrorCode, number]> = {
+    INVALID_KEY: [EXTENSION_API_ERROR.INVALID_REQUEST, 400],
+    INVALID_DOCUMENT: [EXTENSION_API_ERROR.INVALID_REQUEST, 400],
+    SCHEMA_INVALID: [EXTENSION_API_ERROR.SCHEMA_INVALID, 422],
+    CONFLICT: [EXTENSION_API_ERROR.CONFLICT, 409],
+    REQUEST_ID_REUSED: [EXTENSION_API_ERROR.CONFLICT, 409],
+    QUOTA_EXCEEDED: [EXTENSION_API_ERROR.QUOTA_EXCEEDED, 413],
+    STORE_CORRUPT: [EXTENSION_API_ERROR.STORE_CORRUPT, 503],
+    STORE_UNAVAILABLE: [EXTENSION_API_ERROR.STORE_UNAVAILABLE, 503],
+    SCOPE_NOT_WRITABLE: [EXTENSION_API_ERROR.SCOPE_NOT_WRITABLE, 409],
+  };
+  const [code, status] = map[value.code] ?? [
+    EXTENSION_API_ERROR.STORE_UNAVAILABLE,
+    503,
+  ];
+  return error(res, code, value.message, status, value.currentRevision);
+}
+function ids(
+  pathname: string,
+  prefix: string,
+): { extensionId: string; documentId: string } | null {
+  if (!pathname.startsWith(prefix)) return null;
+  const parts = pathname.slice(prefix.length).split("/");
+  return parts.length === 2 &&
+    /^[a-z][a-z0-9-]{0,63}$/.test(parts[0]!) &&
+    /^[a-z][a-z0-9-]{0,63}$/.test(parts[1]!)
+    ? { extensionId: parts[0]!, documentId: parts[1]! }
+    : null;
+}
 
-export interface ExtensionRouteServiceOptions { readonly runtime?: ExtensionRuntime; readonly backend?: Pick<SessionBackend, "listSessionFacts">; readonly safeMode?: () => boolean; readonly readGitStatus?: typeof readProjectGitStatus; readonly readGitDiff?: typeof readProjectGitDiff; readonly peerProxy?: ExtensionPeerProxyOptions; }
+export interface ExtensionRouteServiceOptions {
+  readonly runtime?: ExtensionRuntime;
+  readonly backend?: Pick<SessionBackend, "listSessionFacts">;
+  readonly safeMode?: () => boolean;
+  readonly readGitStatus?: typeof readProjectGitStatus;
+  readonly readGitDiff?: typeof readProjectGitDiff;
+  readonly peerProxy?: ExtensionPeerProxyOptions;
+}
 /** Server-owned service binds document persistence to installed schemas and broker UUID liveness. */
 export class ExtensionRouteService {
-  private readonly runtime: ExtensionRuntime; private readonly backend: Pick<SessionBackend, "listSessionFacts">; private readonly safeMode: () => boolean; private readonly store: ExtensionDocumentStore;
+  private readonly runtime: ExtensionRuntime;
+  private readonly backend: Pick<SessionBackend, "listSessionFacts">;
+  private readonly safeMode: () => boolean;
+  private readonly store: ExtensionDocumentStore;
   private readonly peerProxy: ExtensionPeerProxy;
   private gitRequests = 0;
   private readonly readGitStatus: typeof readProjectGitStatus;
   private readonly readGitDiff: typeof readProjectGitDiff;
-  constructor(options: ExtensionRouteServiceOptions = {}) { this.readGitStatus = options.readGitStatus ?? readProjectGitStatus; this.readGitDiff = options.readGitDiff ?? readProjectGitDiff; this.runtime = options.runtime ?? getExtensionRuntime(); this.backend = options.backend ?? { listSessionFacts: () => getDefaultServerContext().backend.listSessionFacts() }; this.safeMode = options.safeMode ?? (() => false); this.peerProxy = new ExtensionPeerProxy(options.peerProxy, this.safeMode); this.store = new ExtensionDocumentStore({ root: this.runtime.root, assertWritableScope: async (key) => { const facts = await this.backend.listSessionFacts(); const live = facts.some((fact) => fact.alive && fact.identity?.wolfpackSessionId === key.scopeSessionId); if (!live) throw new ExtensionDocumentError("SCOPE_NOT_WRITABLE", "new documents require a live exact scope session UUID"); this.runtime.schema(key); } }); }
-  async handle(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
-    if (url.pathname.startsWith(EXTENSION_PEER_PREFIX) || req.url?.startsWith(EXTENSION_PEER_PREFIX)) { await this.peerProxy.handle(req, res, url); return true; }
-    if (req.method === "GET" && url.pathname === "/api/extensions") { noStore(res); json(res, this.runtime.catalog(this.safeMode())); return true; }
+  constructor(options: ExtensionRouteServiceOptions = {}) {
+    this.readGitStatus = options.readGitStatus ?? readProjectGitStatus;
+    this.readGitDiff = options.readGitDiff ?? readProjectGitDiff;
+    this.runtime = options.runtime ?? getExtensionRuntime();
+    this.backend = options.backend ?? {
+      listSessionFacts: () =>
+        getDefaultServerContext().backend.listSessionFacts(),
+    };
+    this.safeMode = options.safeMode ?? (() => false);
+    this.peerProxy = new ExtensionPeerProxy(options.peerProxy, this.safeMode);
+    this.store = new ExtensionDocumentStore({
+      root: this.runtime.root,
+      assertWritableScope: async (key) => {
+        const facts = await this.backend.listSessionFacts();
+        const live = facts.some(
+          (fact) =>
+            fact.alive &&
+            fact.identity?.wolfpackSessionId === key.scopeSessionId,
+        );
+        if (!live)
+          throw new ExtensionDocumentError(
+            "SCOPE_NOT_WRITABLE",
+            "new documents require a live exact scope session UUID",
+          );
+        this.runtime.schema(key);
+      },
+    });
+  }
+  async handle(
+    req: IncomingMessage,
+    res: ServerResponse,
+    url: URL,
+  ): Promise<boolean> {
+    if (
+      url.pathname.startsWith(EXTENSION_PEER_PREFIX) ||
+      req.url?.startsWith(EXTENSION_PEER_PREFIX)
+    ) {
+      await this.peerProxy.handle(req, res, url);
+      return true;
+    }
+    if (req.method === "GET" && url.pathname === "/api/extensions") {
+      noStore(res);
+      json(res, this.runtime.catalog(this.safeMode()));
+      return true;
+    }
     const assetPrefix = "/api/extensions/assets/";
-    if (req.method === "GET" && url.pathname.startsWith(assetPrefix)) { const rest = url.pathname.slice(assetPrefix.length).split("/"); const assetPath = rest.slice(2).join("/"); if (rest.length < 3 || !/^[a-z][a-z0-9-]{0,63}$/.test(rest[0]!) || !/^[a-f0-9]{64}$/.test(rest[1]!) || !assetPath.endsWith(".js")) { error(res, EXTENSION_API_ERROR.ASSET_NOT_FOUND, "extension asset is not allowlisted", 404); return true; } try { if (this.safeMode()) throw new ExtensionRuntimeError("DISABLED", "safe mode prevents extension asset delivery"); const asset = this.runtime.asset(rest[0]!, rest[1]!, assetPath); noStore(res); res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "X-Wolfpack-Extension-Digest": asset.digest }); res.end(asset.bytes); } catch (value) { documentError(res, value); } return true; }
-    const git = /^\/api\/extensions\/project\/git-(status|diff)\/([a-z][a-z0-9-]{0,63})$/.exec(url.pathname);
-    if (req.method === "GET" && git) { await this.projectGit(res, url, git[2]!, git[1] === "diff" ? "diff" : "status"); return true; }
-    if (url.pathname.startsWith("/api/extensions/blobs/")) { await this.blob(req, res, url); return true; }
-    const path = ids(url.pathname, "/api/extensions/documents/"); if (!path) return false;
-    const sessionId = req.method === "GET" ? url.searchParams.get("session") : undefined;
-    if (req.method === "GET") { if (!sessionId || !UUID.test(sessionId)) { error(res, EXTENSION_API_ERROR.INVALID_REQUEST, "session must be an exact canonical UUID", 400); return true; } try { const installation = this.runtime.get(path.extensionId); const key: ExtensionDocumentKey = { installationId: installation.installationId, scopeSessionId: sessionId, extensionId: path.extensionId, documentId: path.documentId }; const saved = this.store.read(key); noStore(res); json(res, { installationId: installation.installationId, scopeSessionId: sessionId, extensionId: path.extensionId, documentId: path.documentId, revision: saved?.revision ?? 0, document: saved?.document ?? null }); } catch (value) { documentError(res, value); } return true; }
+    if (req.method === "GET" && url.pathname.startsWith(assetPrefix)) {
+      const rest = url.pathname.slice(assetPrefix.length).split("/");
+      const assetPath = rest.slice(2).join("/");
+      if (
+        rest.length < 3 ||
+        !/^[a-z][a-z0-9-]{0,63}$/.test(rest[0]!) ||
+        !/^[a-f0-9]{64}$/.test(rest[1]!) ||
+        !assetPath.endsWith(".js")
+      ) {
+        error(
+          res,
+          EXTENSION_API_ERROR.ASSET_NOT_FOUND,
+          "extension asset is not allowlisted",
+          404,
+        );
+        return true;
+      }
+      try {
+        if (this.safeMode())
+          throw new ExtensionRuntimeError(
+            "DISABLED",
+            "safe mode prevents extension asset delivery",
+          );
+        const asset = this.runtime.asset(rest[0]!, rest[1]!, assetPath);
+        noStore(res);
+        res.writeHead(200, {
+          "Content-Type": "text/javascript; charset=utf-8",
+          "X-Wolfpack-Extension-Digest": asset.digest,
+        });
+        res.end(asset.bytes);
+      } catch (value) {
+        documentError(res, value);
+      }
+      return true;
+    }
+    const git =
+      /^\/api\/extensions\/project\/git-(status|diff)\/([a-z][a-z0-9-]{0,63})$/.exec(
+        url.pathname,
+      );
+    if (req.method === "GET" && git) {
+      await this.projectGit(
+        res,
+        url,
+        git[2]!,
+        git[1] === "diff" ? "diff" : "status",
+      );
+      return true;
+    }
+    if (url.pathname.startsWith("/api/extensions/blobs/")) {
+      await this.blob(req, res, url);
+      return true;
+    }
+    const path = ids(url.pathname, "/api/extensions/documents/");
+    if (!path) return false;
+    const sessionId =
+      req.method === "GET" ? url.searchParams.get("session") : undefined;
+    if (req.method === "GET") {
+      if (!sessionId || !UUID.test(sessionId)) {
+        error(
+          res,
+          EXTENSION_API_ERROR.INVALID_REQUEST,
+          "session must be an exact canonical UUID",
+          400,
+        );
+        return true;
+      }
+      try {
+        const installation = this.runtime.get(path.extensionId);
+        const key: ExtensionDocumentKey = {
+          installationId: installation.installationId,
+          scopeSessionId: sessionId,
+          extensionId: path.extensionId,
+          documentId: path.documentId,
+        };
+        const saved = this.store.read(key);
+        noStore(res);
+        json(res, {
+          installationId: installation.installationId,
+          scopeSessionId: sessionId,
+          extensionId: path.extensionId,
+          documentId: path.documentId,
+          revision: saved?.revision ?? 0,
+          document: saved?.document ?? null,
+        });
+      } catch (value) {
+        documentError(res, value);
+      }
+      return true;
+    }
     if (req.method !== "POST") return false;
-    const body = await parseObjectBody(req, res, { maxBytes: 72 * 1024, invalidResponse: { envelope: { error: { code: EXTENSION_API_ERROR.INVALID_REQUEST, message: "body must be a JSON object" } }, status: 400 }, tooLargeResponse: { envelope: { error: { code: EXTENSION_API_ERROR.QUOTA_EXCEEDED, message: "document request exceeds limit" } }, status: 413 }, respondOnTooLarge: true }); if (!body) return true;
-    if (!Object.keys(body).every((key) => ["sessionId", "document", "ifRevision", "requestId", "schemaVersion"].includes(key)) || !UUID.test(String(body.sessionId ?? ""))) { error(res, EXTENSION_API_ERROR.INVALID_REQUEST, "publish requires exact sessionId, document, ifRevision, requestId and schemaVersion", 400); return true; }
+    const body = await parseObjectBody(req, res, {
+      maxBytes: 72 * 1024,
+      invalidResponse: {
+        envelope: {
+          error: {
+            code: EXTENSION_API_ERROR.INVALID_REQUEST,
+            message: "body must be a JSON object",
+          },
+        },
+        status: 400,
+      },
+      tooLargeResponse: {
+        envelope: {
+          error: {
+            code: EXTENSION_API_ERROR.QUOTA_EXCEEDED,
+            message: "document request exceeds limit",
+          },
+        },
+        status: 413,
+      },
+      respondOnTooLarge: true,
+    });
+    if (!body) return true;
+    if (
+      !Object.keys(body).every((key) =>
+        [
+          "sessionId",
+          "document",
+          "ifRevision",
+          "requestId",
+          "schemaVersion",
+        ].includes(key),
+      ) ||
+      !UUID.test(String(body.sessionId ?? ""))
+    ) {
+      error(
+        res,
+        EXTENSION_API_ERROR.INVALID_REQUEST,
+        "publish requires exact sessionId, document, ifRevision, requestId and schemaVersion",
+        400,
+      );
+      return true;
+    }
     try {
-      const key: ExtensionDocumentKey = { installationId: this.runtime.installationId, scopeSessionId: body.sessionId as string, extensionId: path.extensionId, documentId: path.documentId };
-      const prepared = this.runtime.prepareDocumentPublication(key, body.schemaVersion);
-      if (!prepared) { error(res, EXTENSION_API_ERROR.INVALID_REQUEST, "schemaVersion must match the installed document declaration", 400); return true; }
+      const key: ExtensionDocumentKey = {
+        installationId: this.runtime.installationId,
+        scopeSessionId: body.sessionId as string,
+        extensionId: path.extensionId,
+        documentId: path.documentId,
+      };
+      const prepared = this.runtime.prepareDocumentPublication(
+        key,
+        body.schemaVersion,
+      );
+      if (!prepared) {
+        error(
+          res,
+          EXTENSION_API_ERROR.INVALID_REQUEST,
+          "schemaVersion must match the installed document declaration",
+          400,
+        );
+        return true;
+      }
       // Declaration and validator share one verified synchronous operation.
       // The store's writable-scope callback still re-verifies the full registry
       // after awaiting authoritative broker facts, before a new commit.
-      const receipt = await this.store.publish({ key, document: body.document, ifRevision: body.ifRevision as number, requestId: body.requestId as string, schemaVersion: prepared.schemaVersion }, prepared.validator);
-      noStore(res); json(res, { receipt });
-    } catch (value) { documentError(res, value); }
+      const receipt = await this.store.publish(
+        {
+          key,
+          document: body.document,
+          ifRevision: body.ifRevision as number,
+          requestId: body.requestId as string,
+          schemaVersion: prepared.schemaVersion,
+        },
+        prepared.validator,
+      );
+      noStore(res);
+      json(res, { receipt });
+    } catch (value) {
+      documentError(res, value);
+    }
     return true;
   }
 
-  private async blob(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
-    const path = /^\/api\/extensions\/blobs\/([a-z][a-z0-9-]{0,63})\/([a-f0-9]{64})$/.exec(url.pathname);
-    if (!path || !["GET", "PUT", "DELETE"].includes(req.method ?? "")) { error(res, EXTENSION_API_ERROR.INVALID_REQUEST, "invalid blob request", 400); return; }
-    const extensionId = path[1]!, digest = path[2]!;
+  private async blob(
+    req: IncomingMessage,
+    res: ServerResponse,
+    url: URL,
+  ): Promise<void> {
+    const path =
+      /^\/api\/extensions\/blobs\/([a-z][a-z0-9-]{0,63})\/([a-f0-9]{64})$/.exec(
+        url.pathname,
+      );
+    if (!path || !["GET", "PUT", "DELETE"].includes(req.method ?? "")) {
+      error(
+        res,
+        EXTENSION_API_ERROR.INVALID_REQUEST,
+        "invalid blob request",
+        400,
+      );
+      return;
+    }
+    const extensionId = path[1]!,
+      digest = path[2]!;
     try {
       const declaration = this.runtime.blobDeclaration(extensionId);
-      const authority = async (current = this.runtime.blobDeclaration(extensionId)) => {
-        if (this.safeMode() || !current.entry.enabled || current.entry.package.digest !== declaration.entry.package.digest) throw new ExtensionRuntimeError("DISABLED", "blob channel is disabled");
-        if (!current.blobs) throw new ExtensionDocumentError("INVALID_DOCUMENT", "extension has no declared blob channel");
+      const authority = async (
+        current = this.runtime.blobDeclaration(extensionId),
+      ) => {
+        if (
+          this.safeMode() ||
+          !current.entry.enabled ||
+          current.entry.package.digest !== declaration.entry.package.digest
+        )
+          throw new ExtensionRuntimeError(
+            "DISABLED",
+            "blob channel is disabled",
+          );
+        if (!current.blobs)
+          throw new ExtensionDocumentError(
+            "INVALID_DOCUMENT",
+            "extension has no declared blob channel",
+          );
         if (req.method !== "GET") {
           const sessionId = url.searchParams.get("session");
-          if (!sessionId || !UUID.test(sessionId) || url.searchParams.getAll("session").length !== 1 || [...url.searchParams.keys()].some(key => key !== "session")) throw new ExtensionDocumentError("INVALID_KEY", "session must be an exact canonical UUID");
+          if (
+            !sessionId ||
+            !UUID.test(sessionId) ||
+            url.searchParams.getAll("session").length !== 1 ||
+            [...url.searchParams.keys()].some((key) => key !== "session")
+          )
+            throw new ExtensionDocumentError(
+              "INVALID_KEY",
+              "session must be an exact canonical UUID",
+            );
           const facts = await this.backend.listSessionFacts();
-          if (!facts.some(fact => fact.alive && fact.identity?.wolfpackSessionId === sessionId)) throw new ExtensionDocumentError("SCOPE_NOT_WRITABLE", "blobs require a live exact scope session UUID");
+          if (
+            !facts.some(
+              (fact) =>
+                fact.alive && fact.identity?.wolfpackSessionId === sessionId,
+            )
+          )
+            throw new ExtensionDocumentError(
+              "SCOPE_NOT_WRITABLE",
+              "blobs require a live exact scope session UUID",
+            );
           const latest = this.runtime.get(extensionId);
-          if (this.safeMode() || !latest.enabled || latest.package.digest !== declaration.entry.package.digest) throw new ExtensionRuntimeError("DISABLED", "blob channel scope changed");
-        } else if ([...url.searchParams.keys()].length) throw new ExtensionDocumentError("INVALID_KEY", "blob reads accept no session or query parameters");
+          if (
+            this.safeMode() ||
+            !latest.enabled ||
+            latest.package.digest !== declaration.entry.package.digest
+          )
+            throw new ExtensionRuntimeError(
+              "DISABLED",
+              "blob channel scope changed",
+            );
+        } else if ([...url.searchParams.keys()].length)
+          throw new ExtensionDocumentError(
+            "INVALID_KEY",
+            "blob reads accept no session or query parameters",
+          );
       };
       // No await separates declaration from this first check. Only that
       // synchronous verification can be reused; later checks remain fresh.
       await authority(declaration);
-      const store = new ExtensionBlobStore({ root: this.runtime.root }), key = { installationId: declaration.entry.installationId, extensionId };
+      const store = new ExtensionBlobStore({ root: this.runtime.root }),
+        key = { installationId: declaration.entry.installationId, extensionId };
       noStore(res);
-      if (req.method === "GET") { const bytes = store.read(key, digest); if (!bytes) { error(res, EXTENSION_API_ERROR.ASSET_NOT_FOUND, "blob not found", 404); return; } res.writeHead(200, { "Content-Type": "application/octet-stream", "X-Wolfpack-Blob-Digest": digest }); res.end(bytes); return; }
-      if (req.method === "DELETE") { json(res, { digest, deleted: store.delete(key, digest) }); return; }
-      if (req.headers["content-type"] !== "application/octet-stream") throw new ExtensionDocumentError("INVALID_DOCUMENT", "blob body must be application/octet-stream");
+      if (req.method === "GET") {
+        const bytes = store.read(key, digest);
+        if (!bytes) {
+          error(
+            res,
+            EXTENSION_API_ERROR.ASSET_NOT_FOUND,
+            "blob not found",
+            404,
+          );
+          return;
+        }
+        res.writeHead(200, {
+          "Content-Type": "application/octet-stream",
+          "X-Wolfpack-Blob-Digest": digest,
+        });
+        res.end(bytes);
+        return;
+      }
+      if (req.method === "DELETE") {
+        json(res, { digest, deleted: store.delete(key, digest) });
+        return;
+      }
+      if (req.headers["content-type"] !== "application/octet-stream")
+        throw new ExtensionDocumentError(
+          "INVALID_DOCUMENT",
+          "blob body must be application/octet-stream",
+        );
       const limit = Math.min(declaration.blobs!.maxBlobBytes, 1048576);
       let body: Buffer;
       try {
-        if (Number(req.headers["content-length"]) > limit) throw new RequestBodyTooLargeError(limit);
+        if (Number(req.headers["content-length"]) > limit)
+          throw new RequestBodyTooLargeError(limit);
         body = await readBody(req, limit, true, true);
       } catch (value) {
         if (!(value instanceof RequestBodyTooLargeError)) throw value;
         // Stop consuming now, but deliver 413 before closing the upload socket.
-        req.pause(); res.setHeader("Connection", "close"); res.once("finish", () => req.destroy());
-        throw new ExtensionDocumentError("QUOTA_EXCEEDED", "blob request exceeds limit");
+        req.pause();
+        res.setHeader("Connection", "close");
+        res.once("finish", () => req.destroy());
+        throw new ExtensionDocumentError(
+          "QUOTA_EXCEEDED",
+          "blob request exceeds limit",
+        );
       }
       await authority();
-      const receipt = store.put(key, digest, body, limit); json(res, receipt, receipt.created ? 201 : 200);
-    } catch (value) { documentError(res, value); }
+      const receipt = store.put(key, digest, body, limit);
+      json(res, receipt, receipt.created ? 201 : 200);
+    } catch (value) {
+      documentError(res, value);
+    }
   }
 
   /** Status and diff share scope checks, the identity envelope and one bound on concurrent Git work. */
-  private async projectGit(res: ServerResponse, url: URL, extensionId: string, kind: "status" | "diff"): Promise<void> {
+  private async projectGit(
+    res: ServerResponse,
+    url: URL,
+    extensionId: string,
+    kind: "status" | "diff",
+  ): Promise<void> {
     const sessionId = url.searchParams.get("session");
-    if (!sessionId || !UUID.test(sessionId) || [...url.searchParams.keys()].some(key => key !== "session") || url.searchParams.getAll("session").length !== 1) {
-      error(res, EXTENSION_API_ERROR.INVALID_REQUEST, "only an exact session UUID is accepted", 400); return;
+    if (
+      !sessionId ||
+      !UUID.test(sessionId) ||
+      [...url.searchParams.keys()].some((key) => key !== "session") ||
+      url.searchParams.getAll("session").length !== 1
+    ) {
+      error(
+        res,
+        EXTENSION_API_ERROR.INVALID_REQUEST,
+        "only an exact session UUID is accepted",
+        400,
+      );
+      return;
     }
-    if (this.gitRequests >= 2) { error(res, EXTENSION_API_ERROR.PROJECT_UNAVAILABLE, "project status is busy; retry later", 503); return; }
+    if (this.gitRequests >= 2) {
+      error(
+        res,
+        EXTENSION_API_ERROR.PROJECT_UNAVAILABLE,
+        "project status is busy; retry later",
+        503,
+      );
+      return;
+    }
     this.gitRequests++;
     try {
       const installed = this.runtime.get(extensionId);
-      if (this.safeMode() || !installed.enabled) throw new ExtensionRuntimeError("DISABLED", "project data is disabled");
+      if (this.safeMode() || !installed.enabled)
+        throw new ExtensionRuntimeError("DISABLED", "project data is disabled");
       const projectForScope = async () => {
-        const matches = (await this.backend.listSessionFacts()).filter(fact => fact.alive && fact.identity?.wolfpackSessionId === sessionId);
-        return matches.length === 1 ? matches[0]!.identity?.projectPath : undefined;
+        const matches = (await this.backend.listSessionFacts()).filter(
+          (fact) =>
+            fact.alive && fact.identity?.wolfpackSessionId === sessionId,
+        );
+        return matches.length === 1
+          ? matches[0]!.identity?.projectPath
+          : undefined;
       };
       const project = await projectForScope();
-      if (!project) { error(res, EXTENSION_API_ERROR.SCOPE_UNAVAILABLE, "local live session project unavailable", 404); return; }
-      const value = kind === "status" ? await this.readGitStatus(project) : await this.readGitDiff(project);
+      if (!project) {
+        error(
+          res,
+          EXTENSION_API_ERROR.SCOPE_UNAVAILABLE,
+          "local live session project unavailable",
+          404,
+        );
+        return;
+      }
+      const value =
+        kind === "status"
+          ? await this.readGitStatus(project)
+          : await this.readGitDiff(project);
       // Recheck after async Git: names, replaced sessions and old package scopes are not authority.
-      if (await projectForScope() !== project) { error(res, EXTENSION_API_ERROR.SCOPE_UNAVAILABLE, "session project changed", 404); return; }
+      if ((await projectForScope()) !== project) {
+        error(
+          res,
+          EXTENSION_API_ERROR.SCOPE_UNAVAILABLE,
+          "session project changed",
+          404,
+        );
+        return;
+      }
       const current = this.runtime.get(extensionId);
-      if (this.safeMode() || !current.enabled || current.package.digest !== installed.package.digest) throw new ExtensionRuntimeError("DISABLED", "project data scope changed");
-      noStore(res); json(res, { installationId: installed.installationId, scopeSessionId: sessionId, extensionId, [kind]: value });
+      if (
+        this.safeMode() ||
+        !current.enabled ||
+        current.package.digest !== installed.package.digest
+      )
+        throw new ExtensionRuntimeError(
+          "DISABLED",
+          "project data scope changed",
+        );
+      noStore(res);
+      json(res, {
+        installationId: installed.installationId,
+        scopeSessionId: sessionId,
+        extensionId,
+        [kind]: value,
+      });
     } catch (value) {
       if (value instanceof ExtensionRuntimeError) documentError(res, value);
-      else error(res, EXTENSION_API_ERROR.PROJECT_UNAVAILABLE, `Git ${kind} unavailable for this project`, 503);
-    } finally { this.gitRequests--; }
+      else
+        error(
+          res,
+          EXTENSION_API_ERROR.PROJECT_UNAVAILABLE,
+          `Git ${kind} unavailable for this project`,
+          503,
+        );
+    } finally {
+      this.gitRequests--;
+    }
   }
 }
-/** @deprecated Use the owning ServerContext.extensionRouteService. */
-export function getExtensionRouteService(): ExtensionRouteService { return getDefaultServerContext().extensionRouteService; }
-export function __setExtensionRouteServiceForTests(value: ExtensionRouteService | undefined): void { if (!process.env.WOLFPACK_TEST) throw new Error("test-only extension route override"); getServerContextServiceCache(getDefaultServerContext()).extensionRouteService = value; }

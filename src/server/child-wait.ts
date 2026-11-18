@@ -11,7 +11,7 @@ import {
   type ChildWaitMode,
   type ChildWaitOutcome,
 } from "../child-event-contract.ts";
-import { onChildEvent } from "./child-events.ts";
+import type { ChildEvents } from "./child-events.ts";
 import { listParentNotifications, PARENT_INBOX_BOOT_ID } from "./parent-inbox.ts";
 
 /** One live child of the waiting parent, as the caller observes it now. */
@@ -98,7 +98,7 @@ function pendingChildren(children: readonly ChildWaitChild[]) {
  * Resolves to undefined when the signal aborts. Throws `ChildWaitBusyError`
  * above `CHILD_WAIT_LIMITS.WAITERS`, and the `listChildren` error if it fails.
  */
-export async function waitForChildren(request: ChildWaitRequest): Promise<ChildWaitResult | undefined> {
+export async function waitForChildren(request: ChildWaitRequest, childEvents: ChildEvents): Promise<ChildWaitResult | undefined> {
   if (activeWaits >= CHILD_WAIT_LIMITS.WAITERS) throw new ChildWaitBusyError();
   activeWaits += 1;
   try {
@@ -179,7 +179,7 @@ export async function waitForChildren(request: ChildWaitRequest): Promise<ChildW
         finish(result(request.mode === CHILD_WAIT_MODE.ANY && hasEvents() ? CHILD_WAIT_OUTCOME.EVENTS : CHILD_WAIT_OUTCOME.TIMEOUT));
       }
       // Subscribe before the first check, so an event during it triggers another.
-      const unsubscribe = onChildEvent(({ childEvent }) => {
+      const unsubscribe = childEvents.onChildEvent(({ childEvent }) => {
         if (childEvent.parentSessionId !== request.parentSessionId) return;
         invalidated = true;
         void check();

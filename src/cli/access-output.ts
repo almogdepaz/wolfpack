@@ -1,5 +1,6 @@
 import { printQR } from "../qr.js";
-import { bold, dim, print } from "./formatting.js";
+import { print } from "../terminal-output.js";
+import { bold, dim } from "./formatting.js";
 
 export function printAccessUrls(port: number, remoteUrl: string | null): void {
   if (remoteUrl) {

@@ -61,7 +61,3 @@ export function subscribeEvents(filter: WolfpackEventFilter, listener: (event: W
   return defaultEventBus.subscribeEvents(filter, listener);
 }
 export function eventSubscriberCount(): number { return defaultEventBus.eventSubscriberCount(); }
-export function __resetEventBusForTests(): void {
-  if (!process.env.WOLFPACK_TEST) throw new Error("__resetEventBusForTests is test-only");
-  defaultEventBus.reset();
-}

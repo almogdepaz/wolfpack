@@ -122,6 +122,12 @@ test("trusted peer lost-response retry uses terminal predecessor evidence withou
     expect((await f.post("b", { ...old, operation: "acknowledge", envelopeId: envelope.envelopeId })).status).toBe(200);
     const committed = await f.post("b", peer, route + "/peer");
     const acceptanceId = committed.body.value.acceptanceId;
+    const refused = await f.post("b", { profile, operation: "connect", callerSession: "receiver", generation: randomUUID(), protocolVersions: [2] });
+    expect(refused.status).toBe(503);
+    expect(refused.body).toMatchObject({ ok: false, error: { code: "SESSION_ALREADY_REGISTERED", retryable: true } });
+    expect(refused.body.error.retryAfterMs).toBeGreaterThan(0);
+    expect(refused.body.error.retryAfterMs).toBeLessThanOrEqual(60_000);
+    expect((await f.post("b", { ...old, operation: "disconnect" })).status).toBe(200);
     const current = await f.connect("b", "receiver"); expect(current.endpoint).not.toEqual(old.endpoint);
     await f.restart(["a", "b"]); await pause(1050);
     const retry = await f.post("a", { ...a, operation: "send", envelope });

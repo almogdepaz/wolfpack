@@ -87,10 +87,15 @@ impl ProgramStatusRecords {
             id: id.clone(),
             state,
             kind: report.kind.filter(|_| blocked),
-            progress: report.progress.filter(|value| progress_allowed && *value <= 100),
+            progress: report
+                .progress
+                .filter(|value| progress_allowed && *value <= 100),
             app: non_empty(sanitize_text(report.app, MAX_PROGRAM_STATUS_APP_BYTES)),
             title: non_empty(sanitize_text(report.title, MAX_PROGRAM_STATUS_TITLE_BYTES)),
-            message: non_empty(sanitize_text(report.message, MAX_PROGRAM_STATUS_MESSAGE_BYTES)),
+            message: non_empty(sanitize_text(
+                report.message,
+                MAX_PROGRAM_STATUS_MESSAGE_BYTES,
+            )),
             updated_at_ms: now_ms,
         };
         self.clock += 1;
@@ -116,7 +121,8 @@ impl ProgramStatusRecords {
         if id.is_empty() {
             self.entries.clear();
         } else {
-            self.entries.retain(|key, _| !is_same_or_descendant(key, id));
+            self.entries
+                .retain(|key, _| !is_same_or_descendant(key, id));
         }
         self.entries.len() != before
     }
@@ -126,7 +132,10 @@ impl ProgramStatusRecords {
     pub fn drop_transient(&mut self) -> bool {
         let before = self.entries.len();
         self.entries.retain(|_, entry| {
-            matches!(entry.record.state, ProgramStatusState::Done | ProgramStatusState::Error)
+            matches!(
+                entry.record.state,
+                ProgramStatusState::Done | ProgramStatusState::Error
+            )
         });
         self.entries.len() != before
     }
@@ -141,7 +150,10 @@ impl ProgramStatusRecords {
     /// live program (`working` or `blocked`). `None` means nothing to watch.
     pub fn watched_group(&self) -> Option<libc::pid_t> {
         let live = self.entries.values().any(|entry| {
-            matches!(entry.record.state, ProgramStatusState::Working | ProgramStatusState::Blocked)
+            matches!(
+                entry.record.state,
+                ProgramStatusState::Working | ProgramStatusState::Blocked
+            )
         });
         self.reporter_group.filter(|_| live)
     }
@@ -152,7 +164,10 @@ impl ProgramStatusRecords {
 
     /// Every record, sorted by id (the root, if any, first).
     pub fn records(&self) -> Vec<ProgramStatusRecord> {
-        self.entries.values().map(|entry| entry.record.clone()).collect()
+        self.entries
+            .values()
+            .map(|entry| entry.record.clone())
+            .collect()
     }
 
     pub fn len(&self) -> usize {
@@ -252,11 +267,18 @@ mod tests {
     }
 
     fn clear(id: &str) -> ProgramStatusReport<'_> {
-        ProgramStatusReport { action: ProgramStatusAction::Clear, ..set(id, ProgramStatusState::Idle) }
+        ProgramStatusReport {
+            action: ProgramStatusAction::Clear,
+            ..set(id, ProgramStatusState::Idle)
+        }
     }
 
     fn ids(records: &ProgramStatusRecords) -> Vec<String> {
-        records.records().into_iter().map(|record| record.id).collect()
+        records
+            .records()
+            .into_iter()
+            .map(|record| record.id)
+            .collect()
     }
 
     #[test]
@@ -284,7 +306,15 @@ mod tests {
         assert!(records.apply(&set("", ProgramStatusState::Done), 20));
         let root = records.root().expect("root record");
         assert_eq!(root.state, ProgramStatusState::Done);
-        assert_eq!((root.kind, root.progress, root.app.as_deref(), root.message.as_deref()), (None, None, None, None));
+        assert_eq!(
+            (
+                root.kind,
+                root.progress,
+                root.app.as_deref(),
+                root.message.as_deref()
+            ),
+            (None, None, None, None)
+        );
         assert_eq!(root.updated_at_ms, 20);
         assert_eq!(records.len(), 1);
     }
@@ -313,7 +343,13 @@ mod tests {
     #[test]
     fn clear_removes_the_id_and_its_descendants_only() {
         let mut records = ProgramStatusRecords::default();
-        for id in ["build", "build/test", "build/test/unit", "builder", "deploy"] {
+        for id in [
+            "build",
+            "build/test",
+            "build/test/unit",
+            "builder",
+            "deploy",
+        ] {
             records.apply(&set(id, ProgramStatusState::Working), 1);
         }
         assert!(records.apply(&clear("build"), 2));
@@ -362,9 +398,15 @@ mod tests {
             records.apply(&set(&format!("test/{n}"), ProgramStatusState::Working), 2);
         }
         assert_eq!(records.len(), MAX_PROGRAM_STATUS_RECORDS);
-        assert_eq!(records.root().map(|root| root.state), Some(ProgramStatusState::Working));
+        assert_eq!(
+            records.root().map(|root| root.state),
+            Some(ProgramStatusState::Working)
+        );
         let kept = ids(&records);
-        assert!(!kept.contains(&"test/0".to_string()), "oldest child was not evicted");
+        assert!(
+            !kept.contains(&"test/0".to_string()),
+            "oldest child was not evicted"
+        );
         assert!(kept.contains(&"test/299".to_string()));
     }
 
@@ -381,10 +423,18 @@ mod tests {
         assert_eq!(records.watched_group(), Some(42));
         records.apply(&set("", ProgramStatusState::Blocked), 4);
         records.set_reporter_group(Some(43));
-        assert_eq!(records.watched_group(), Some(43), "the latest report's group replaces the old one");
+        assert_eq!(
+            records.watched_group(),
+            Some(43),
+            "the latest report's group replaces the old one"
+        );
 
         records.set_reporter_group(None);
-        assert_eq!(records.watched_group(), None, "an unreadable group is never watched");
+        assert_eq!(
+            records.watched_group(),
+            None,
+            "an unreadable group is never watched"
+        );
 
         records.set_reporter_group(Some(43));
         assert!(records.drop_transient());
@@ -394,7 +444,13 @@ mod tests {
 
     #[test]
     fn text_drops_bidi_and_invisible_formatting_and_is_bounded() {
-        assert_eq!(sanitize_text("ok\u{202E}gnp.exe\u{200B}\u{FEFF}\u{2066}x\u{E0041}".as_bytes(), 64), "okgnp.exex");
+        assert_eq!(
+            sanitize_text(
+                "ok\u{202E}gnp.exe\u{200B}\u{FEFF}\u{2066}x\u{E0041}".as_bytes(),
+                64
+            ),
+            "okgnp.exex"
+        );
         assert_eq!(sanitize_text(b"a\x1bb\x07c", 64), "abc");
         // Cut on a character boundary: "é" is 2 bytes.
         assert_eq!(sanitize_text("aéé".as_bytes(), 4), "aé");
@@ -402,17 +458,27 @@ mod tests {
 
         let mut records = ProgramStatusRecords::default();
         let long = "m".repeat(MAX_PROGRAM_STATUS_MESSAGE_BYTES + 10);
-        let spoof = ProgramStatusReport { message: long.as_bytes(), title: "\u{202E}evil".as_bytes(), ..set("", ProgramStatusState::Blocked) };
+        let spoof = ProgramStatusReport {
+            message: long.as_bytes(),
+            title: "\u{202E}evil".as_bytes(),
+            ..set("", ProgramStatusState::Blocked)
+        };
         records.apply(&spoof, 1);
         let root = records.root().expect("root");
-        assert_eq!(root.message.as_ref().map(String::len), Some(MAX_PROGRAM_STATUS_MESSAGE_BYTES));
+        assert_eq!(
+            root.message.as_ref().map(String::len),
+            Some(MAX_PROGRAM_STATUS_MESSAGE_BYTES)
+        );
         assert_eq!(root.title.as_deref(), Some("evil"));
     }
 
     #[test]
     fn invisible_only_text_is_absent() {
         let mut records = ProgramStatusRecords::default();
-        let report = ProgramStatusReport { message: "\u{200B}\u{202E}".as_bytes(), ..set("", ProgramStatusState::Idle) };
+        let report = ProgramStatusReport {
+            message: "\u{200B}\u{202E}".as_bytes(),
+            ..set("", ProgramStatusState::Idle)
+        };
         records.apply(&report, 1);
         assert_eq!(records.root().expect("root").message, None);
     }

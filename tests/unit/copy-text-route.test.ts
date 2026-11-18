@@ -2,8 +2,6 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 
-const previousTestMode = process.env.WOLFPACK_TEST;
-process.env.WOLFPACK_TEST = "1";
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
 const { createServerContext } = await import("../../src/server/context.ts");
 const { createRoutes } = await import("../../src/server/routes.ts");
@@ -22,8 +20,6 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await new Promise<void>((resolve, reject) => { server.close(error => error ? reject(error) : resolve()); server.closeAllConnections(); });
-  if (previousTestMode === undefined) delete process.env.WOLFPACK_TEST;
-  else process.env.WOLFPACK_TEST = previousTestMode;
 });
 
 for (const [session, expected] of [["worker one", "hello λ\nsecond line\n"], ["other", "other snapshot\n"], ["empty", ""]]) {

@@ -8,6 +8,7 @@ import {
   CLAUDE_TASK_INTEGRATION_OFF_ERROR,
   claudeChannelDropInContent,
   claudeManagedSettingsDropInDirectory,
+  activeClaudeManagedSettingsDropInDirectory,
   claudeTaskIntegrationGate,
 } from "../../src/claude-integration.ts";
 
@@ -25,6 +26,13 @@ describe("claude integration constants", () => {
       minimumClaudeVersion: "2.1.319",
       statusDirectory: "wolfpack-tasks/claude",
     });
+  });
+
+  test("drop-in selection preserves platform default and explicit absent-directory semantics", () => {
+    expect(activeClaudeManagedSettingsDropInDirectory()).toBe(claudeManagedSettingsDropInDirectory());
+    expect(activeClaudeManagedSettingsDropInDirectory({ directory: "/private/fixture/managed-settings.d" }))
+      .toBe("/private/fixture/managed-settings.d");
+    expect(activeClaudeManagedSettingsDropInDirectory({ directory: undefined })).toBeUndefined();
   });
 
   test("pin the managed-settings drop-in content and directories", () => {

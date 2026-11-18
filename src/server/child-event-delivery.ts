@@ -21,7 +21,7 @@
  */
 import { AGENT_STATUS_AUTHORITY, AGENT_STATUS_FRESHNESS, AGENT_STATUS_STATE } from "../agent-status-contract.js";
 import type { AgentStatusAuthority, AgentStatusFreshness, AgentStatusState } from "../agent-status-contract.js";
-import { CHILD_EVENT, CHILD_EVENT_RELAY_PROTOCOL, type ChildEventPayload } from "../child-event-contract.js";
+import { CHILD_EVENT, CHILD_EVENT_RELAY_PROTOCOL, CHILD_RUNTIME_SETTLED_TEXT, type ChildEventPayload } from "../child-event-contract.js";
 import { PROGRAM_STATUS_KINDS, PROGRAM_STATUS_STATE, type ProgramStatusState } from "../program-status-contract.js";
 import {
   SESSION_SEND_DELIVERY,
@@ -31,7 +31,7 @@ import {
 } from "../session-send-contract.js";
 import { createLogger, errMsg } from "../log.js";
 import { HOST_ENVELOPE_ACCEPTANCE, type VolatileHostEnvelopeRequest, type VolatileHostEnvelopeResult } from "../task-relay/volatile-protocol.js";
-import { onChildEvent, type ChildEventDelivery } from "./child-events.js";
+import type { ChildEventDelivery } from "./child-events.js";
 
 const log = createLogger("session-observation");
 
@@ -138,7 +138,7 @@ function noteItem(payload: ChildEventPayload): string {
     case CHILD_EVENT.ERROR:
       return `${name} error`;
     case CHILD_EVENT.DONE:
-      return `${name} done`;
+      return `${name} ${CHILD_RUNTIME_SETTLED_TEXT}`;
     case CHILD_EVENT.MESSAGE:
       return `${name} message`;
   }
@@ -304,27 +304,37 @@ export function createChildEventDelivery(deps: ChildEventDeliveryDeps): ChildEve
   };
 }
 
-let installed: ChildEventDeliveryService | undefined;
+export function createChildEventDeliveryOwner(onChildEvent: import("./child-events.js").ChildEvents["onChildEvent"]) {
+  let installed: ChildEventDeliveryService | undefined;
+  const stops = new Set<() => void>();
 
-/** The server starts one service; the observer consults it. Returns the stop function. */
-export function startChildEventDelivery(deps: ChildEventDeliveryDeps): () => void {
-  const service = createChildEventDelivery(deps);
-  installed = service;
-  const unsubscribe = onChildEvent(delivery => {
-    void service.deliver(delivery).catch((error: unknown) => {
-      log.warn("child-event delivery failed", { error: errMsg(error) });
+  /** The server starts one service; the observer consults it. Returns the stop function. */
+  function startChildEventDelivery(deps: ChildEventDeliveryDeps): () => void {
+    const service = createChildEventDelivery(deps);
+    installed = service;
+    const unsubscribe = onChildEvent(delivery => {
+      void service.deliver(delivery).catch((error: unknown) => {
+        log.warn("child-event delivery failed", { error: errMsg(error) });
+      });
     });
-  });
-  return () => {
-    unsubscribe();
-    if (installed === service) installed = undefined;
+    const stop = () => {
+      unsubscribe();
+      stops.delete(stop);
+      if (installed === service) installed = undefined;
+    };
+    stops.add(stop);
+    return stop;
+  }
+
+  function observeChildEventParent(parent: ParentObservation): void {
+    installed?.observeParent(parent);
+  }
+
+  function hasPendingChildEventNotes(): boolean {
+    return installed?.hasPending() ?? false;
+  }
+
+  return { startChildEventDelivery, observeChildEventParent, hasPendingChildEventNotes,
+    dispose() { for (const stop of stops) stop(); },
   };
-}
-
-export function observeChildEventParent(parent: ParentObservation): void {
-  installed?.observeParent(parent);
-}
-
-export function hasPendingChildEventNotes(): boolean {
-  return installed?.hasPending() ?? false;
 }

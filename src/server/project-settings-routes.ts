@@ -34,6 +34,7 @@ import {
   PLAN_FILE_UNREADABLE_MESSAGE,
 } from "../session-plan-contract.js";
 import type { SessionPlanRequest } from "../session-plan-contract.js";
+import type { ClaudeManagedSettingsDropIn } from "../claude-integration.js";
 import { DEV_DIR } from "./dev-dir.js";
 import { resolveWolfpackDir } from "../wolfpack-dir.js";
 import { browseServerDirectory } from "./directory-browser.js";
@@ -41,7 +42,7 @@ import type { DirectoryBrowseResult } from "./directory-browser.js";
 import {
   DuplicateSessionError,
 } from "./backend.js";
-import { defaultServerContext, type ServerContext } from "./context.js";
+import type { ServerContext } from "./context.js";
 import {
   hasOnlyKeys,
   hasOptionalType,
@@ -82,8 +83,7 @@ import {
   TASK_WORKER_DEFAULT_EXTENSION_POLICY,
   TASK_WORKER_POLICY_MAX_BYTES,
 } from "../task-worker-policy-contract.js";
-import { writePrivateJsonFile } from "./persistence.js";
-import { notifySubSessionOpened } from "./session-notifications.js";
+import { writePrivateJsonFile } from "../persistence.js";
 import { getTaskRelayProfile } from "../task-relay/gateway.js";
 import {
   DEFAULT_QUIET_ALERT_POLICY,
@@ -149,9 +149,9 @@ function validTaskWorkerHarness(harness: string, body: TaskWorkerPiOptions): boo
  * Checked before launch preparation so the request fails as a 400, not a retryable preflight 503.
  * Returns the public error while the integration is effectively off for a Claude worker.
  */
-function claudeTaskIntegrationOffError(harness: string): string | undefined {
+function claudeTaskIntegrationOffError(harness: string, dropIn?: ClaudeManagedSettingsDropIn): string | undefined {
   if (harness !== AGENT_KIND.CLAUDE.id) return undefined;
-  const integration = claudeTaskIntegrationState();
+  const integration = claudeTaskIntegrationState(dropIn);
   return integration.on ? undefined : integration.error;
 }
 
@@ -159,9 +159,10 @@ function prepareHarnessTaskWorkerLaunch(
   harness: string,
   projectDir: string,
   taskWorkerPolicy: unknown,
+  dropIn?: ClaudeManagedSettingsDropIn,
 ): TaskWorkerLaunch | PreparedTaskWorkerLaunch {
   return harness === AGENT_KIND.CLAUDE.id
-    ? prepareClaudeTaskWorkerLaunch(process.env, claudeTaskIntegrationState())
+    ? prepareClaudeTaskWorkerLaunch(process.env, claudeTaskIntegrationState(dropIn))
     : prepareTaskWorkerLaunch(process.env, projectDir, taskWorkerPolicy);
 }
 
@@ -338,13 +339,13 @@ function isSettingsBody(body: Record<string, unknown>): body is SettingsBody {
   return validCommandToggle && (body.quietAlerts === undefined || isQuietAlertPolicy(body.quietAlerts));
 }
 
-function listDevProjects(): string[] {
+function listDevProjects(devDir = DEV_DIR): string[] {
   try {
-    return readdirSync(DEV_DIR)
+    return readdirSync(devDir)
       .filter((entry) => {
         if (entry.startsWith(".")) return false;
         try {
-          return statSync(join(DEV_DIR, entry)).isDirectory();
+          return statSync(join(devDir, entry)).isDirectory();
         } catch {
           return false;
         }
@@ -487,16 +488,15 @@ export function effectiveCmds(s: Pick<Settings, "agentCmd" | "cmds">): string[] 
 }
 
 export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, RouteHandler> {
-  const getBackend = () => ctx.backend;
   return {
   "GET /api/projects": async (_req, res) => {
-    const projects = listDevProjects();
+    const projects = listDevProjects(ctx.devDir);
     json(res, { projects });
   },
 
   "GET /api/directories": async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
-    const result = await browseServerDirectory(url.searchParams.get("path") ?? DEV_DIR);
+    const result = await browseServerDirectory(url.searchParams.get("path") ?? ctx.devDir ?? DEV_DIR);
     if (!result.ok) {
       json(res, { error: result.error, code: result.code }, directoryBrowseHttpStatus(result.code));
       return;
@@ -517,7 +517,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
       json(res, { name: await uniqueSessionName(newProject, ctx.backend) });
       return;
     }
-    const selection = resolveExistingProjectSelection({ project, projectDir });
+    const selection = resolveExistingProjectSelection({ project, projectDir }, ctx.devDir);
     if (!selection.ok) {
       json(res, { error: selection.error }, projectDirectoryHttpStatus(selection.code));
       return;
@@ -575,7 +575,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
           code: SESSION_OPEN_ERROR.PARENT_SESSION_NOT_FOUND,
         }, 404);
       }
-      const activeParentIdentity = (await getBackend().listIdentities?.())?.[parentName];
+      const activeParentIdentity = (await ctx.backend.listIdentities?.())?.[parentName];
       if (!activeParentIdentity) {
         return json(res, {
           error: "parent session identity unavailable",
@@ -593,7 +593,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
       if (!isValidSessionName(customName)) {
         return json(res, { error: "invalid session name (letters, numbers, hyphens, underscores only)" }, 400);
       }
-      const existing = await getBackend().list();
+      const existing = await ctx.backend.list();
       if (existing.includes(customName)) {
         return json(res, { error: "session name already taken" }, 409);
       }
@@ -602,7 +602,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
     if (newProject !== undefined) {
       const folderName = newProject.trim();
       if (!validateProjectParam(res, folderName)) return;
-      let projectParent = DEV_DIR;
+      let projectParent = ctx.devDir ?? DEV_DIR;
       if (newProjectParent !== undefined) {
         const parentValidation = validateExplicitProjectDir(newProjectParent);
         if (!parentValidation.ok) {
@@ -616,7 +616,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
         log.error("/api/create: failed to create project directory", { path: rootedProjectDir, error: errMsg(e) });
       }
       const validation = newProjectParent === undefined
-        ? validateProjectDirPure(rootedProjectDir)
+        ? validateProjectDirPure(rootedProjectDir, ctx.devDir)
         : validateExplicitProjectDir(rootedProjectDir);
       if (!validation.ok) {
         json(res, { error: validation.error }, projectDirectoryHttpStatus(validation.code));
@@ -627,7 +627,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
       const selection = resolveExistingProjectSelection({
         ...(project !== undefined && { project: project.trim() }),
         ...(requestedProjectDir !== undefined && { projectDir: requestedProjectDir }),
-      });
+      }, ctx.devDir);
       if (!selection.ok) {
         json(res, { error: selection.error }, projectDirectoryHttpStatus(selection.code));
         return;
@@ -645,7 +645,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
       if (initialPrompt !== undefined && agentKind === AGENT_KIND.SHELL.id) {
         return json(res, { error: "initial prompt requires an agent harness" }, 400);
       }
-      await getBackend().createSession(finalName, projectDir, cmd, settingsResolver, {
+      await ctx.backend.createSession(finalName, projectDir, cmd, settingsResolver, {
         agentKind,
         parentSession: parentIdentity,
         initialPrompt,
@@ -656,7 +656,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
       }
       throw e;
     }
-    if (parentName) notifySubSessionOpened(parentName, finalName);
+    if (parentName) ctx.terminals.notifySubSessionOpened(parentName, finalName);
     json(res, { ok: true, session: finalName });
   },
 
@@ -691,7 +691,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
       return;
     }
 
-    const projectSelection = resolveExistingProjectSelection(body);
+    const projectSelection = resolveExistingProjectSelection(body, ctx.devDir);
     if (!projectSelection.ok) {
       if (projectSelection.code === "unavailable") {
         return json(res, {
@@ -725,7 +725,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
         code: SESSION_CREATE_ERROR.INVALID_REQUEST,
       }, 400);
     }
-    const integrationOffError = body.taskWorker === true ? claudeTaskIntegrationOffError(configuredCommand) : undefined;
+    const integrationOffError = body.taskWorker === true ? claudeTaskIntegrationOffError(configuredCommand, ctx.claudeManagedSettingsDropIn) : undefined;
     if (integrationOffError !== undefined) {
       return json(res, {
         error: integrationOffError,
@@ -748,7 +748,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
     let taskWorker;
     try {
       taskWorker = body.taskWorker === true
-        ? prepareHarnessTaskWorkerLaunch(configuredCommand, projectDir, body.taskWorkerPolicy)
+        ? prepareHarnessTaskWorkerLaunch(configuredCommand, projectDir, body.taskWorkerPolicy, ctx.claudeManagedSettingsDropIn)
         : undefined;
     } catch (error: unknown) {
       if (error instanceof TaskWorkerReadinessError) {
@@ -762,7 +762,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
     }
 
     try {
-      const backend = getBackend();
+      const backend = ctx.backend;
       const result = await createTopLevelSession({
         backend,
         project,
@@ -849,7 +849,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
       );
     }
 
-    const projectSelection = resolveExistingProjectSelection(body);
+    const projectSelection = resolveExistingProjectSelection(body, ctx.devDir);
     if (!projectSelection.ok) {
       if (projectSelection.code === "unavailable") {
         return json(res, {
@@ -876,7 +876,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
       initialPrompt = planned.prompt;
     }
 
-    const backend = getBackend();
+    const backend = ctx.backend;
     if (!backend.listIdentities) {
       return json(res, {
         error: "parent session identity unavailable",
@@ -908,14 +908,14 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
         if (!validTaskWorkerHarness(childHarness, body)) {
           throw new SessionOpenError(SESSION_OPEN_ERROR.INVALID_REQUEST);
         }
-        const integrationOffError = claudeTaskIntegrationOffError(childHarness);
+        const integrationOffError = claudeTaskIntegrationOffError(childHarness, ctx.claudeManagedSettingsDropIn);
         if (integrationOffError !== undefined) {
           return json(res, {
             error: integrationOffError,
             code: SESSION_OPEN_ERROR.INVALID_REQUEST,
           }, SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.INVALID_REQUEST]);
         }
-        taskWorker = prepareHarnessTaskWorkerLaunch(childHarness, projectDir, body.taskWorkerPolicy);
+        taskWorker = prepareHarnessTaskWorkerLaunch(childHarness, projectDir, body.taskWorkerPolicy, ctx.claudeManagedSettingsDropIn);
       }
       if (body.taskWorkerDryRun === true && taskWorker !== undefined) {
         return json(res, taskWorkerDryRunBody(taskWorker, body.model));
@@ -938,7 +938,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
           registrationForSession: async (sessionId) => (await ctx.taskRelayGateway.registrationsForSessions([sessionId])).get(sessionId),
         }),
         notify: (parent, session) => {
-          notifySubSessionOpened(parent.wolfpackSessionName, session);
+          ctx.terminals.notifySubSessionOpened(parent.wolfpackSessionName, session);
         },
       });
       json(res, result);
@@ -1095,5 +1095,3 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
   },
   };
 }
-
-export const projectSettingsRoutes = createProjectSettingsRoutes(defaultServerContext);

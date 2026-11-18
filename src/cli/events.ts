@@ -4,7 +4,8 @@
 import { baseUrl, call, proxyDenialFailure, serverTransportFailure } from "./api.js";
 import type { ServerTransportFailure } from "./api.js";
 import type { VerifiedMachineTarget } from "./machine-target.js";
-import { print, printError, red } from "./formatting.js";
+import { print, printError } from "../terminal-output.js";
+import { red } from "./formatting.js";
 import { SESSION_EXIT } from "./session-control.js";
 import { EVENTS_PATH, formatEventLine, parseEventFilter, parseSseEvents, type WolfpackEvent } from "../events-contract.js";
 

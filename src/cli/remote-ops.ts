@@ -9,7 +9,8 @@ import { constants as osConstants } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import type { VerifiedMachineTarget } from "./machine-target.js";
 import { baseUrl, call, LONG_REQUEST_GRACE_MS, longRequestInit } from "./api.js";
-import { print, printApiJson, printError, printJson, red } from "./formatting.js";
+import { print, printError } from "../terminal-output.js";
+import { printApiJson, printJson, red } from "./formatting.js";
 import { SESSION_EXIT } from "./session-control.js";
 import {
   REMOTE_EXEC_DEFAULT_TIMEOUT_SECONDS,

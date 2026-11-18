@@ -1,4 +1,7 @@
 import { afterAll, beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
+import { createPushFixture } from "./push-service-fixture.ts";
+const pushFixture = createPushFixture();
+afterAll(() => pushFixture.close());
 import { createServer } from "node:http";
 import { createECDH } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -9,14 +12,14 @@ import { isJsonObject, validateControlApiSchemaValue } from "../../control-api-s
 import type { JsonObject } from "../../control-api-schema-validator.ts";
 assertNotificationFixtureHome();
 const { CONTROL_API_SCHEMA_ARTIFACT } = await import("../../../src/control-api/schema.ts");
-const { addSubscription, removeSubscription, _testing } = await import("../../../src/server/push.ts");
 const { createPushNotifyRoutes } = await import("../../../src/server/push-routes.ts");
 const { EventBus } = await import("../../../src/event-bus.ts");
+const { createChildEvents } = await import("../../../src/server/child-events.ts");
 const { MockBackend } = await import("../../../src/server/mock-backend.ts");
 const { listParentNotifications, clearParentInbox } = await import("../../../src/server/parent-inbox.ts");
 const backend = new MockBackend({ sessions: ["parent"] });
 const events = new EventBus();
-const pushNotifyRoutes = createPushNotifyRoutes({ backend, events });
+const pushNotifyRoutes = createPushNotifyRoutes({ backend, events, childEvents: createChildEvents(), get push() { return pushFixture.service; } });
 const fetcher = globalThis.fetch;
 const artifact = JSON.parse(readFileSync(CONTROL_API_SCHEMA_ARTIFACT, "utf8")) as JsonObject;
 function validateResponse(body: unknown): void {
@@ -37,7 +40,7 @@ beforeAll(async () => {
   if (!address || typeof address === "string") throw new Error("missing server address");
   url = `http://127.0.0.1:${address.port}/api/notify`;
 });
-beforeEach(() => { _testing.resetDebounce(); clearParentInbox("mock:parent"); });
+beforeEach(() => { pushFixture.reset(); clearParentInbox("mock:parent"); });
 afterAll(async () => { globalThis.fetch = fetcher; await new Promise<void>(resolve => server.close(() => resolve())); });
 const notify = (target: Record<string, unknown> = {}) => fetcher(url, {
   method: "POST",
@@ -49,7 +52,7 @@ function pushServiceAnswers(status: number): void {
 }
 function enroll(endpoint: string): void {
   const client = createECDH("prime256v1"); client.generateKeys();
-  addSubscription({ endpoint, keys: { p256dh: client.getPublicKey().toString("base64url"), auth: Buffer.alloc(16, 3).toString("base64url") } });
+  pushFixture.service.addSubscription({ endpoint, keys: { p256dh: client.getPublicKey().toString("base64url"), auth: Buffer.alloc(16, 3).toString("base64url") } });
 }
 
 test("live exact parent target queues a structured entry and publishes an event", async () => {
@@ -114,7 +117,7 @@ test.each([false, true])("coalesced live broker response then exit cannot resurr
   const ready = new Promise<void>(resolve => { connected = resolve; });
   const client = new BrokerClient({ socketPath, onConnect: () => connected(), onEvent: event => raceBackend.ingestEvent(event) });
   const raceBackend = new BrokerBackend(client, raceEvents.publishEvent.bind(raceEvents));
-  const route = createPushNotifyRoutes({ backend: raceBackend, events: raceEvents })["POST /api/notify"]!;
+  const route = createPushNotifyRoutes({ backend: raceBackend, events: raceEvents, childEvents: raceBackend.childEvents, push: pushFixture.service })["POST /api/notify"]!;
   const http = createServer((req, res) => {
     void Promise.resolve(route(req, res)).catch(error => { res.writeHead(500); res.end(String(error)); });
   });
@@ -212,7 +215,7 @@ test("a push service that rejects every endpoint reports delivery_failed", async
     const body = await response.json();
     expect(body).toEqual({ ok: true, sent: 0, failed: 1, pruned: 0, delivered: false, reason: "delivery_failed", parentInbox: { queued: false, reason: "no_parent" } });
     validateResponse(body);
-  } finally { globalThis.fetch = fetcher; removeSubscription(endpoint); }
+  } finally { globalThis.fetch = fetcher; pushFixture.service.removeSubscription(endpoint); }
 });
 
 test("an accepted push is delivered without a reason", async () => {
@@ -225,7 +228,7 @@ test("an accepted push is delivered without a reason", async () => {
     const body = await response.json();
     expect(body).toEqual({ ok: true, sent: 1, failed: 0, pruned: 0, delivered: true, parentInbox: { queued: false, reason: "no_parent" } });
     validateResponse(body);
-  } finally { globalThis.fetch = fetcher; removeSubscription(endpoint); }
+  } finally { globalThis.fetch = fetcher; pushFixture.service.removeSubscription(endpoint); }
 });
 
 test("an expired only subscription is pruned and leaves nothing to deliver to", async () => {
@@ -238,5 +241,5 @@ test("an expired only subscription is pruned and leaves nothing to deliver to", 
     const body = await response.json();
     expect(body).toEqual({ ok: true, sent: 0, failed: 0, pruned: 1, delivered: false, reason: "no_subscriptions", parentInbox: { queued: false, reason: "no_parent" } });
     validateResponse(body);
-  } finally { globalThis.fetch = fetcher; removeSubscription(endpoint); }
+  } finally { globalThis.fetch = fetcher; pushFixture.service.removeSubscription(endpoint); }
 });

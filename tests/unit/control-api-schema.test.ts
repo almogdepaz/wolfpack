@@ -8,10 +8,11 @@ import {
 import { SESSION_PROMPT_SELECTOR_MAX_CHARS } from "../../src/session-prompt-contract.ts";
 import { SESSION_OPEN_MAX_MODEL_LENGTH } from "../../src/session-open-contract.ts";
 import { DEFAULT_QUIET_ALERT_POLICY } from "../../src/quiet-alert-policy.ts";
+import { RELAY_ID } from "../../src/task-relay/domain.ts";
 import {
   DIRECTORY_BREADCRUMB_LIMIT,
   DIRECTORY_BROWSE_LIMIT,
-} from "../../src/server/directory-browser.ts";
+} from "../../src/directory-browse-contract.ts";
 import {
   MACHINE_CAPABILITY,
   MACHINE_MAX_CAPABILITIES,
@@ -55,6 +56,35 @@ function wsMessage(name: string): JsonObject {
 }
 
 describe("control api schema generation", () => {
+  test("every emitted pattern compiles in Unicode mode", () => {
+    const patterns: Array<{ path: string; pattern: string }> = [];
+    function collect(value: unknown, path: string): void {
+      if (Array.isArray(value)) {
+        value.forEach((child, index) => collect(child, `${path}[${index}]`));
+      } else if (isObject(value)) {
+        for (const [key, child] of Object.entries(value)) {
+          if (key === "pattern" && typeof child === "string") patterns.push({ path: `${path}.pattern`, pattern: child });
+          collect(child, `${path}.${key}`);
+        }
+      }
+    }
+    collect(artifact, "$");
+    expect(patterns.length).toBeGreaterThan(0);
+    for (const { path, pattern } of patterns) {
+      expect(() => new RegExp(pattern, "u"), path).not.toThrow();
+    }
+  });
+
+  test("relay endpoint pattern retains local and peer matching", () => {
+    const endpoint = resolveRef({ $ref: "#/$defs/RelayEndpoint" }, artifact);
+    const relay = (endpoint.properties as JsonObject).relay as JsonObject;
+    const pattern = new RegExp(String(relay.pattern), "u");
+    expect(pattern.test(RELAY_ID)).toBe(true);
+    expect(pattern.test(`${RELAY_ID}:peer:550e8400-e29b-41d4-a716-446655440000`)).toBe(true);
+    expect(pattern.test(`${RELAY_ID}x`)).toBe(false);
+    expect(pattern.test(`${RELAY_ID}:peer:not-a-uuid`)).toBe(false);
+  });
+
   test("generated artifact is current", () => {
     expect(readFileSync(CONTROL_API_SCHEMA_ARTIFACT, "utf-8")).toBe(generateControlApiSchemaText());
   });

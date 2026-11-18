@@ -23,7 +23,7 @@ const value = (kind: string, fields: Record<string, Schema> = {}, optional: stri
 const counters = (names: string[]) => Object.fromEntries(names.map(name => [name, count]));
 const codes = {
   RELAY_CAPACITY: true, RELAY_RESET: true, INVALID_REQUEST: true, INVALID_CURSOR: true,
-  REGISTRATION_EXPIRED: true, TARGET_NOT_REGISTERED: true, CROSS_RELAY_ENDPOINT: true,
+  SESSION_ALREADY_REGISTERED: true, REGISTRATION_EXPIRED: true, TARGET_NOT_REGISTERED: true, CROSS_RELAY_ENDPOINT: true,
   ENVELOPE_CONFLICT: true, ENVELOPE_EXPIRED: true, RELAY_PROFILE_REQUIRED: true,
   CALLER_NOT_FOUND: true, CALLER_DEAD: true, SOURCE_MISMATCH: true, RELAY_UNAVAILABLE: true,
   PEER_UNREACHABLE: true, DELIVERY_UNCONFIRMED: true, PEER_POLICY_REQUIRED: true,

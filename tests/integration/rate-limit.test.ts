@@ -2,7 +2,6 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
-process.env.WOLFPACK_TEST = "1";
 // Disable JWT so we can hit API endpoints without auth tokens
 delete process.env.WOLFPACK_JWT_SECRET;
 const priorTailscaleStatus = process.env.WOLFPACK_TAILSCALE_STATUS_JSON;
@@ -11,20 +10,18 @@ process.env.WOLFPACK_TAILSCALE_STATUS_JSON = JSON.stringify({
   Peer: {},
 });
 
-const { __resetJwtAuthConfig } = await import("../../src/test-hooks.ts");
-const { __setTestBackend } = await import("../../src/server/backend.ts");
+const { getJwtAuthConfig } = await import("../../src/auth.ts");
+const { createServerContext } = await import("../../src/server/context.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
-__resetJwtAuthConfig();
 
-__setTestBackend(new MockBackend({ sessions: ["rate-test"] }));
+
+const context = createServerContext({ readTailscaleStatus: async () => JSON.parse(process.env.WOLFPACK_TAILSCALE_STATUS_JSON ?? "{}"), jwtAuthConfig: getJwtAuthConfig(), backend: new MockBackend({ sessions: ["rate-test"] }) });
 
 const {
   createServerInstance,
-  __pollRateLimiter,
-  __globalRateLimiter,
 } = await import("../../src/server/index.ts") as any;
 
-const { server } = createServerInstance();
+const { server, pollRateLimiter, globalRateLimiter } = createServerInstance(context, { allowLocalOrigins: true });
 
 let port = 0;
 let baseUrl = "";
@@ -42,8 +39,8 @@ beforeAll(async () => {
 afterAll(() => {
   (server as Server).close();
   // The limiter is process-global; do not leave this burst's exhausted bucket for later files.
-  __pollRateLimiter._map.clear();
-  __globalRateLimiter._map.clear();
+  pollRateLimiter._map.clear();
+  globalRateLimiter._map.clear();
   if (priorTailscaleStatus === undefined) delete process.env.WOLFPACK_TAILSCALE_STATUS_JSON;
   else process.env.WOLFPACK_TAILSCALE_STATUS_JSON = priorTailscaleStatus;
 });
@@ -51,8 +48,8 @@ afterAll(() => {
 describe("HTTP rate limiting", () => {
   test("poll-heavy endpoint returns 429 after threshold (burst 200)", async () => {
     // Reset the poll limiter so we get a clean slate
-    __pollRateLimiter._map.clear();
-    __globalRateLimiter._map.clear();
+    pollRateLimiter._map.clear();
+    globalRateLimiter._map.clear();
 
     const results = await Promise.all(
       Array.from({ length: 200 }, () =>
@@ -71,8 +68,8 @@ describe("HTTP rate limiting", () => {
 
   test("Tailnet status routes return 429 after the expensive-route threshold", async () => {
     for (const path of ["/api/machine", "/api/tailnet/v1/candidates", "/api/discover"]) {
-      __pollRateLimiter._map.clear();
-      __globalRateLimiter._map.clear();
+      pollRateLimiter._map.clear();
+      globalRateLimiter._map.clear();
       const statuses = await Promise.all(
         Array.from({ length: 30 }, () => fetch(`${baseUrl}${path}`).then((response) => response.status)),
       );
@@ -82,8 +79,8 @@ describe("HTTP rate limiting", () => {
   });
 
   test("global limit applies to non-poll endpoints", async () => {
-    __pollRateLimiter._map.clear();
-    __globalRateLimiter._map.clear();
+    pollRateLimiter._map.clear();
+    globalRateLimiter._map.clear();
 
     // /api/info is not poll-heavy, so only global limit (120/s) applies
     const results = await Promise.all(
@@ -101,8 +98,8 @@ describe("HTTP rate limiting", () => {
   });
 
   test("429 response body has error field", async () => {
-    __pollRateLimiter._map.clear();
-    __globalRateLimiter._map.clear();
+    pollRateLimiter._map.clear();
+    globalRateLimiter._map.clear();
 
     // Drain the poll bucket
     for (let i = 0; i < 15; i++) {

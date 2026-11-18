@@ -299,7 +299,8 @@ export class VolatileRelayGateway {
     } catch (error) {
       if (error instanceof RelayOwnerFailure) throw error; // The owner is poisoned, not an ordinary request rejection.
       return this.#failure(this.#stop.signal.aborted ? "RELAY_RESET"
-        : error instanceof GatewayError || error instanceof MemoryRelayError ? error.code : "RELAY_UNAVAILABLE", this.epoch);
+        : error instanceof GatewayError || error instanceof MemoryRelayError ? error.code : "RELAY_UNAVAILABLE", this.epoch,
+        error instanceof MemoryRelayError ? error.retryAfterMs : undefined);
     } finally { if (peer) this.#peers--; else this.#ordinary--; }
   }
 

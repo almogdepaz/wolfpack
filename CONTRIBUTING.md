@@ -21,11 +21,17 @@ For an end-to-end local install (build + service install + restart) on macOS, us
 ## Testing
 
 ```bash
-bun test                                  # all bun tests
-bun test tests/unit/                      # unit tests only
-bun test tests/unit/validation.test.ts    # single file
-bunx playwright test                      # e2e (uses test-server harness)
+bun run check:ci                           # full local/CI gate (requires Bash 4.4+)
+scripts/ci-gate.sh --list                  # stages and their commands; does not run them
+scripts/ci-gate.sh context typecheck       # selected stages
+bun test tests/unit/validation.test.ts     # focused work
 ```
+
+The gate requires the existing build prerequisites and Playwright browsers; it does not install them. The audit stage uses the network and runs only with `CI=true` or `--with-audit`. Integration and PR-tier e2e fail if no broker binary exists instead of silently skipping broker coverage.
+
+`tests/e2e/tiers.json` assigns each spec/project pair to `pr`, `full`, or `quarantine`. Run `bun run scripts/e2e-tiers.ts --check` after changing the manifest. Quarantine records failing test names and a reason; green projects of the same file can stay in PR. PR reports go to `artifacts/e2e-pr/<project>.json`, or the directory in `PLAYWRIGHT_JSON_OUTPUT_DIR`.
+
+Run e2e with isolated `HOME` and `ZDOTDIR`, explicit paths to existing Playwright/Bun caches, and `WOLFPACK_TEST_PORT=18899`. Some broker fixtures inherit the environment and start login shells; they do not all isolate shell startup themselves. Do not use an operator's shell startup files for fixture sessions.
 
 Layout:
 
@@ -38,13 +44,19 @@ The Rust broker has its own tests under `broker/tests/` — run with `cargo test
 
 The broker refuses a group- or other-writable socket parent, so tests must create every directory that holds a broker socket with mode `0700` (`mkdtempSync` already does; `mkdirSync` and `tempfile::tempdir()` inherit the umask).
 
+## Formatting and lint
+
+Run `cargo fmt --manifest-path broker/Cargo.toml` for Rust formatting and `bun run lint` for report-only ESLint checks. Prettier is configured, but the TypeScript reformat and its CI enforcement are deferred until `recovery/restart-safe-relay` (`2c0027fc`) lands; do not run a repository-wide `bun run format` as part of this round. `bun run format:check` is a manual report and currently reports unformatted files. The follow-up must measure Prettier options, verify build hashes, and record the formatting commit in `.git-blame-ignore-revs` before enabling a TypeScript format gate.
+
+Run `git config blame.ignoreRevsFile .git-blame-ignore-revs` locally to keep blame useful across formatting commits.
+
 ## Asset Pipeline
 
 Frontend entrypoints live in `public/`; readable CSS lives in `src/browser/styles.css`. The server doesn't serve from disk — browser assets are embedded into the binary:
 
 1. Edit `public/` HTML/TS/manifest sources or `src/browser/styles.css`. Do not edit generated `public/styles.css` or `public/app.bundle.js`.
 2. Run `bun run scripts/gen-assets.ts` — native Bun builds CSS to the same `/styles.css` URL, Bun + pinned build-only Terser optimize `public/app.ts`, and the isolated pinned Ghostty stage builds its bundle. Compiled public assets (not TS/readable CSS sources) are embedded into `src/public-assets.ts` (binary → base64, text → string).
-3. **Do NOT edit `src/public-assets.ts` manually** — it's auto-generated. Per-asset content hashes drive HTML/service-worker cache URLs.
+3. **Do NOT edit `src/public-assets.ts` manually** — it's generated, git-ignored, and not committed. Run the generation step once in every fresh checkout before tests or typecheck. Per-asset content hashes drive HTML/service-worker cache URLs.
 4. Run `bun run check:bundle-budgets`; it measures the actual served JS/CSS filenames with their existing raw/gzip caps. Do not move payload into unbudgeted files or raise caps to conceal growth.
 
 Terser 5.51.2 (BSD-2-Clause) is an exact development dependency, not shipped runtime code. Its app-IIFE pass never touches fetched extension modules or the separately pinned Ghostty bundle. Property mangling, unsafe transforms, getter assumptions and console/debugger dropping are disabled; names/arity are retained, including inferred function names (`reduce_vars` is intentionally disabled). Keep legal comments and rerun `tests/unit/browser-iife-minify.test.ts` when changing compiler options/version. Native CSS normalization is checked against resolved layout/motion/accessibility and exact rendered pixels, not merely CSSOM spelling; `tests/e2e/asset-build.e2e.ts` covers dashboard, terminal and settings with reduced-motion/forced-colors variants.
@@ -100,6 +112,6 @@ Without the verified Ghostty VT bundle, Cargo fails closed instead of downloadin
 ## PR Conventions
 
 - Branch off `main`
-- Tests must pass (`bun test`)
+- The CI gate passes (`bun run check:ci`)
 - Keep PRs focused — one feature or fix per PR
 - Match existing style; no large unrelated refactors mixed in

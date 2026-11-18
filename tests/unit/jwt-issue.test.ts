@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { issueJwt } from "../../src/cli/api.ts";
+import { issueJwt } from "../../src/jwt-issue.ts";
 import { validateJwtHs256 } from "../../src/auth.ts";
 
 const keys = ["WOLFPACK_JWT_SECRET", "WOLFPACK_JWT_ISSUER", "WOLFPACK_JWT_AUDIENCE", "NO_COLOR"] as const;

@@ -20,10 +20,10 @@ export const MEMORY_RELAY_LIMITS = Object.freeze({
 export const MEMORY_RELAY_TIMING = Object.freeze({ retryMs: 1000, deadlineMs: 120_000, receiptMs: 900_000, clockSkewMs: 30_000 });
 type Limits = { readonly [K in keyof typeof MEMORY_RELAY_LIMITS]: number };
 export type MemoryRelayCode = "RELAY_CAPACITY" | "RELAY_RESET" | "INVALID_REQUEST" | "INVALID_CURSOR"
-  | "REGISTRATION_EXPIRED" | "TARGET_NOT_REGISTERED" | "CROSS_RELAY_ENDPOINT" | "ENVELOPE_CONFLICT" | "ENVELOPE_EXPIRED";
+  | "SESSION_ALREADY_REGISTERED" | "REGISTRATION_EXPIRED" | "TARGET_NOT_REGISTERED" | "CROSS_RELAY_ENDPOINT" | "ENVELOPE_CONFLICT" | "ENVELOPE_EXPIRED";
 export class MemoryRelayError extends Error {
-  constructor(readonly code: MemoryRelayCode) { super(code); }
-  get retryable(): boolean { return this.code === "RELAY_CAPACITY"; }
+  constructor(readonly code: MemoryRelayCode, readonly retryAfterMs?: number) { super(code); }
+  get retryable(): boolean { return this.code === "RELAY_CAPACITY" || this.code === "SESSION_ALREADY_REGISTERED"; }
 }
 function fail(code: MemoryRelayCode): never { throw new MemoryRelayError(code); }
 const bytes = (value: unknown): number => Buffer.byteLength(canonicalJson(value));
@@ -77,8 +77,9 @@ export type ForwardAttempt = { readonly kind: "attempt"; readonly token: string;
  * No filesystem, timers, network calls or process-global store registry. The
  * recovery wrapper commits primary rows; derived indexes remain RAM-only.
  * Methods linearize synchronously; the gateway owns fresh broker inspection and
- * trusted peer admission. Only memory-only generation replacement drops obligations;
- * durable noncurrent registrations retain terminal transport evidence, never task authority.
+ * trusted peer admission. Retirement drops mail addressed to the old lifetime;
+ * durable noncurrent registrations retain outgoing local mail and terminal evidence,
+ * never endpoint/task authority.
  */
 export class MemoryRelayStore {
   #epoch: string = randomUUID();
@@ -146,13 +147,14 @@ export class MemoryRelayStore {
         if (!entry.current && entry.value.sessionId === value.sessionId && entry.value.generation === value.generation) fail("RELAY_RESET");
       }
     }
-    const retainPrior = this.#recoverable && prior !== undefined && !existing && prior.references > 0;
-    if (retainPrior) {
-      for (const receipt of this.#receipts.values()) {
-        if ((receipt.state === "mailbox" || receipt.state === "forwarding")
-          && [receipt.source, receipt.target].some(endpoint => endpoint.relay === RELAY_ID && endpoint.id === prior.value.endpoint.id)) fail("RELAY_RESET");
-      }
+    if (mode === "connect" && prior && !existing) {
+      const remaining = Date.parse(prior.value.leaseExpiresAt) - now;
+      if (remaining > 0) throw new MemoryRelayError("SESSION_ALREADY_REGISTERED", remaining);
     }
+    // Preflight the post-retirement charges without discarding anything on failure.
+    const retainPrior = this.#recoverable && prior !== undefined && !existing && prior.references > 0 && [...this.#receipts.values()].some(receipt =>
+      !this.#discardOnRetirement(receipt, prior.value.endpoint.id)
+      && [receipt.source, receipt.target].some(endpoint => endpoint.relay === RELAY_ID && endpoint.id === prior.value.endpoint.id));
     const registration: RelayRegistration = {
       endpoint: existing?.value.endpoint ?? { relay: RELAY_ID, id: randomUUID() },
       sessionId: value.sessionId, generation: value.generation,
@@ -165,10 +167,7 @@ export class MemoryRelayStore {
       || this.#metadataBytes + size - (retainPrior ? 0 : prior?.bytes ?? 0) > this.#limits.metadataBytes) fail("RELAY_CAPACITY");
     // Lookup, obligation/limit checks and replacement are one synchronous journaled
     // mutation. Keep both charges and every terminal receipt exactly as committed.
-    if (prior && !existing) {
-      if (retainPrior) { prior.current = false; prior.mutation = ++this.#registrationMutation; }
-      else this.#retire(prior);
-    }
+    if (prior && !existing) this.#retire(prior);
     const entry = existing ?? { value: registration, current: true, mutation: 0n, mailbox: new Map(), cursor: 0n, mailboxBytes: 0, references: 0, bytes: 0 };
     this.#metadataBytes += size - entry.bytes;
     entry.value = registration; entry.mutation = ++this.#registrationMutation; entry.bytes = size;
@@ -196,7 +195,7 @@ export class MemoryRelayStore {
   retirementCandidate(epoch: string, now: number, after: string): { registration: RelayRegistration; mutation: string } | undefined {
     this.checkEpoch(epoch); time(now);
     if (!this.#recoverable) return;
-    const candidates = [...this.#registrations.values()].filter(entry => entry.current && !entry.references && Date.parse(entry.value.leaseExpiresAt) <= now)
+    const candidates = [...this.#registrations.values()].filter(entry => entry.current && Date.parse(entry.value.leaseExpiresAt) <= now)
       .sort((a, b) => a.value.endpoint.id.localeCompare(b.value.endpoint.id));
     const entry = candidates.find(entry => entry.value.endpoint.id > after) ?? candidates[0];
     return entry && { registration: structuredClone(entry.value), mutation: entry.mutation.toString() };
@@ -206,10 +205,8 @@ export class MemoryRelayStore {
   retireRegistration(epoch: string, id: string, mutation: string, now: number): boolean {
     this.checkEpoch(epoch); time(now);
     const entry = this.#registrations.get(id);
-    if (!this.#recoverable || !entry?.current || entry.references || entry.mutation.toString() !== mutation || Date.parse(entry.value.leaseExpiresAt) > now) return false;
-    this.#registrations.delete(id); this.#metadataBytes -= entry.bytes;
-    if (this.#sessions.get(entry.value.sessionId) === id) this.#sessions.delete(entry.value.sessionId);
-    this.#expiry.delete(`g:${id}`);
+    if (!this.#recoverable || !entry?.current || entry.mutation.toString() !== mutation || Date.parse(entry.value.leaseExpiresAt) > now) return false;
+    this.#retire(entry);
     return true;
   }
 
@@ -496,7 +493,8 @@ export class MemoryRelayStore {
       for (const endpoint of [receipt.source, receipt.target]) {
         if (endpoint.relay === RELAY_ID) {
           const entry = this.#registrations.get(endpoint.id);
-          if (!entry || (!entry.current && (receipt.state === "mailbox" || receipt.state === "forwarding"))) invalid();
+          if (!entry || (!entry.current && (receipt.state === "forwarding"
+            || (receipt.state === "mailbox" && receipt.target.relay === RELAY_ID && receipt.target.id === endpoint.id)))) invalid();
           entry!.references++;
         }
         else if (!this.#routes.has(endpoint.relay)) invalid();
@@ -532,18 +530,29 @@ export class MemoryRelayStore {
       || this.#registrations.size > this.#limits.registrations || this.#routes.size > this.#limits.routes || this.#metadataBytes > this.#limits.metadataBytes) invalid();
   }
 
+  #discardOnRetirement(receipt: Receipt, id: string): boolean {
+    // Durable terminal evidence survives retirement. Unread incoming mail and
+    // pending peer forwarding use the memory-mode loss/unknown-outcome path.
+    if (this.#recoverable && receipt.state !== "mailbox" && receipt.state !== "forwarding") return false;
+    const target = receipt.target.relay === RELAY_ID && receipt.target.id === id;
+    const source = receipt.source.relay === RELAY_ID && receipt.source.id === id;
+    return target || (source && receipt.state !== "mailbox");
+  }
+
   #retire(entry: RegistrationEntry): void {
     const id = entry.value.endpoint.id;
-    // Bounded by the receipt ceiling, on generation replacement only. Do not
-    // discard already accepted mail at another endpoint when its sender exits.
+    // Bounded by the receipt ceiling. Do not discard already accepted local
+    // mail at another endpoint when its sender exits.
     for (const receipt of this.#receipts.values()) {
-      const target = receipt.target.relay === RELAY_ID && receipt.target.id === id;
-      const source = receipt.source.relay === RELAY_ID && receipt.source.id === id;
-      if (!target && (!source || receipt.state === "mailbox")) continue;
+      if (!this.#discardOnRetirement(receipt, id)) continue;
       this.#releasePayload(receipt);
       this.#forget(receipt);
     }
-    this.#registrations.delete(id); this.#metadataBytes -= entry.bytes;
+    entry.current = false; entry.mutation = ++this.#registrationMutation;
+    if (!this.#recoverable || !entry.references) {
+      this.#registrations.delete(id); this.#metadataBytes -= entry.bytes;
+    }
+    if (this.#sessions.get(entry.value.sessionId) === id) this.#sessions.delete(entry.value.sessionId);
     this.#expiry.delete(`g:${id}`);
   }
 
@@ -650,7 +659,7 @@ export class MemoryRelayStore {
       if (!entry) continue; // A retired sender does not revoke another endpoint's accepted mail.
       entry.references--;
       if (!entry.references && !entry.current) {
-        // Only noncurrent terminal-only transport records are lifecycle garbage.
+        // Noncurrent transport records are garbage only after their last reference.
         // Current generations still need fresh authoritative broker retirement.
         this.#registrations.delete(endpoint.id); this.#metadataBytes -= entry.bytes;
         this.#expiry.delete(`g:${endpoint.id}`);

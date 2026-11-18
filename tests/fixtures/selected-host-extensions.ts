@@ -8,7 +8,11 @@ import type { AddressInfo } from "node:net";
 import { validateJwtHs256, extractBearerToken } from "../../src/auth.ts";
 import { buildMachineHandshake } from "../../src/tailnet-machine-contract.ts";
 import { ExtensionRuntime } from "../../src/extensions/runtime.ts";
-import { ExtensionRouteService, __setExtensionRouteServiceForTests } from "../../src/server/extension-routes.ts";
+import { ExtensionRouteService } from "../../src/server/extension-routes.ts";
+import { enumerateLocalTailnetCandidates } from "../../src/server/http.ts";
+import { createServerContext } from "../../src/server/context.ts";
+import { MockBackend } from "../../src/server/mock-backend.ts";
+import { SessionIdentityStore } from "../../src/server/session-identity.ts";
 import type { ExtensionPeerFetch } from "../../src/server/extension-peer-proxy.ts";
 import type { SessionBackend } from "../../src/server/backend-contract.ts";
 
@@ -48,12 +52,11 @@ async function close(server: Server): Promise<void> { server.closeAllConnections
 
 /** Actual installed runtimes/routes/git with controlled exact session facts and isolated Tailnet DNS/TLS. */
 export async function createSelectedHostFixture(options: { readonly timeoutMs?: number; readonly maxActive?: number; readonly handleLocalRequest?: (req: IncomingMessage, res: ServerResponse, url: URL) => boolean | Promise<boolean> } = {}) {
-  process.env.WOLFPACK_TEST = "1";
   const root = mkdtempSync(join(tmpdir(), "wolfpack-selected-hosts-"));
   const previousSecret = process.env.WOLFPACK_JWT_SECRET, previousStatus = process.env.WOLFPACK_TAILSCALE_STATUS_JSON;
   const localSecret = "selected-host-local-test-secret-123";
   process.env.WOLFPACK_JWT_SECRET = localSecret;
-  const { __resetJwtAuthConfig } = await import("../../src/test-hooks.ts"); __resetJwtAuthConfig();
+  const { getJwtAuthConfig } = await import("../../src/auth.ts");
   const peers: InstalledPeer[] = [];
   const redirectTrace: string[] = [];
   const redirectServer = createServer((req, res) => {
@@ -125,21 +128,29 @@ export async function createSelectedHostFixture(options: { readonly timeoutMs?: 
     return fetch(`${peer.base}${url.pathname}${url.search}`, init);
   };
   const serviceOptions = { runtime: localRuntime, backend: { listSessionFacts: async () => [] },
-    peerProxy: { fetchImpl, ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }), ...(options.maxActive === undefined ? {} : { maxActive: options.maxActive }) } };
+    peerProxy: { candidates: () => enumerateLocalTailnetCandidates(async () => JSON.parse(process.env.WOLFPACK_TAILSCALE_STATUS_JSON ?? "{}")), fetchImpl, ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }), ...(options.maxActive === undefined ? {} : { maxActive: options.maxActive }) } };
   class FixtureLocalRoutes extends ExtensionRouteService {
     override async handle(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
       if (await options.handleLocalRequest?.(req, res, url)) return true;
       return super.handle(req, res, url);
     }
   }
-  __setExtensionRouteServiceForTests(new FixtureLocalRoutes(serviceOptions));
+  const sessionIdentityStore = new SessionIdentityStore(process.env.WOLFPACK_SESSION_IDENTITY_PATH
+    ? undefined : join(root, `session-identities-test-${process.pid}`));
+  const context = createServerContext({
+    readTailscaleStatus: async () => JSON.parse(process.env.WOLFPACK_TAILSCALE_STATUS_JSON ?? "{}"),
+    jwtAuthConfig: getJwtAuthConfig(), backend: new MockBackend({ sessions: [] }),
+    extensionRouteService: new FixtureLocalRoutes(serviceOptions), sessionIdentityStore,
+    startSupervisor: false, observationCacheTtlMs: 0,
+    terminalPrefillDelayMs: Number(process.env.WOLFPACK_TEST_PREFILL_DELAY_MS),
+  });
   const { createServerInstance } = await import("../../src/server/index.ts");
-  const { server } = createServerInstance(); const base = await listen(server);
+  const { server } = createServerInstance(context, { allowLocalOrigins: true }); const base = await listen(server);
   return {
     root, peers, localRuntime, base, localToken: fixtureToken(localSecret), fetchTrace, updateTopology, redirectBase, redirectTrace,
     async close() {
       await close(server); for (const peer of peers) await close(peer.server); await close(redirectServer);
-      __setExtensionRouteServiceForTests(undefined); __resetJwtAuthConfig();
+      await context.close();
       if (previousSecret === undefined) delete process.env.WOLFPACK_JWT_SECRET; else process.env.WOLFPACK_JWT_SECRET = previousSecret;
       if (previousStatus === undefined) delete process.env.WOLFPACK_TAILSCALE_STATUS_JSON; else process.env.WOLFPACK_TAILSCALE_STATUS_JSON = previousStatus;
       rmSync(root, { recursive: true, force: true });

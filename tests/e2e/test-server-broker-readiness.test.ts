@@ -26,7 +26,6 @@ test("broker test server does not announce readiness when its broker is unreacha
         SHELL: process.env.SHELL ?? "/bin/sh",
         HOME: sandbox,
         TMPDIR: sandbox,
-        WOLFPACK_TEST: "1",
         WOLFPACK_BROKER_SOCKET: join(sandbox, "missing.sock"),
         WOLFPACK_PORT: "0",
         WOLFPACK_DEV_DIR: devDir,

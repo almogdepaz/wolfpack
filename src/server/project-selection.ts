@@ -27,14 +27,14 @@ export function projectDirectoryHttpStatus(code: ProjectSelectionFailure["code"]
 export function resolveExistingProjectSelection(input: {
   readonly project?: string;
   readonly projectDir?: string;
-}): ResolveProjectSelectionResult {
+}, devDir?: string): ResolveProjectSelectionResult {
   if ((input.project === undefined) === (input.projectDir === undefined)) {
     return invalidSelection();
   }
 
   if (input.project !== undefined) {
     if (!isValidProjectName(input.project)) return invalidSelection();
-    return fromValidation(input.project, validateProjectDir(join(DEV_DIR, input.project)));
+    return fromValidation(input.project, validateProjectDir(join(devDir ?? DEV_DIR, input.project), devDir));
   }
 
   const explicitProjectDir = input.projectDir;

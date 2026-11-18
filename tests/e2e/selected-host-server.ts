@@ -5,7 +5,8 @@ import type { AddressInfo } from "node:net";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { writeSelectedHostPackage } from "../fixtures/selected-host-package.ts";
 
-process.env.WOLFPACK_TEST = "1";
+const readTailscaleStatus = async (selfOnly?: boolean) => process.env.WOLFPACK_TAILSCALE_STATUS_JSON === undefined
+  ? readLocalTailscaleStatus(selfOnly) : JSON.parse(process.env.WOLFPACK_TAILSCALE_STATUS_JSON);
 const socketPath = process.env.WOLFPACK_BROKER_SOCKET, home = process.env.HOME;
 const kind = process.env.WOLFPACK_SELECTED_HOST_FIXTURE;
 if (!socketPath || !home || (kind !== "local" && kind !== "a" && kind !== "b")) throw new Error("owned selected-host fixture configuration unavailable");
@@ -13,12 +14,16 @@ const fixtureHome = home;
 const fixtureKind = kind;
 const { BrokerClient } = await import("../../src/broker/client.ts");
 const { BrokerBackend } = await import("../../src/server/broker-backend.ts");
-const { __setTestBackend } = await import("../../src/server/backend.ts");
+const { createServerContext } = await import("../../src/server/context.ts");
+const { SessionIdentityStore } = await import("../../src/server/session-identity.ts");
+const { readLocalTailscaleStatus } = await import("../../src/server/tailscale-status.ts");
+const sessionIdentityStore = new SessionIdentityStore(process.env.WOLFPACK_SESSION_IDENTITY_PATH
+  ? undefined : join(home, `session-identities-test-${process.pid}`));
 let backend: InstanceType<typeof BrokerBackend>;
 let connected!: () => void;
 const connection = new Promise<void>(resolve => { connected = resolve; });
 const client = new BrokerClient({ socketPath, requestTimeoutMs: 5000, onConnect: connected, onEvent: event => backend.ingestEvent(event) });
-backend = new BrokerBackend(client); __setTestBackend(backend); client.start();
+backend = new BrokerBackend(client, undefined, { sessionIdentityStore: () => sessionIdentityStore }); client.start();
 let connectionTimer: ReturnType<typeof setTimeout> | undefined;
 try { await Promise.race([connection, new Promise<never>((_resolve, reject) => { connectionTimer = setTimeout(() => reject(new Error("owned broker connection timed out")), 5000); })]); }
 finally { clearTimeout(connectionTimer); }
@@ -30,9 +35,9 @@ if (process.env.WOLFPACK_TEST_APP_BUNDLE) {
   assets.set("styles.css", { content: readFileSync(join(import.meta.dirname, '../../public/styles.css')), mime: "text/css" });
 }
 const { ExtensionRuntime } = await import("../../src/extensions/runtime.ts");
-const { ExtensionRouteService, __setExtensionRouteServiceForTests } = await import("../../src/server/extension-routes.ts");
+const { ExtensionRouteService } = await import("../../src/server/extension-routes.ts");
 const { getInstallationId } = await import("../../src/tailnet-machine-installation.ts");
-const { json, parseObjectBody } = await import("../../src/server/http.ts");
+const { json, parseObjectBody, enumerateLocalTailnetCandidates } = await import("../../src/server/http.ts");
 const runtime = new ExtensionRuntime({ root: join(home, "extensions"), installationId: getInstallationId() });
 if (kind !== "local") await runtime.install({ source: writeSelectedHostPackage(home, kind), trustBrowserCode: true });
 const peerBases: unknown = JSON.parse(process.env.WOLFPACK_TEST_PEER_BASES ?? "{}");
@@ -64,15 +69,21 @@ class FixtureRoutes extends ExtensionRouteService {
     return super.handle(req, res, url);
   }
 }
-__setExtensionRouteServiceForTests(new FixtureRoutes({ runtime, backend, safeMode: () => safeMode, peerProxy: {
+const extensionRouteService = new FixtureRoutes({ runtime, backend, safeMode: () => safeMode, peerProxy: {
+  candidates: () => enumerateLocalTailnetCandidates(readTailscaleStatus),
   fetchImpl: async (input, init) => {
     const url = new URL(String(input)), base = peers.get(url.origin);
     if (!base) throw new Error("fixture rejected unowned Tailnet target");
     // Only the external DNS/TLS boundary is projected; middleware/routes/runtime remain real.
     return fetch(`${base}${url.pathname}${url.search}`, init);
   },
-} }));
-const { server } = await import("../../src/server/index.ts");
+} });
+const { createServerInstance } = await import("../../src/server/index.ts");
+const { server } = createServerInstance(createServerContext({
+  backend, extensionRouteService, readTailscaleStatus, sessionIdentityStore,
+  startSupervisor: false, observationCacheTtlMs: 0,
+  terminalPrefillDelayMs: Number(process.env.WOLFPACK_TEST_PREFILL_DELAY_MS),
+}), { allowLocalOrigins: true });
 server.listen(0, "127.0.0.1", () => console.log(`READY:${(server.address() as AddressInfo).port}`));
 function stop(): void { release?.(); client.close(); server.closeAllConnections(); process.exit(0); }
 process.stdin.resume(); process.stdin.on("end", stop); process.on("SIGTERM", stop);

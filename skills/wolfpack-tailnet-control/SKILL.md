@@ -19,26 +19,26 @@ wolfpack session create <project> --harness <pi|claude|codex|gemini|cursor> --pr
 A manual or interactive **child** of the current agent (same harness by default; startup prompt, outside the task contract; delegated work uses the task-worker path below):
 
 ```bash
-# Pi child: resolve the role model explicitly; use the reviewer setting for review.
-IMPLEMENTER_MODEL="${WOLFPACK_IMPLEMENTER_MODEL:-openai-codex/gpt-6.1-sol:high}"
-REVIEWER_MODEL="${WOLFPACK_REVIEWER_MODEL:-openai-codex/gpt-6.1-sol:high}"
-wolfpack agent spawn <project> --harness pi --name 200-implementation --model "$IMPLEMENTER_MODEL" --plan .plans/000-task.md --notify-parent --json
-# --model requires a pi or claude child (native per-session --model); omit it for other child harnesses.
+# Pi child. Add the role --model only when its variable is set (see "Role models" below).
+wolfpack agent spawn <project> --harness pi --name 200-implementation --plan .plans/000-task.md --notify-parent --json
+# --model requires a pi or claude child (native per-session --model). Omit it for other child harnesses.
 wolfpack agent spawn <project> --harness claude --name 200-review --plan .plans/000-task.md --notify-parent --json
 ```
 
 `wolfpack session open` is only a deprecated child-spawn alias. Never use it for a top-level request.
 Replace `<project>` with `--project-dir <path>` when the user selects an existing directory outside the configured projects root; never pass both selectors. The CLI resolves relative paths and the server validates/canonicalizes the directory.
-Both creation commands perform one server-owned request and pass startup instructions without inheriting parent transcript/context. `--harness <pi|claude|codex|gemini|cursor>` overrides the inherited child harness while preserving parent lineage; `shell` is not a child harness. `--model` is child-only and requires a Pi or Claude child; an explicit user/project model overrides the role environment/default. Never change a Claude child's model with `/model`, because that saves a global default.
+Both creation commands perform one server-owned request and pass startup instructions without inheriting parent transcript/context. `--harness <pi|claude|codex|gemini|cursor>` overrides the inherited child harness while preserving parent lineage; `shell` is not a child harness. `--model` is child-only and requires a Pi or Claude child. Never change a Claude child's model with `/model`, because that saves a global default.
+
+**Role models.** This skill names no models; the user's configuration does. For a Pi role child, pass `--model "$WOLFPACK_IMPLEMENTER_MODEL"` for the editing implementer or `--model "$WOLFPACK_REVIEWER_MODEL"` for the read-only reviewer when that variable is set; otherwise omit `--model`, so the child uses `defaultModel` and `defaultThinkingLevel` from the user's Pi settings (`~/.pi/agent/settings.json`). An explicit user or project model choice overrides both. Pi accepts a `provider/id:<thinking>` selector, and Wolfpack forwards it unchanged. Never infer role or model from the session name.
 
 Use `--name <session>` for child agents and choose a short meaningful issue/role slug, for example `200-implementation`, `200-delivery-review`, or `auth-boundary-audit`. Avoid generic `*-sub-agent` names when the task purpose is known; Wolfpack will allocate a numbered suffix if the requested name is already taken. Prefer `--plan <file>` for plan work: Wolfpack generates the compact handoff prompt and verifies the file exists without copying plan contents into the parent transcript. Use `--prompt-file <file>` for long bespoke instructions. Use raw `--prompt` only for one short prompt sentence. Do NOT paste repository policy, architecture context, or full plans into the launch command.
 
 Delegated agent work always uses a task ID. Spawn a task worker with explicit-root readiness and no startup assignment flags (or select an existing session by stable ID and use its registered `taskEndpoint`), then send the complete assignment once with `agent_task_send`. Use a timeout of at least one hour for coding work. The task carries questions, answers, the terminal, the origin deadline and the parent ACK. Startup prompts (`--plan`, `--prompt-file`, `--prompt`) and `--notify-parent` remain for manual or interactive sessions only; they give no task ID, deadline or tracked completion. If readiness or the Claude task integration is unavailable, report the capability gap; do not fall back to a startup prompt for delegated work.
 
 ```bash
-wolfpack agent spawn --project-dir /absolute/worktree --harness pi --name task-implementation --model "$IMPLEMENTER_MODEL" --task-worker --readiness-timeout-ms 30000 --json
+wolfpack agent spawn --project-dir /absolute/worktree --harness pi --name task-implementation --task-worker --readiness-timeout-ms 30000 --json
 # Claude task worker: needs the Claude task integration (`wolfpack setup`); --model is optional; no Pi policy file.
-wolfpack agent spawn --project-dir /absolute/worktree --harness claude --name task-review --model claude-opus-5-5 --task-worker --readiness-timeout-ms 30000 --json
+wolfpack agent spawn --project-dir /absolute/worktree --harness claude --name task-review --task-worker --readiness-timeout-ms 30000 --json
 
 # inspect a target host's effective policy (pi) or resolved launch (claude) without creating a worker
 wolfpack agent spawn --project-dir /absolute/worktree --harness pi --task-worker --task-worker-dry-run --json

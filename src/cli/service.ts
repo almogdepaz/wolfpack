@@ -21,23 +21,15 @@ import { basename, dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { xmlEsc, systemdEsc } from "../validation.js";
 import { createLogger, errMsg } from "../log.js";
-import { print, bold, green, red, dim, yellow } from "./formatting.js";
+import { print, yellow } from "../terminal-output.js";
+import { bold, green, red, dim } from "./formatting.js";
 import { prepareServiceAuthFile } from "./service-auth.js";
 import { rotateLogFile } from "./logs.js";
 import { requireManagedCurl, waitForApplicationReady } from "./readiness.js";
 
 const log = createLogger("service");
-import {
-  WOLFPACK_DIR,
-  IS_MACOS,
-  IS_LINUX,
-  loadConfig,
-  ask,
-  isPortInUse,
-  killPortHolder,
-  waitForPortFree,
-  type Config,
-} from "./config.js";
+import { WOLFPACK_DIR, IS_MACOS, IS_LINUX, loadConfig, type Config } from "../config.js";
+import { ask, isPortInUse, killPortHolder, waitForPortFree } from "./config.js";
 
 import pkg from "../../package.json";
 const VERSION: string = pkg.version;

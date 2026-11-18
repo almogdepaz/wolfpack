@@ -109,15 +109,11 @@ export function claudeTaskIntegrationGate(flag: boolean, dropInDirectory: string
     : { on: false, error: `the Claude task integration is off because ${problem}; run wolfpack setup to repair it and wolfpack doctor to check it` };
 }
 
-let dropInDirectoryOverride: { readonly directory: string | undefined } | undefined;
-
-/** Test-only: replaces the platform drop-in directory that the effective gate reads; undefined restores it. */
-export function __setClaudeManagedSettingsDropInDirectory(override: { readonly directory: string | undefined } | undefined): void {
-  if (!process.env.WOLFPACK_TEST) throw new Error("__setClaudeManagedSettingsDropInDirectory() is only available in test mode");
-  dropInDirectoryOverride = override;
+export interface ClaudeManagedSettingsDropIn {
+  readonly directory: string | undefined;
 }
 
 /** The drop-in directory that the effective gate reads. */
-export function activeClaudeManagedSettingsDropInDirectory(): string | undefined {
-  return dropInDirectoryOverride !== undefined ? dropInDirectoryOverride.directory : claudeManagedSettingsDropInDirectory();
+export function activeClaudeManagedSettingsDropInDirectory(override?: ClaudeManagedSettingsDropIn): string | undefined {
+  return override !== undefined ? override.directory : claudeManagedSettingsDropInDirectory();
 }

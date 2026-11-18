@@ -4,7 +4,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as deployment from "../../src/extensions/pi-skill-deployment.ts";
-import { writePrivateJsonFile } from "../../src/server/persistence.ts";
+import { writePrivateJsonFile } from "../../src/persistence.ts";
 import { canonicalJson } from "../../src/canonical-json.ts";
 
 const name = "wolfpack-agent-context";
